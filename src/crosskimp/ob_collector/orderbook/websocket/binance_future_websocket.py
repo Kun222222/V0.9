@@ -8,12 +8,9 @@ import websockets
 from websockets import connect
 from typing import Dict, List, Optional
 
-from utils.logging.logger import get_unified_logger
-from orderbook.websocket.base_websocket import BaseWebsocket
-from orderbook.orderbook.binance_future_orderbook_manager import (
-    BinanceFutureOrderBookManager,
-    parse_binance_future_depth_update
-)
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
+from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.orderbook.binance_future_orderbook_manager import BinanceFutureOrderBookManager, parse_binance_future_depth_update
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -48,7 +45,9 @@ class BinanceFutureWebsocket(BaseWebsocket):
         # Ping/Pong 설정 추가
         self.ping_interval = 150
         self.ping_timeout = 10
-
+        
+        # raw 로거 초기화
+        self.raw_logger = get_raw_logger("binance_future")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """
@@ -274,3 +273,16 @@ class BinanceFutureWebsocket(BaseWebsocket):
             await self.ws.close()
         self.is_connected = False
         logger.info("[BinanceFuture] 웹소켓 종료 완료")
+
+    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
+        """
+        Raw 메시지 로깅
+        Args:
+            msg_type: 메시지 타입 (snapshot/depthUpdate)
+            message: raw 메시지
+            symbol: 심볼명
+        """
+        try:
+            self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
+        except Exception as e:
+            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")

@@ -7,11 +7,9 @@ import aiohttp
 from websockets import connect
 from typing import Dict, List, Optional
 
-from utils.logging.logger import get_unified_logger
-from orderbook.websocket.base_websocket import BaseWebsocket
-from orderbook.orderbook.binance_spot_orderbook_manager import (
-    BinanceSpotOrderBookManager
-)
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
+from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.orderbook.binance_spot_orderbook_manager import BinanceSpotOrderBookManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -68,6 +66,9 @@ class BinanceSpotWebsocket(BaseWebsocket):
         self.ping_interval = 150
         self.ping_timeout = 10
         self.logger = logger  # binance_logger 대신 unified_logger 사용
+        
+        # raw 로거 초기화
+        self.raw_logger = get_raw_logger("binance_spot")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)
@@ -203,3 +204,16 @@ class BinanceSpotWebsocket(BaseWebsocket):
             await self.ws.close()
         self.is_connected = False
         self.logger.info(f"[{self.exchangename}] stopped")
+
+    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
+        """
+        Raw 메시지 로깅
+        Args:
+            msg_type: 메시지 타입 (snapshot/depthUpdate)
+            message: raw 메시지
+            symbol: 심볼명
+        """
+        try:
+            self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
+        except Exception as e:
+            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")

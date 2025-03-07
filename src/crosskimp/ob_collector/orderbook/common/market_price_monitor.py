@@ -1,11 +1,12 @@
-# file: core/market_price_monitor.py
+# file: orderbook/common/market_price_monitor.py
 
 import asyncio
 import time
 from typing import Dict, Optional
 from datetime import datetime
-from utils.logging.logger import unified_logger
-from config.config_loader import get_settings
+
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.ob_collector.config.config_loader import get_settings
 
 class MarketPriceMonitor:
     """
@@ -16,7 +17,7 @@ class MarketPriceMonitor:
     def __init__(self):
         self.settings = get_settings()
         self.base_order_amount = self.settings["trading"]["general"]["base_order_amount_krw"]
-        self.logger = unified_logger
+        self.logger = get_unified_logger()
         
         # 각 거래소별 최신 오더북 데이터 저장
         self.orderbooks = {

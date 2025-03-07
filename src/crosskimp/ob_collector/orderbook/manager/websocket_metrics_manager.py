@@ -1,9 +1,10 @@
-# file: core/websocket/websocket_metrics_manager.py
+# file: orderbook/manager/websocket_metrics_manager.py
 
 import time
 from typing import Dict, Optional
 from datetime import datetime
-from utils.logging.logger import get_unified_logger, EXCHANGE_LOGGER_MAP
+
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, EXCHANGE_LOGGER_MAP
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

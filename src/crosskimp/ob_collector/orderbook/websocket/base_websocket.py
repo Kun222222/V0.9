@@ -8,8 +8,8 @@ from asyncio import Event
 from dataclasses import dataclass
 from datetime import datetime
 
-from utils.logging.logger import get_unified_logger
-from config.constants import EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR
 
 @dataclass
 class WebSocketStats:

@@ -8,10 +8,11 @@ from typing import Dict, List, Set
 import psutil
 from datetime import datetime, timedelta
 import json
-from utils.logging.logger import get_unified_logger, LOG_DIRS, get_current_time_str
 import time
 import os
 import websockets
+
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, LOG_DIRS, get_current_time_str
 
 # unified_logger 인스턴스 가져오기
 unified_logger = get_unified_logger()

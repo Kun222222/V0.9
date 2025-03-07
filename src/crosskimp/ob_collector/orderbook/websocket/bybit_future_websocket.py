@@ -8,10 +8,10 @@ from fastapi import websockets
 from websockets import connect
 from typing import Dict, List, Optional
 
-from utils.logging.logger import get_unified_logger
-from orderbook.websocket.base_websocket import BaseWebsocket
-from orderbook.orderbook.base_orderbook import ValidationResult
-from orderbook.orderbook.bybit_future_orderbook_manager import BybitFutureOrderBookManager
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
+from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.orderbook.base_orderbook import ValidationResult
+from crosskimp.ob_collector.orderbook.orderbook.bybit_future_orderbook_manager import BybitFutureOrderBookManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -25,62 +25,100 @@ class BybitFutureWebsocket(BaseWebsocket):
     def __init__(self, settings: dict):
         super().__init__(settings, "bybitfuture")
         self.ws_url = "wss://stream.bybit.com/v5/public/linear"
+        self.initial_connection = True  # 초기 연결 여부를 확인하기 위한 플래그
         depth = settings.get("websocket", {}).get("orderbook_depth", 10)
         self.orderbook_manager = BybitFutureOrderBookManager(depth)
         self.session: Optional[aiohttp.ClientSession] = None
         self.is_connected = False
+        
+        # Ping/Pong 설정
         self.ping_interval = 20
         self.ping_timeout = 10
-        self.connection_timeout = 30
-        self.max_reconnect_attempts = 5
-        self.reconnect_delay = 5
-        self.current_reconnect_attempt = 0
-        self.message_timeout = 30  # 메시지 타임아웃 추가
+        
+        # 재연결 설정
+        self.retry_delay = 1  # 초기 재연결 딜레이 1초
+        self.current_retry = 0
+        self.message_timeout = 30
         self._last_message_time = time.time()
 
-        # 부모 클래스의 설정 사용
-        reconnect_cfg = settings.get("websocket", {}).get("reconnect", {})
-        self.max_reconnect_attempts = reconnect_cfg.get("max_attempts", 5)
-        self.reconnect_delay = reconnect_cfg.get("delay", 5)
-        self.current_reconnect_attempt = 0
+        self.logger = logger
+        
+        # raw 로거 초기화
+        self.raw_logger = get_raw_logger("bybit_future")
 
-        self.logger = logger  # bybit_future_logger 대신 unified_logger 사용
+    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
+        """
+        Raw 메시지 로깅
+        Args:
+            msg_type: 메시지 타입 (snapshot/depthUpdate)
+            message: raw 메시지
+            symbol: 심볼명
+        """
+        try:
+            self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
+        except Exception as e:
+            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")
 
     async def connect(self) -> bool:
-        max_retries = 3
-        retry_delay = 1.0
-        
-        for attempt in range(max_retries):
+        while True:  # 무한 재시도 루프
             try:
-                self.ws = await connect(
-                    self.ws_url,
-                    ping_interval=self.ping_interval,
-                    ping_timeout=self.ping_timeout,
-                    compression=None,
-                    open_timeout=10
+                logger.info(
+                    f"[BybitFuture] 웹소켓 연결 시도 | "
+                    f"시도={self.current_retry + 1}회차, "
+                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
+                    f"url={self.ws_url}"
                 )
+                
+                # 초기 연결 시에만 0.5초 타임아웃 설정
+                timeout = 0.5 if self.initial_connection else 30
+                
+                self.ws = await asyncio.wait_for(
+                    connect(
+                        self.ws_url,
+                        ping_interval=self.ping_interval,
+                        ping_timeout=self.ping_timeout,
+                        compression=None
+                    ),
+                    timeout=timeout
+                )
+                
                 if not self.session:
                     self.session = aiohttp.ClientSession()
+                    
                 self.is_connected = True
-                self.current_reconnect_attempt = 0
-                self.logger.info(
-                    f"[{self.exchangename}] WebSocket 연결 성공 | "
+                self.current_retry = 0
+                self.stats.connection_start_time = time.time()
+                self.initial_connection = False  # 초기 연결 완료 표시
+                
+                logger.info(
+                    f"[BybitFuture] 웹소켓 연결 성공 | "
+                    f"시도={self.current_retry + 1}회차, "
                     f"url={self.ws_url}, "
-                    f"ping_interval={self.ping_interval}s"
+                    f"ping_interval={self.ping_interval}초"
                 )
                 return True
                 
-            except Exception as e:
-                self.logger.error(
-                    f"[{self.exchangename}] WebSocket 연결 실패 | "
-                    f"attempt={attempt + 1}/{max_retries}, "
-                    f"error={str(e)}",
-                    exc_info=True
+            except asyncio.TimeoutError:
+                self.current_retry += 1
+                logger.warning(
+                    f"[BybitFuture] 웹소켓 연결 타임아웃 | "
+                    f"시도={self.current_retry}회차, "
+                    f"timeout={timeout}초, "
+                    f"초기연결={'예' if self.initial_connection else '아니오'}"
                 )
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                else:
-                    raise
+                await asyncio.sleep(self.retry_delay)
+                continue
+                
+            except Exception as e:
+                self.current_retry += 1
+                logger.error(
+                    f"[BybitFuture] 웹소켓 연결 실패 | "
+                    f"시도={self.current_retry}회차, "
+                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
+                    f"error={str(e)}"
+                )
+                await asyncio.sleep(self.retry_delay)
+                continue
 
     async def subscribe(self, symbols: List[str]):
         try:
@@ -243,12 +281,12 @@ class BybitFutureWebsocket(BaseWebsocket):
     async def _reconnect(self):
         """재연결 처리"""
         try:
-            self.current_reconnect_attempt += 1
-            if self.current_reconnect_attempt > self.max_reconnect_attempts:
+            self.current_retry += 1
+            if self.current_retry > self.max_reconnect_attempts:
                 self.logger.error("최대 재연결 시도 횟수 초과")
                 return
                 
-            self.logger.info(f"[{self.exchangename}] 재연결 시도 #{self.current_reconnect_attempt}")
+            self.logger.info(f"[{self.exchangename}] 재연결 시도 #{self.current_retry}")
             
             # 기존 연결 정리
             if self.ws:

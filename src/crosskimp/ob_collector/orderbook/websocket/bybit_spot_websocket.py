@@ -6,9 +6,9 @@ import time
 from websockets import connect
 from typing import Dict, List, Optional
 
-from utils.logging.logger import get_unified_logger
-from orderbook.websocket.base_websocket import BaseWebsocket
-from orderbook.orderbook.bybit_spot_orderbook_manager import BybitSpotOrderBookManager
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
+from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.orderbook.bybit_spot_orderbook_manager import BybitSpotOrderBookManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -61,7 +61,7 @@ def parse_bybit_depth_update(data: dict) -> Optional[dict]:
             "type": msg_type
         }
     except Exception as e:
-        unified_logger.error(f"[BybitSpot] parse_bybit_depth_update error: {e}", exc_info=True)
+        logger.error(f"[BybitSpot] parse_bybit_depth_update error: {e}", exc_info=True)
         return None
 
 class BybitSpotWebsocket(BaseWebsocket):
@@ -71,22 +71,24 @@ class BybitSpotWebsocket(BaseWebsocket):
     def __init__(self, settings: dict):
         super().__init__(settings, "bybit")
         self.ws_url = "wss://stream.bybit.com/v5/public/spot"
-
+        self.initial_connection = True  # 초기 연결 여부를 확인하기 위한 플래그
+        
         # depth 설정 통합 (settings.json의 depth_level 사용)
         self.depth_level = settings.get("connection", {}).get("websocket", {}).get("depth_level", 50)
         self.orderbook_manager = BybitSpotOrderBookManager(self.depth_level)
 
         # 재연결 설정은 부모 클래스에서 처리하므로 제거
         self.current_retry = 0
-        reconnect = settings.get("websocket", {}).get("reconnect", {})
-        self.max_retries = reconnect.get("max_retries", 5)
-        self.retry_delay = reconnect.get("retry_delay", 5)
+        self.retry_delay = 1  # 초기 재연결 딜레이 1초
 
         # Ping/Pong 설정 추가
         self.ping_interval = 20
         self.ping_timeout = 10
 
-        self.logger = logger  # bybit_logger 대신 unified_logger 사용
+        self.logger = logger
+        
+        # raw 로거 초기화
+        self.raw_logger = get_raw_logger("bybit_spot")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)
@@ -94,21 +96,62 @@ class BybitSpotWebsocket(BaseWebsocket):
         logger.info("[BybitSpot] output queue set")
 
     async def connect(self) -> None:
-        try:
-            logger.info("[BybitSpot] connecting to websocket...")
-            self.ws = await connect(
-                self.ws_url,
-                ping_interval=self.ping_interval,  # 20초
-                ping_timeout=self.ping_timeout,    # 10초
-                compression=None
-            )
-            self.is_connected = True
-            self.current_retry = 0
-            self.stats.connection_start_time = time.time()
-            logger.info(f"[BybitSpot] connected: url={self.ws_url}")
-        except Exception as e:
-            self.log_error(f"[BybitSpot] connect error: {e}")
-            raise
+        while True:  # 무한 재시도 루프
+            try:
+                logger.info(
+                    f"[BybitSpot] 웹소켓 연결 시도 | "
+                    f"시도={self.current_retry + 1}회차, "
+                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
+                    f"url={self.ws_url}"
+                )
+                
+                # 초기 연결 시에만 0.5초 타임아웃 설정
+                timeout = 0.5 if self.initial_connection else 30
+                
+                self.ws = await asyncio.wait_for(
+                    connect(
+                        self.ws_url,
+                        ping_interval=self.ping_interval,
+                        ping_timeout=self.ping_timeout,
+                        compression=None
+                    ),
+                    timeout=timeout
+                )
+                
+                self.is_connected = True
+                self.current_retry = 0
+                self.stats.connection_start_time = time.time()
+                self.initial_connection = False  # 초기 연결 완료 표시
+                
+                logger.info(
+                    f"[BybitSpot] 웹소켓 연결 성공 | "
+                    f"시도={self.current_retry + 1}회차, "
+                    f"url={self.ws_url}, "
+                    f"ping_interval={self.ping_interval}초"
+                )
+                break  # 연결 성공시 루프 종료
+                
+            except asyncio.TimeoutError:
+                self.current_retry += 1
+                logger.warning(
+                    f"[BybitSpot] 웹소켓 연결 타임아웃 | "
+                    f"시도={self.current_retry}회차, "
+                    f"timeout={timeout}초, "
+                    f"초기연결={'예' if self.initial_connection else '아니오'}"
+                )
+                await asyncio.sleep(self.retry_delay)
+                continue
+                
+            except Exception as e:
+                self.current_retry += 1
+                logger.error(
+                    f"[BybitSpot] 웹소켓 연결 실패 | "
+                    f"시도={self.current_retry}회차, "
+                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
+                    f"error={str(e)}"
+                )
+                await asyncio.sleep(self.retry_delay)
+                continue
 
     async def subscribe(self, symbols: List[str]) -> None:
         """
@@ -250,10 +293,10 @@ class BybitSpotWebsocket(BaseWebsocket):
             except Exception as e:
                 self.current_retry += 1
                 logger.error(
-                    f"[BybitSpot] connection error: {str(e)}, retry={self.current_retry}/{self.max_retries}"
+                    f"[BybitSpot] connection error: {str(e)}, retry={self.current_retry}"
                 )
                 
-                if self.current_retry > self.max_retries:
+                if self.current_retry > 5:
                     logger.error("[BybitSpot] max retries exceeded -> stop")
                     break
                     
@@ -305,3 +348,16 @@ class BybitSpotWebsocket(BaseWebsocket):
         self.is_connected = False
         self.orderbook_manager.clear_all()
         logger.info("[BybitSpot] stopped & cleared.")
+
+    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
+        """
+        Raw 메시지 로깅
+        Args:
+            msg_type: 메시지 타입 (snapshot/depthUpdate)
+            message: raw 메시지
+            symbol: 심볼명
+        """
+        try:
+            self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
+        except Exception as e:
+            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")

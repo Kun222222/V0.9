@@ -4,6 +4,8 @@ import logging
 import os
 import time
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
+
 from crosskimp.ob_collector.config.constants import LOG_SYSTEM
 
 # ============================
@@ -189,6 +191,42 @@ EXCHANGE_LOGGER_MAP = {
     "upbit": get_unified_logger(),
     "bithumb": get_unified_logger()
 }
+
+def get_raw_logger(exchange_name: str) -> logging.Logger:
+    """
+    거래소별 raw 데이터 로깅을 위한 로거를 반환
+    
+    Args:
+        exchange_name (str): 거래소 이름 (예: upbit, binance, bybit 등)
+        
+    Returns:
+        logging.Logger: raw 데이터 전용 로거
+    """
+    logger = logging.getLogger(f"raw_{exchange_name}")
+    
+    if not logger.handlers:  # 핸들러가 없을 때만 추가
+        logger.setLevel(logging.INFO)
+        
+        # 파일명 설정 (예: raw_upbit_20240307.log)
+        today = datetime.now().strftime("%Y%m%d")
+        log_file = os.path.join(LOG_DIRS['raw'], f"raw_{exchange_name}_{today}.log")
+        
+        # 파일 핸들러 설정 (50MB 단위로 로테이션, 최대 10개 파일 유지)
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=50*1024*1024,  # 50MB
+            backupCount=10,
+            encoding='utf-8'
+        )
+        
+        # 포맷터 설정 (timestamp와 raw 데이터만 기록)
+        formatter = logging.Formatter('%(asctime)s|%(message)s')
+        file_handler.setFormatter(formatter)
+        
+        logger.addHandler(file_handler)
+        logger.propagate = False  # 상위 로거로 전파하지 않음
+        
+    return logger
 
 __all__ = [
     'get_unified_logger',

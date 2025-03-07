@@ -5,7 +5,10 @@ import asyncio
 import aiohttp
 import time
 from typing import Dict
-from utils.logging.logger import unified_logger  # 반드시 utils.logger에서 가져옴
+
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+
+logger = get_unified_logger(__name__)
 
 class MetricsCollector:
     def __init__(self, api_url: str):
@@ -17,7 +20,7 @@ class MetricsCollector:
         
     async def start(self):
         try:
-            unified_logger.info(
+            logger.info(
                 f"[MetricsCollector] 메트릭 수집 시작 | "
                 f"API={self.api_url}, "
                 f"수집 주기(초)=시스템({self.metric_intervals['system']:.1f}), "
@@ -34,18 +37,18 @@ class MetricsCollector:
                 self.collect_orderbook_metrics()
             ]
             
-            unified_logger.debug("[MetricsCollector] 메트릭 수집 태스크 시작")
+            logger.debug("[MetricsCollector] 메트릭 수집 태스크 시작")
             await asyncio.gather(*tasks)
             
         except Exception as e:
-            unified_logger.error(
+            logger.error(
                 f"[MetricsCollector] 시작 실패 | error={str(e)}",
                 exc_info=True
             )
             raise
 
     async def collect_system_metrics(self):
-        unified_logger.info("[MetricsCollector] 시스템 메트릭 수집 시작")
+        logger.info("[MetricsCollector] 시스템 메트릭 수집 시작")
         
         while True:
             try:
@@ -83,12 +86,12 @@ class MetricsCollector:
                 
                 # 리소스 사용량이 높은 경우 경고
                 if cpu_percent > 80:
-                    unified_logger.warning(
+                    logger.warning(
                         f"[MetricsCollector] 높은 CPU 사용량 감지 | "
                         f"usage={cpu_percent}%, user={cpu_times.user}%, system={cpu_times.system}%"
                     )
                 if mem.percent > 85:
-                    unified_logger.warning(
+                    logger.warning(
                         f"[MetricsCollector] 높은 메모리 사용량 감지 | "
                         f"usage={mem.percent}%, used={mem.used/1024/1024/1024:.1f}GB, "
                         f"free={mem.free/1024/1024/1024:.1f}GB"
@@ -101,18 +104,18 @@ class MetricsCollector:
                         json=metrics
                     ) as resp:
                         if resp.status != 200:
-                            unified_logger.error(
+                            logger.error(
                                 f"[MetricsCollector] 시스템 메트릭 전송 실패 | "
                                 f"status={resp.status}, url={self.api_url}/metrics/system"
                             )
                 except Exception as e:
-                    unified_logger.error(
+                    logger.error(
                         f"[MetricsCollector] 시스템 메트릭 전송 오류 | error={str(e)}",
                         exc_info=True
                     )
                 
                 # 상세 디버그 로깅
-                unified_logger.debug(
+                logger.debug(
                     f"[MetricsCollector] 시스템 메트릭 수집 완료 | "
                     f"cpu={cpu_percent}%, mem={mem.percent}%, "
                     f"swap={swap.percent}%"
@@ -121,14 +124,14 @@ class MetricsCollector:
                 await asyncio.sleep(1)
                 
             except Exception as e:
-                unified_logger.error(
+                logger.error(
                     f"[MetricsCollector] 시스템 메트릭 수집 실패 | error={str(e)}",
                     exc_info=True
                 )
                 await asyncio.sleep(5)
 
     async def collect_websocket_metrics(self):
-        unified_logger.info("[MetricsCollector] 웹소켓 메트릭 수집 시작")
+        logger.info("[MetricsCollector] 웹소켓 메트릭 수집 시작")
         exchanges = ["binance", "binancefuture", "bybit", "bybitfuture", "upbit", "bithumb"]
         
         while True:
@@ -145,17 +148,17 @@ class MetricsCollector:
                     try:
                         async with self.session.post(url, json=metrics) as resp:
                             if resp.status == 200:
-                                unified_logger.debug(
+                                logger.debug(
                                     f"[MetricsCollector] 웹소켓 메트릭 전송 성공 | "
                                     f"exchange={exchange}"
                                 )
                             else:
-                                unified_logger.warning(
+                                logger.warning(
                                     f"[MetricsCollector] 웹소켓 메트릭 전송 실패 | "
                                     f"exchange={exchange}, status={resp.status}"
                                 )
                     except Exception as e:
-                        unified_logger.error(
+                        logger.error(
                             f"[MetricsCollector] 웹소켓 메트릭 전송 오류 | "
                             f"exchange={exchange}, error={str(e)}"
                         )
@@ -163,14 +166,14 @@ class MetricsCollector:
                 await asyncio.sleep(1)
                 
             except Exception as e:
-                unified_logger.error(
+                logger.error(
                     f"[MetricsCollector] 웹소켓 메트릭 수집 실패 | error={str(e)}",
                     exc_info=True
                 )
                 await asyncio.sleep(5)
 
     async def collect_orderbook_metrics(self):
-        unified_logger.info("[MetricsCollector] 오더북 메트릭 수집 시작")
+        logger.info("[MetricsCollector] 오더북 메트릭 수집 시작")
         exchanges = ["binance", "binancefuture", "bybit", "bybitfuture", "upbit", "bithumb"]
         
         while True:
@@ -187,17 +190,17 @@ class MetricsCollector:
                     try:
                         async with self.session.post(url, json=metrics) as resp:
                             if resp.status == 200:
-                                unified_logger.debug(
+                                logger.debug(
                                     f"[MetricsCollector] 오더북 메트릭 전송 성공 | "
                                     f"exchange={exchange}"
                                 )
                             else:
-                                unified_logger.warning(
+                                logger.warning(
                                     f"[MetricsCollector] 오더북 메트릭 전송 실패 | "
                                     f"exchange={exchange}, status={resp.status}"
                                 )
                     except Exception as e:
-                        unified_logger.error(
+                        logger.error(
                             f"[MetricsCollector] 오더북 메트릭 전송 오류 | "
                             f"exchange={exchange}, error={str(e)}"
                         )
@@ -205,7 +208,7 @@ class MetricsCollector:
                 await asyncio.sleep(1)
                 
             except Exception as e:
-                unified_logger.error(
+                logger.error(
                     f"[MetricsCollector] 오더북 메트릭 수집 실패 | error={str(e)}",
                     exc_info=True
                 )
@@ -250,5 +253,5 @@ class MetricsCollector:
             return network_metrics
             
         except Exception as e:
-            unified_logger.error(f"네트워크 메트릭 수집 실패: {e}")
+            logger.error(f"네트워크 메트릭 수집 실패: {e}")
             return {}

@@ -4,7 +4,8 @@ import time
 import asyncio
 from dataclasses import dataclass
 from typing import List, Dict, Optional
-from utils.logging.logger import get_unified_logger
+
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
