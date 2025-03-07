@@ -16,9 +16,57 @@
 import asyncio
 import aiohttp
 from datetime import datetime
-from crosskimp.ob_collector.utils.logging.logger import unified_logger
 from crosskimp.ob_collector.config.config_loader import get_settings
-from typing import Dict, Optional, List, Union
+from typing import Dict, Optional, List, Union, Any
+import logging
+import os
+import json
+import telegram
+from telegram.ext import Updater
+
+# ============================
+# 로깅 설정
+# ============================
+TELEGRAM_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "logs", "telegram")
+os.makedirs(TELEGRAM_LOG_DIR, exist_ok=True)
+
+# 로거 생성
+logger = logging.getLogger('telegram_bot')
+logger.setLevel(logging.INFO)
+
+# 파일 핸들러 설정
+log_file = os.path.join(TELEGRAM_LOG_DIR, f"telegram_{datetime.now().strftime('%y%m%d_%H%M%S')}.log")
+file_handler = logging.FileHandler(log_file, encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+
+# 콘솔 핸들러 설정
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.ERROR)
+
+# 포맷터 설정
+formatter = logging.Formatter('[%(asctime)s.%(msecs)03d] - [%(filename)s:%(lineno)d] - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# 핸들러 추가
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# ============================
+# 텔레그램 봇 설정
+# ============================
+TELEGRAM_CONFIG = {
+    'bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
+    'chat_id': os.getenv('TELEGRAM_CHAT_ID')
+}
+
+# 봇 인스턴스 생성
+bot: Optional[telegram.Bot] = None
+try:
+    bot = telegram.Bot(token=TELEGRAM_CONFIG['bot_token'])
+    logger.info("[텔레그램] 봇 초기화 완료")
+except Exception as e:
+    logger.error(f"[텔레그램] 봇 초기화 실패: {e}")
 
 # ============================
 # 상수 정의
@@ -156,10 +204,10 @@ def format_message(
     try:
         formatted = f"{template['icon']} {template['format'].format(**data)}"
     except KeyError as e:
-        unified_logger.error(f"[Telegram] 메시지 포맷팅 오류: 누락된 키 {e}")
+        logger.error(f"메시지 포맷팅 오류: 누락된 키 {e}")
         formatted = f"{MessageIcon.ERROR} [포맷팅 오류] 메시지를 표시할 수 없습니다."
     except Exception as e:
-        unified_logger.error(f"[Telegram] 메시지 포맷팅 오류: {e}")
+        logger.error(f"메시지 포맷팅 오류: {e}")
         formatted = f"{MessageIcon.ERROR} [포맷팅 오류] {str(e)}"
     
     # 최대 길이 제한
@@ -173,15 +221,15 @@ def validate_telegram_config(settings: Dict) -> bool:
     telegram_config = settings.get("notifications", {}).get("telegram", {})
     
     if not telegram_config.get("enabled"):
-        unified_logger.info("[Telegram] 텔레그램 알림 비활성화 상태")
+        logger.info("텔레그램 알림 비활성화 상태")
         return False
         
     if not telegram_config.get("token"):
-        unified_logger.error("[Telegram] 텔레그램 토큰 누락")
+        logger.error("텔레그램 토큰 누락")
         return False
         
     if not telegram_config.get("chat_id"):
-        unified_logger.error("[Telegram] 텔레그램 chat_id 누락")
+        logger.error("텔레그램 chat_id 누락")
         return False
         
     return True
@@ -228,25 +276,25 @@ async def send_telegram_message(
             "parse_mode": "HTML"
         }
         
-        unified_logger.debug(f"[Telegram] 메시지 전송 시도 (타입: {message_type})")
+        logger.debug(f"메시지 전송 시도 (타입: {message_type})")
         
         # API 요청
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as response:
                 if response.status == 200:
-                    unified_logger.debug("[Telegram] 메시지 전송 성공")
+                    logger.debug("메시지 전송 성공")
                     return True
                     
                 # 에러 응답
                 error_data = await response.text()
-                unified_logger.error(
-                    f"[Telegram] 메시지 전송 실패 (HTTP {response.status}): {error_data}"
+                logger.error(
+                    f"메시지 전송 실패 (HTTP {response.status}): {error_data}"
                 )
                 
                 # 재시도
                 if retry_count < MAX_RETRIES:
-                    unified_logger.info(
-                        f"[Telegram] {retry_count + 1}번째 재시도 ({RETRY_DELAY}초 후)"
+                    logger.info(
+                        f"{retry_count + 1}번째 재시도 ({RETRY_DELAY}초 후)"
                     )
                     await asyncio.sleep(RETRY_DELAY)
                     return await send_telegram_message(
@@ -256,7 +304,7 @@ async def send_telegram_message(
                 return False
                 
     except aiohttp.ClientError as e:
-        unified_logger.error(f"[Telegram] 네트워크 오류: {e}")
+        logger.error(f"네트워크 오류: {e}")
         if retry_count < MAX_RETRIES:
             await asyncio.sleep(RETRY_DELAY)
             return await send_telegram_message(
@@ -265,7 +313,7 @@ async def send_telegram_message(
         return False
         
     except Exception as e:
-        unified_logger.error(f"[Telegram] 예상치 못한 오류: {e}")
+        logger.error(f"예상치 못한 오류: {e}")
         return False
 
 # ============================
@@ -323,7 +371,7 @@ if __name__ == "__main__":
     async def test_telegram():
         """텔레그램 봇 테스트"""
         try:
-            unified_logger.info("[Telegram] 테스트 시작")
+            logger.info("테스트 시작")
             settings = get_settings()
             
             # 각 메시지 타입 테스트
@@ -358,18 +406,18 @@ if __name__ == "__main__":
             }
             
             for msg_type, data in test_data.items():
-                unified_logger.info(f"[Telegram] {msg_type} 메시지 테스트")
+                logger.info(f"{msg_type} 메시지 테스트")
                 success = await send_telegram_message(settings, msg_type, data)
                 if success:
-                    unified_logger.info(f"[Telegram] {msg_type} 메시지 전송 성공")
+                    logger.info(f"{msg_type} 메시지 전송 성공")
                 else:
-                    unified_logger.error(f"[Telegram] {msg_type} 메시지 전송 실패")
+                    logger.error(f"{msg_type} 메시지 전송 실패")
                 await asyncio.sleep(1)  # API 레이트 리밋 고려
             
-            unified_logger.info("[Telegram] 테스트 완료")
+            logger.info("테스트 완료")
             
         except Exception as e:
-            unified_logger.error(f"[Telegram] 테스트 중 오류 발생: {e}")
+            logger.error(f"테스트 중 오류 발생: {e}")
     
     # 테스트 실행
     asyncio.run(test_telegram())

@@ -1,5 +1,3 @@
-# file: config/config_loader.py
-
 """
 설정 파일 로더 모듈
 
@@ -27,8 +25,15 @@ import aiofiles
 import aiofiles.os
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from utils.logging.logger import unified_logger
 from dotenv import load_dotenv
+
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+
+
+# ============================
+# 로깅 설정
+# ============================
+logger = get_unified_logger()  # 로거 인스턴스 초기화
 
 # ============================
 # 로깅 메시지 상수
@@ -226,13 +231,13 @@ class ConfigManager:
     async def initialize(self) -> None:
         """초기 설정 로드 및 파일 감시 시작"""
         try:
-            unified_logger.info(f"{LOG_SYSTEM} 설정 시스템 초기화 시작")
+            logger.info(f"{LOG_SYSTEM} 설정 시스템 초기화 시작")
             
             # 설정 파일 로드
             settings = await self.load_settings()
             api_keys = await self.load_api_keys()
             
-            unified_logger.info(
+            logger.info(
                 f"{LOG_SYSTEM} 설정 로드 완료 | "
                 f"settings_size={len(settings)}, "
                 f"api_keys_size={len(api_keys)}"
@@ -241,10 +246,10 @@ class ConfigManager:
             # 파일 변경 감시 시작
             self._start_file_watching()
             
-            unified_logger.info(f"{LOG_SYSTEM} 설정 시스템 초기화 완료")
+            logger.info(f"{LOG_SYSTEM} 설정 시스템 초기화 완료")
             
         except Exception as e:
-            unified_logger.error(
+            logger.error(
                 f"{LOG_SYSTEM} 초기화 실패 | error={str(e)}",
                 exc_info=True
             )
@@ -256,14 +261,14 @@ class ConfigManager:
         self._file_observer = Observer()
         self._file_observer.schedule(event_handler, CONFIG_DIR, recursive=False)
         self._file_observer.start()
-        unified_logger.debug(f"{LOG_SYSTEM} 설정 파일 감시 시작")
+        logger.debug(f"{LOG_SYSTEM} 설정 파일 감시 시작")
 
     async def load_settings(self, retries: int = MAX_RETRIES) -> Dict:
         """settings.json 파일 로드"""
         for attempt in range(retries):
             try:
                 if attempt > 0:
-                    unified_logger.warning(
+                    logger.warning(
                         f"{LOG_SYSTEM} 설정 파일 재시도 | "
                         f"attempt={attempt + 1}/{retries}"
                     )
@@ -282,14 +287,14 @@ class ConfigManager:
                     self._settings = settings
                     self._last_update = time.time()
                     
-                    unified_logger.info(
+                    logger.info(
                         f"{LOG_SYSTEM} 설정 파일 로드 완료 | "
                         f"sections={list(settings.keys())}"
                     )
                     return settings
                     
             except json.JSONDecodeError as e:
-                unified_logger.error(
+                logger.error(
                     f"{LOG_SYSTEM} 설정 파일 JSON 파싱 실패 | "
                     f"error={str(e)}, line={e.lineno}, col={e.colno}",
                     exc_info=True
@@ -298,7 +303,7 @@ class ConfigManager:
                     raise LoadError(f"설정 파일 JSON 파싱 실패: {e}")
             except Exception as e:
                 if attempt == retries - 1:
-                    unified_logger.error(
+                    logger.error(
                         f"{LOG_SYSTEM} 설정 파일 로드 실패 | error={str(e)}",
                         exc_info=True
                     )
@@ -343,17 +348,17 @@ class ConfigManager:
 
         if errors:
             error_msg = ", ".join(errors)
-            unified_logger.error(f"{LOG_SYSTEM} API 키 로드 실패 | errors={error_msg}")
+            logger.error(f"{LOG_SYSTEM} API 키 로드 실패 | errors={error_msg}")
             raise LoadError(f"API 키 로드 실패: {error_msg}")
 
         self._api_keys = api_keys
-        unified_logger.info(f"{LOG_SYSTEM} API 키 로드 완료")
+        logger.info(f"{LOG_SYSTEM} API 키 로드 완료")
         return api_keys
 
     def _validate_settings(self, settings: Dict) -> None:
         """설정값 유효성 검증"""
         errors = []
-        unified_logger.debug(f"{LOG_SYSTEM} 설정 파일 검증 시작")
+        logger.debug(f"{LOG_SYSTEM} 설정 파일 검증 시작")
         
         def get_nested_value(data: dict, path: str):
             """중첩된 딕셔너리에서 값 가져오기"""
@@ -363,7 +368,7 @@ class ConfigManager:
                     current = current[key]
                 return current
             except (KeyError, TypeError):
-                unified_logger.warning(f"{LOG_SYSTEM} 필수 필드 누락: {path}")
+                logger.warning(f"{LOG_SYSTEM} 필수 필드 누락: {path}")
                 return None
 
         # 1. 필수 섹션 및 필드 검사
@@ -371,7 +376,7 @@ class ConfigManager:
             if section not in settings:
                 error_msg = f"필수 섹션 '{section}' 누락"
                 errors.append(error_msg)
-                unified_logger.error(f"{LOG_SYSTEM} {error_msg}")
+                logger.error(f"{LOG_SYSTEM} {error_msg}")
                 continue
                 
             section_data = settings[section]
@@ -382,7 +387,7 @@ class ConfigManager:
                 if value is None:
                     error_msg = f"필수 필드 '{section}.{field}' 누락"
                     errors.append(error_msg)
-                    unified_logger.error(f"{LOG_SYSTEM} {error_msg}")
+                    logger.error(f"{LOG_SYSTEM} {error_msg}")
                     continue
                 
                 # 타입 검사
@@ -395,7 +400,7 @@ class ConfigManager:
                                 f"(예상: {field_type}, 실제: {type(value)})"
                             )
                             errors.append(error_msg)
-                            unified_logger.error(f"{LOG_SYSTEM} {error_msg}")
+                            logger.error(f"{LOG_SYSTEM} {error_msg}")
                     else:
                         if not isinstance(value, field_type):
                             error_msg = (
@@ -403,16 +408,16 @@ class ConfigManager:
                                 f"(예상: {field_type}, 실제: {type(value)})"
                             )
                             errors.append(error_msg)
-                            unified_logger.error(f"{LOG_SYSTEM} {error_msg}")
+                            logger.error(f"{LOG_SYSTEM} {error_msg}")
             
         if errors:
-            unified_logger.error(
+            logger.error(
                 f"{LOG_SYSTEM} 설정 파일 검증 실패 | "
                 f"errors={json.dumps(errors, ensure_ascii=False)}"
             )
             raise ValidationError("설정 파일 검증 실패", {"errors": errors})
             
-        unified_logger.debug(f"{LOG_SYSTEM} 설정 파일 검증 완료")
+        logger.debug(f"{LOG_SYSTEM} 설정 파일 검증 완료")
 
     def _validate_api_keys(self, api_keys: Dict) -> None:
         """API 키 유효성 검증"""
@@ -495,7 +500,7 @@ class ConfigManager:
                 # 옵저버 알림
                 await self._notify_observers()
                 
-                unified_logger.info(f"{LOG_SYSTEM} 설정 파일 저장 완료")
+                logger.info(f"{LOG_SYSTEM} 설정 파일 저장 완료")
                 
         except Exception as e:
             raise SaveError(f"설정 파일 저장 실패: {e}")
@@ -512,10 +517,10 @@ class ConfigManager:
                 async with aiofiles.open(backup_path, 'w', encoding='utf-8') as dst:
                     await dst.write(content)
                     
-            unified_logger.info(f"{LOG_SYSTEM} 백업 파일 생성: {backup_path}")
+            logger.info(f"{LOG_SYSTEM} 백업 파일 생성: {backup_path}")
             
         except Exception as e:
-            unified_logger.error(f"{LOG_SYSTEM} 백업 파일 생성 실패: {e}")
+            logger.error(f"{LOG_SYSTEM} 백업 파일 생성 실패: {e}")
 
     def add_observer(self, callback) -> None:
         """설정 변경 옵저버 등록"""
@@ -536,7 +541,7 @@ class ConfigManager:
                 else:
                     observer(self._settings)
             except Exception as e:
-                unified_logger.error(f"{LOG_SYSTEM} 옵저버 알림 실패: {e}")
+                logger.error(f"{LOG_SYSTEM} 옵저버 알림 실패: {e}")
 
     def get_settings(self) -> Dict:
         """현재 설정값 조회"""
@@ -573,7 +578,7 @@ class ConfigManager:
         if self._file_observer:
             self._file_observer.stop()
             self._file_observer.join()
-        unified_logger.info(f"{LOG_SYSTEM} 설정 관리자 종료")
+        logger.info(f"{LOG_SYSTEM} 설정 관리자 종료")
 
 # ============================
 # 파일 변경 감시 핸들러
@@ -601,7 +606,7 @@ class ConfigFileHandler(FileSystemEventHandler):
                             self.loop
                         )
                 except Exception as e:
-                    unified_logger.error(f"{LOG_SYSTEM} 설정 파일 변경 처리 중 오류: {e}")
+                    logger.error(f"{LOG_SYSTEM} 설정 파일 변경 처리 중 오류: {e}")
 
             elif event.src_path.endswith('settings.json'):
                 try:
@@ -611,23 +616,23 @@ class ConfigFileHandler(FileSystemEventHandler):
                             self.loop
                         )
                 except Exception as e:
-                    unified_logger.error(f"{LOG_SYSTEM} 설정 파일 변경 처리 중 오류: {e}")
+                    logger.error(f"{LOG_SYSTEM} 설정 파일 변경 처리 중 오류: {e}")
 
     async def _handle_api_keys_change(self):
         """API 키 파일 변경 처리"""
         try:
             await self.config_manager.reload_api_keys()
-            unified_logger.info(f"{LOG_SYSTEM} API 키 설정이 다시 로드되었습니다.")
+            logger.info(f"{LOG_SYSTEM} API 키 설정이 다시 로드되었습니다.")
         except Exception as e:
-            unified_logger.error(f"{LOG_SYSTEM} API 키 설정 리로드 중 오류: {e}")
+            logger.error(f"{LOG_SYSTEM} API 키 설정 리로드 중 오류: {e}")
 
     async def _handle_settings_change(self):
         """설정 파일 변경 처리"""
         try:
             await self.config_manager.reload_settings()
-            unified_logger.info(f"{LOG_SYSTEM} 일반 설정이 다시 로드되었습니다.")
+            logger.info(f"{LOG_SYSTEM} 일반 설정이 다시 로드되었습니다.")
         except Exception as e:
-            unified_logger.error(f"{LOG_SYSTEM} 설정 리로드 중 오류: {e}")
+            logger.error(f"{LOG_SYSTEM} 설정 리로드 중 오류: {e}")
 
 # ============================
 # 전역 인스턴스

@@ -1,28 +1,42 @@
-# file: orderbook/websocket/websocket_manager.py
+"""
+웹소켓 관리자 모듈
+
+이 모듈은 여러 거래소의 웹소켓 연결을 중앙에서 관리하는 기능을 제공합니다.
+주요 기능:
+1. 거래소별 웹소켓 연결 관리
+2. 메시지 큐 처리
+3. 연결 상태 모니터링
+4. 메트릭 수집 및 관리
+5. 메모리 사용량 모니터링
+
+작성자: CrossKimp Arbitrage Bot 개발팀
+최종수정: 2024.02
+"""
 
 import asyncio
 import time
-from typing import Callable, List, Dict, Any, Optional
-
-from fastapi import WebSocket, WebSocketDisconnect
-from config.config_loader import get_settings
-from utils.logging.logger import (
-    unified_logger, queue_logger, EXCHANGE_LOGGER_MAP
-)
-from orderbook.websocket.binance_spot_websocket import BinanceSpotWebsocket
-from orderbook.websocket.binance_future_websocket import BinanceFutureWebsocket
-from orderbook.websocket.bybit_spot_websocket import BybitSpotWebsocket
-from orderbook.websocket.bybit_future_websocket import BybitFutureWebsocket
-from orderbook.websocket.upbit_websocket import UpbitWebsocket
-from orderbook.websocket.bithumb_spot_websocket import BithumbSpotWebsocket
-from crosskimp.telegrambot.notification.telegram_bot import send_telegram_message
 import psutil
 from datetime import datetime
-from orderbook.manager.websocket_metrics_manager import WebsocketMetricsManager
-from core.ws_usdtkrw import WsUsdtKrwMonitor
-from core.market_price_monitor import MarketPriceMonitor
-from config.constants import EXCHANGE_NAMES_KR
+from typing import Callable, List, Dict, Any, Optional
+from fastapi import WebSocket, WebSocketDisconnect
 
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger
+from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
+from crosskimp.ob_collector.config.config_loader import get_settings
+from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM
+from crosskimp.ob_collector.orderbook.manager.websocket_metrics_manager import WebsocketMetricsManager
+from crosskimp.ob_collector.orderbook.websocket.binance_spot_websocket import BinanceSpotWebsocket
+from crosskimp.ob_collector.orderbook.websocket.binance_future_websocket import BinanceFutureWebsocket
+from crosskimp.ob_collector.orderbook.websocket.bybit_spot_websocket import BybitSpotWebsocket
+from crosskimp.ob_collector.orderbook.websocket.bybit_future_websocket import BybitFutureWebsocket
+from crosskimp.ob_collector.orderbook.websocket.upbit_websocket import UpbitWebsocket
+from crosskimp.ob_collector.orderbook.websocket.bithumb_spot_websocket import BithumbSpotWebsocket
+
+from crosskimp.telegrambot.notification.telegram_bot import send_telegram_message
+
+# ============================
+# 상수 정의
+# ============================
 EXCHANGE_CLASS_MAP = {
     "binance": BinanceSpotWebsocket,
     "binancefuture": BinanceFutureWebsocket,
@@ -31,6 +45,12 @@ EXCHANGE_CLASS_MAP = {
     "upbit": UpbitWebsocket,
     "bithumb": BithumbSpotWebsocket
 }
+
+# ============================
+# 로깅 설정
+# ============================
+logger = get_unified_logger()
+queue_logger = get_queue_logger()
 
 class WebsocketManager:
     """
@@ -45,14 +65,11 @@ class WebsocketManager:
         self.callback: Optional[Callable[[str, dict], None]] = None
         self.start_time = time.time()  # 시작 시간 추가
 
-        # logger 초기화 추가
-        self.logger = unified_logger  # 기본 로거로 unified_logger 사용
-
         # 메트릭 매니저 초기화
         self.metrics_manager = WebsocketMetricsManager()
 
         # 시장가격 모니터 초기화
-        self.market_price_monitor = MarketPriceMonitor()
+        # self.market_price_monitor = MarketPriceMonitor()
         self.current_usdt_rate = 0.0  # USDT 환율 캐시
 
         # 지연 감지 설정
@@ -90,7 +107,7 @@ class WebsocketManager:
             self.metrics_manager.metrics["last_ping_times"][exchange] = current_time * 1000
             self.metrics_manager.metrics["message_rates"][exchange] = 0.0
             self.metrics_manager.metrics["last_message_times"][exchange] = current_time * 1000
-            self.logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 메트릭 초기화 완료")
+            logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 메트릭 초기화 완료")
 
     def register_callback(self, callback: Callable[[str, dict], None]):
         self.callback = callback
@@ -104,8 +121,8 @@ class WebsocketManager:
     def update_usdt_rate(self, rate: float):
         """USDT 환율 업데이트"""
         self.current_usdt_rate = rate
-        if hasattr(self, 'market_price_monitor'):
-            self.market_price_monitor.update_usdt_rate(rate)
+        # if hasattr(self, 'market_price_monitor'):
+        #     self.market_price_monitor.update_usdt_rate(rate)
 
     async def process_queue(self):
         """메시지 큐 처리 -> 메시지 카운트 증가, 콜백 호출"""
@@ -114,19 +131,16 @@ class WebsocketManager:
                 key, data = await self.output_queue.get()
                 current_time = time.time() * 1000
                 
-                # 거래소별 로거 선택
-                logger = EXCHANGE_LOGGER_MAP.get(key.lower(), unified_logger)
-
                 # 큐 데이터 로깅
-                queue_logger.debug(
-                    f"[Queue] Raw Data | exchange={key}, "
-                    f"time={datetime.fromtimestamp(current_time/1000).strftime('%H:%M:%S.%f')}, "
-                    f"data={data}"
+                queue_logger.info(
+                    f"큐 데이터 - "
+                    f"{data}"
                 )
 
                 # 시장가격 모니터에 데이터 전달
-                self.market_price_monitor.update_orderbook(key, data)
-                self.market_price_monitor.calculate_market_price()
+                # if self.market_price_monitor:
+                #     self.market_price_monitor.update_orderbook(key, data)
+                #     self.market_price_monitor.calculate_market_price()
 
                 # 핑/퐁 메시지인 경우 레이턴시 계산
                 if isinstance(data, dict) and data.get('type') == 'pong':
@@ -138,7 +152,7 @@ class WebsocketManager:
                         self.metrics_manager.metrics["latencies"][key].append(latency)
                         self.metrics_manager.metrics["latencies"][key] = self.metrics_manager.metrics["latencies"][key][-100:]
                         logger.debug(
-                            f"[Queue] {key} 레이턴시 업데이트 | "
+                            f"[{key}] 레이턴시 업데이트 | "
                             f"latency={latency:.2f}ms, "
                             f"avg={sum(self.metrics_manager.metrics['latencies'][key])/len(self.metrics_manager.metrics['latencies'][key]):.2f}ms"
                         )
@@ -152,13 +166,6 @@ class WebsocketManager:
                         else data["type"]  # snapshot/delta인 경우
                     )
 
-                # 거래소별 로거로 메시지 로깅
-                # logger.debug(
-                #     f"[Queue] 메시지 수신 | "
-                #     f"type={msg_type}, "
-                #     f"symbol={data.get('symbol', 'unknown')}"
-                # )
-
                 self.update_metrics(key, "message")
 
                 if self.callback:
@@ -168,9 +175,8 @@ class WebsocketManager:
                 
             except Exception as e:
                 self.update_metrics("unknown", "error")
-                logger = unified_logger  # 에러 상황에서는 unified_logger 사용
                 logger.error(
-                    f"[Queue] 메시지 처리 실패 | error={str(e)}",
+                    f"{LOG_SYSTEM} 큐 처리 실패 | error={str(e)}",
                     exc_info=True
                 )
 
@@ -179,19 +185,16 @@ class WebsocketManager:
             exchange_name_lower = exchange_name.lower()
             ws_class = EXCHANGE_CLASS_MAP.get(exchange_name_lower)
             
-            # 거래소별 로거 선택
-            logger = EXCHANGE_LOGGER_MAP.get(exchange_name_lower, unified_logger)
-            
             if not ws_class:
-                logger.error(f"[WebsocketManager] 지원하지 않는 거래소: {exchange_name}")
+                logger.error(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 지원하지 않는 거래소")
                 return
 
             if not symbols:
-                logger.warning(f"[WebsocketManager] 구독할 심볼이 없음: {exchange_name}")
+                logger.warning(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 구독할 심볼이 없음")
                 return
 
             logger.info(
-                f"[WebsocketManager][{exchange_name}] 웹소켓 시작 | "
+                f"[{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 웹소켓 시작 | "
                 f"symbols={len(symbols)}개: {symbols}"
             )
 
@@ -220,7 +223,7 @@ class WebsocketManager:
                 for idx, group_syms in enumerate(symbol_groups):
                     instance_key = f"{exchange_name_lower}_{idx}"
                     logger.info(
-                        f"[WebsocketManager] {exchange_name} 그룹 {idx+1}/{len(symbol_groups)} 시작 | "
+                        f"[{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 그룹 {idx+1}/{len(symbol_groups)} 시작 | "
                         f"symbols={group_syms}"
                     )
                     
@@ -253,9 +256,8 @@ class WebsocketManager:
                 )
 
         except Exception as e:
-            logger = EXCHANGE_LOGGER_MAP.get(exchange_name_lower, unified_logger)
             logger.error(
-                f"[WebsocketManager][{exchange_name}] 시작 실패 | "
+                f"{LOG_SYSTEM} [{exchange_name}] 시작 실패 | "
                 f"error={str(e)}, symbols={symbols}",
                 exc_info=True
             )
@@ -263,19 +265,18 @@ class WebsocketManager:
 
     async def start_all_websockets(self, filtered_data: Dict[str, List[str]]):
         try:
-            unified_logger.info(f"[WebsocketManager] 웹소켓 시작 | filtered_data={filtered_data}")
+            logger.info(f"{LOG_SYSTEM} 웹소켓 시작 | filtered_data={filtered_data}")
             
             self.tasks['queue'] = asyncio.create_task(self.process_queue())
-            unified_logger.info("[WebsocketManager] 큐 처리 태스크 생성 완료")
+            logger.info(f"{LOG_SYSTEM} 큐 처리 태스크 생성 완료")
             
             for exchange, syms in filtered_data.items():
-                logger = EXCHANGE_LOGGER_MAP.get(exchange.lower(), unified_logger)
-                logger.info(f"[WebsocketManager][{exchange}] 시작 준비 | symbols={syms}")
+                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 시작 준비 | symbols={syms}")
                 await self.start_exchange_websocket(exchange, syms)
-                logger.info(f"[WebsocketManager][{exchange}] 시작 완료")
+                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 시작 완료")
                 
         except Exception as e:
-            unified_logger.error(f"[WebsocketManager] 웹소켓 시작 실패: {e}", exc_info=True)
+            logger.error(f"{LOG_SYSTEM} 웹소켓 시작 실패: {e}", exc_info=True)
 
     async def shutdown(self):
         self.stop_event.set()
@@ -290,17 +291,17 @@ class WebsocketManager:
                 pass
         self.websockets.clear()
         self.tasks.clear()
-        unified_logger.info("모든 웹소켓 종료 완료")
+        logger.info(f"{LOG_SYSTEM} 모든 웹소켓 종료 완료")
 
     async def add_connection(self, websocket):
         async with self._connection_lock:
             self._active_connections.add(websocket)
-            self.logger.info(f"[WebsocketManager] New connection added. Total: {len(self._active_connections)}")
+            logger.info(f"{LOG_SYSTEM} 새 연결 추가됨. 총 {len(self._active_connections)}개")
     
     async def remove_connection(self, websocket):
         async with self._connection_lock:
             self._active_connections.discard(websocket)
-            self.logger.info(f"[WebsocketManager] Connection removed. Remaining: {len(self._active_connections)}")
+            logger.info(f"{LOG_SYSTEM} 연결 제거됨. 남은 연결 {len(self._active_connections)}개")
     
     async def is_connected(self, websocket) -> bool:
         async with self._connection_lock:
@@ -318,8 +319,8 @@ class WebsocketManager:
                     connection_status = self.metrics_manager.metrics["connection_status"].get(exchange, False)
                     message_count = self.metrics_manager.metrics["message_counts"].get(exchange, 0)
                     
-                    self.logger.info(
-                        f"[{exchange}] 연결 상태 체크 | "
+                    logger.info(
+                        f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결 상태 체크 | "
                         f"연결={connection_status}, "
                         f"지연={delay/1000:.1f}초, "
                         f"총 메시지={message_count:,}개"
@@ -328,7 +329,7 @@ class WebsocketManager:
                 await asyncio.sleep(60)  # 1분마다 체크
                 
             except Exception as e:
-                self.logger.error(f"연결 상태 체크 중 오류: {e}")
+                logger.error(f"{LOG_SYSTEM} 연결 상태 체크 중 오류: {e}")
 
     async def cleanup_old_metrics(self):
         self.metrics_manager.cleanup_old_metrics()
@@ -339,8 +340,8 @@ class WebsocketManager:
                 process = psutil.Process()
                 memory_info = process.memory_info()
                 
-                self.logger.info(
-                    f"메모리 사용량 | "
+                logger.info(
+                    f"{LOG_SYSTEM} 메모리 사용량 | "
                     f"RSS={memory_info.rss/1024/1024:.1f}MB, "
                     f"VMS={memory_info.vms/1024/1024:.1f}MB"
                 )
@@ -348,7 +349,7 @@ class WebsocketManager:
                 await asyncio.sleep(300)  # 5분마다 체크
                 
             except Exception as e:
-                self.logger.error(f"메모리 모니터링 중 오류: {e}")
+                logger.error(f"{LOG_SYSTEM} 메모리 모니터링 중 오류: {e}")
 
     def get_usdt_price(self) -> float:
         """현재 USDT/KRW 가격 조회"""
@@ -396,7 +397,7 @@ class WebsocketManager:
                         "last_message_time": metrics.get("last_message_time", 0)
                     }
             except Exception as e:
-                self.logger.error(f"메트릭 수집 중 오류: {str(e)}", exc_info=True)
+                logger.error(f"메트릭 수집 중 오류: {str(e)}", exc_info=True)
             
             # 업타임 계산
             uptime_seconds = int(current_time - self.start_time)
@@ -416,8 +417,8 @@ class WebsocketManager:
             }
             
             # 데이터 전송 전 로깅
-            self.logger.debug(
-                f"[WebsocketManager] 클라이언트 데이터 전송 | "
+            logger.debug(
+                f"{LOG_SYSTEM} 클라이언트 데이터 전송 | "
                 f"USDT 가격: 업비트={usdt_prices.get('upbit', 0):,.2f}, "
                 f"빗썸={usdt_prices.get('bithumb', 0):,.2f}, "
                 f"평균={usdt_prices.get('average', 0):,.2f}"
@@ -428,5 +429,5 @@ class WebsocketManager:
         except WebSocketDisconnect:
             raise
         except Exception as e:
-            self.logger.error(f"클라이언트 데이터 전송 중 오류: {str(e)}", exc_info=True)
+            logger.error(f"{LOG_SYSTEM} 클라이언트 데이터 전송 중 오류: {str(e)}", exc_info=True)
             raise

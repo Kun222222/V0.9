@@ -5,7 +5,7 @@ import time
 from typing import Dict, Optional, List
 from aiohttp import ClientSession, ClientTimeout
 
-from utils.logging.logger import bybit_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
 from orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
 
@@ -18,9 +18,12 @@ async def get_global_aiohttp_session() -> ClientSession:
     global GLOBAL_AIOHTTP_SESSION
     async with GLOBAL_SESSION_LOCK:
         if GLOBAL_AIOHTTP_SESSION is None or GLOBAL_AIOHTTP_SESSION.closed:
-            bybit_logger.info("[BybitSpot] Creating global aiohttp session")
+            logger.info("[BybitSpot] Creating global aiohttp session")
             GLOBAL_AIOHTTP_SESSION = ClientSession(timeout=ClientTimeout(total=None))
         return GLOBAL_AIOHTTP_SESSION
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 class BybitSpotOrderBookManager(BaseOrderBookManager):
     """
@@ -31,7 +34,7 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
         self.exchangename = "bybit"
         # 바이낸스와 유사하게 snapshot_url 로 명명
         self.snapshot_url = "https://api.bybit.com/v5/market/orderbook"
-        self.logger = bybit_logger
+        self.logger = logger
         
         # 기존 초기화 코드
         self.orderbooks: Dict[str, OrderBook] = {}
@@ -63,38 +66,38 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
         for attempt in range(max_retries):
             try:
                 session = await get_global_aiohttp_session()
-                bybit_logger.info(
+                logger.info(
                     f"[BybitSpot] fetch_snapshot({symbol}) attempt={attempt+1}/{max_retries}, url={url}, params={params}"
                 )
                 async with session.get(url, params=params, timeout=10) as resp:
-                    bybit_logger.info(f"[BybitSpot] {symbol} snapshot response status={resp.status}")
+                    logger.info(f"[BybitSpot] {symbol} snapshot response status={resp.status}")
                     if resp.status == 200:
                         data = await resp.json()
-                        bybit_logger.debug(f"[BybitSpot] {symbol} snapshot raw: {data}")
+                        logger.debug(f"[BybitSpot] {symbol} snapshot raw: {data}")
                         if data.get("retCode") == 0:
                             result = data.get("result", {})
                             parsed = self.parse_snapshot(result, symbol)
                             if parsed:
-                                bybit_logger.info(f"[BybitSpot] {symbol} snapshot parse success: seq={parsed.get('sequence')}")
+                                logger.info(f"[BybitSpot] {symbol} snapshot parse success: seq={parsed.get('sequence')}")
                                 return parsed
                             else:
-                                bybit_logger.error(f"[BybitSpot] {symbol} parse_snapshot returned None")
+                                logger.error(f"[BybitSpot] {symbol} parse_snapshot returned None")
                         else:
-                            bybit_logger.error(
+                            logger.error(
                                 f"[BybitSpot] {symbol} snapshot fail retCode={data.get('retCode')}, retMsg={data.get('retMsg')}"
                             )
                     else:
-                        bybit_logger.error(f"[BybitSpot] {symbol} snapshot HTTP error status={resp.status}")
+                        logger.error(f"[BybitSpot] {symbol} snapshot HTTP error status={resp.status}")
             except asyncio.TimeoutError:
-                bybit_logger.error(f"[BybitSpot] {symbol} snapshot timeout (attempt={attempt+1})")
+                logger.error(f"[BybitSpot] {symbol} snapshot timeout (attempt={attempt+1})")
             except Exception as e:
-                bybit_logger.error(f"[BybitSpot] {symbol} snapshot exception: {e}", exc_info=True)
+                logger.error(f"[BybitSpot] {symbol} snapshot exception: {e}", exc_info=True)
 
             if attempt < max_retries - 1:
                 await asyncio.sleep(delay)
                 delay *= 2
 
-        bybit_logger.error(f"[BybitSpot] {symbol} all snapshot attempts failed.")
+        logger.error(f"[BybitSpot] {symbol} all snapshot attempts failed.")
         return None
 
     def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
@@ -116,7 +119,7 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
                 if px > 0 and qty > 0:
                     asks.append([px, qty])
 
-            bybit_logger.info(
+            logger.info(
                 f"[BybitSpot] parse_snapshot({symbol}) seq={seq}, ts={ts}, "
                 f"bids_len={len(bids)}, asks_len={len(asks)}"
             )
@@ -130,7 +133,7 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
                 "type": "snapshot"
             }
         except Exception as e:
-            bybit_logger.error(f"[BybitSpot] parse_snapshot error: {e}", exc_info=True)
+            logger.error(f"[BybitSpot] parse_snapshot error: {e}", exc_info=True)
             return None
 
     async def initialize_orderbook(self, symbol: str, snapshot: dict) -> ValidationResult:
@@ -141,7 +144,7 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
             seq = snapshot.get("sequence")
             if seq is None:
                 err_msg = f"[BybitSpot] {symbol} snapshot has no sequence"
-                bybit_logger.error(err_msg)
+                logger.error(err_msg)
                 return ValidationResult(False, [err_msg])
 
             self.sequence_states[symbol] = {
@@ -149,7 +152,7 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
                 "last_seq": seq,
                 "first_delta_applied": False
             }
-            bybit_logger.info(f"[BybitSpot] initialize_orderbook({symbol}), seq={seq}")
+            logger.info(f"[BybitSpot] initialize_orderbook({symbol}), seq={seq}")
 
             # 오더북 생성
             if symbol not in self.orderbooks:
@@ -163,17 +166,17 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
             ob = self.orderbooks[symbol]
             snap_res = await ob.update(snapshot)
             if not snap_res.is_valid:
-                bybit_logger.error(
+                logger.error(
                     f"[BybitSpot] {symbol} snapshot apply fail: {snap_res.error_messages}"
                 )
                 return snap_res
 
-            bybit_logger.info(f"[BybitSpot] {symbol} orderbook initialized with snapshot seq={seq}")
+            logger.info(f"[BybitSpot] {symbol} orderbook initialized with snapshot seq={seq}")
             await self._apply_buffered_events(symbol)
             return snap_res
 
         except Exception as e:
-            bybit_logger.error(f"[BybitSpot] initialize_orderbook({symbol}) error: {e}", exc_info=True)
+            logger.error(f"[BybitSpot] initialize_orderbook({symbol}) error: {e}", exc_info=True)
             return ValidationResult(False, [str(e)])
 
     async def update(self, symbol: str, data: dict) -> ValidationResult:
@@ -185,14 +188,14 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
             self.buffer_events[symbol] = []
         if len(self.buffer_events[symbol]) >= self.max_buffer_size:
             removed = self.buffer_events[symbol].pop(0)
-            bybit_logger.warning(f"[BybitSpot] {symbol} buffer overflow, removed oldest event seq={removed.get('sequence')}")
+            logger.warning(f"[BybitSpot] {symbol} buffer overflow, removed oldest event seq={removed.get('sequence')}")
 
         self.buffer_events[symbol].append(data)
-        bybit_logger.debug(f"[BybitSpot] {symbol} new event buffered seq={data.get('sequence')}")
+        logger.debug(f"[BybitSpot] {symbol} new event buffered seq={data.get('sequence')}")
 
         st = self.sequence_states.get(symbol, {})
         if not st.get("initialized"):
-            bybit_logger.debug(f"[BybitSpot] {symbol} not initialized yet -> only buffering.")
+            logger.debug(f"[BybitSpot] {symbol} not initialized yet -> only buffering.")
             return ValidationResult(True, [])
 
         # 이미 초기화된 상태라면 버퍼 적용
@@ -206,7 +209,7 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
         """
         st = self.sequence_states.get(symbol)
         if not st or not st["initialized"]:
-            bybit_logger.debug(f"[BybitSpot] _apply_buffered_events: {symbol} not inited -> return.")
+            logger.debug(f"[BybitSpot] _apply_buffered_events: {symbol} not inited -> return.")
             return
 
         last_seq = st["last_seq"]
@@ -221,25 +224,25 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
             
             # 시퀀스 번호 체계가 다른 경우를 위한 처리
             if last_seq > 1000000000 and seq < 1000000000:  # 스냅샷과 델타의 시퀀스 체계가 다른 경우
-                bybit_logger.info(f"[BybitSpot] {symbol} sequence system changed: last_seq={last_seq} -> new_seq={seq}")
+                logger.info(f"[BybitSpot] {symbol} sequence system changed: last_seq={last_seq} -> new_seq={seq}")
                 last_seq = seq - 1  # 새로운 시퀀스 체계로 전환
                 st["last_seq"] = last_seq
             
             if seq <= last_seq:
-                bybit_logger.debug(f"[BybitSpot] _apply_buffered_events: skip old seq={seq}, last_seq={last_seq}")
+                logger.debug(f"[BybitSpot] _apply_buffered_events: skip old seq={seq}, last_seq={last_seq}")
                 continue
 
             # gap 확인
             if seq > last_seq + 1:
                 gap_size = seq - (last_seq + 1)
-                bybit_logger.warning(
+                logger.warning(
                     f"[BybitSpot] {symbol} seq gap detected: last_seq={last_seq}, new_seq={seq}, gap={gap_size}"
                 )
 
             # 델타 적용
             res = await ob.update(evt)
             if not res.is_valid:
-                bybit_logger.error(
+                logger.error(
                     f"[BybitSpot] {symbol} delta apply fail seq={seq}, err={res.error_messages}"
                 )
                 continue
@@ -247,14 +250,14 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
             if not st["first_delta_applied"]:
                 ob.enable_cross_detection()
                 st["first_delta_applied"] = True
-                bybit_logger.info(f"[BybitSpot] {symbol} first delta applied -> enable cross detection")
+                logger.info(f"[BybitSpot] {symbol} first delta applied -> enable cross detection")
 
             last_seq = seq
             applied_count += 1
 
         # 버퍼 소진
         if applied_count > 0:
-            bybit_logger.debug(
+            logger.debug(
                 f"[BybitSpot] {symbol} applied_count={applied_count} new_last_seq={last_seq}"
             )
 
@@ -272,18 +275,18 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
                     current_time = time.time()
                     last_log_time = self.last_queue_log_time.get(symbol, 0)
                     if current_time - last_log_time >= self.queue_log_interval:
-                        bybit_logger.debug(f"[BybitSpot] {symbol} final OB queued")
+                        logger.debug(f"[BybitSpot] {symbol} final OB queued")
                         self.last_queue_log_time[symbol] = current_time
                         
                 except Exception as e:
-                    bybit_logger.error(f"[BybitSpot] queue fail: {e}", exc_info=True)
+                    logger.error(f"[BybitSpot] queue fail: {e}", exc_info=True)
 
     def clear_symbol(self, symbol: str):
         self.orderbooks.pop(symbol, None)
         self.buffer_events.pop(symbol, None)
         self.sequence_states.pop(symbol, None)
         self.snapshot_retries.pop(symbol, None)
-        bybit_logger.info(f"[BybitSpot] {symbol} data cleared")
+        logger.info(f"[BybitSpot] {symbol} data cleared")
 
     def clear_all(self):
         syms = list(self.orderbooks.keys())
@@ -291,4 +294,4 @@ class BybitSpotOrderBookManager(BaseOrderBookManager):
         self.buffer_events.clear()
         self.sequence_states.clear()
         self.snapshot_retries.clear()
-        bybit_logger.info(f"[BybitSpot] all data cleared. syms={syms}")
+        logger.info(f"[BybitSpot] all data cleared. syms={syms}")

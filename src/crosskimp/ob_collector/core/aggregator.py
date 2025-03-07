@@ -15,15 +15,17 @@
 """
 
 import asyncio
-import csv
 import json
 import os
 from datetime import datetime
 import aiohttp
 from typing import Dict, List, Set, Optional, Tuple
 
-from utils.logging.logger import unified_logger
-from config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 # ============================
 # 상수 정의
@@ -83,10 +85,10 @@ async def make_request(
         async with session.get(url, params=params, timeout=REQUEST_TIMEOUT) as resp:
             if resp.status == 200:
                 return await resp.json()
-            unified_logger.error(f"[Request] HTTP {resp.status}: {url}")
+            logger.error(f"[Request] HTTP {resp.status}: {url}")
             return None
     except Exception as e:
-        unified_logger.error(f"[Request] 요청 실패 ({url}): {e}")
+        logger.error(f"[Request] 요청 실패 ({url}): {e}")
         return None
 
 # ============================
@@ -103,7 +105,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        unified_logger.info(
+        logger.info(
             f"[{EXCHANGE_NAMES_KR['upbit']}] 심볼/거래량 조회 시작 | "
             f"최소거래량={min_volume:,.0f} KRW"
         )
@@ -112,7 +114,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             # 1. KRW 마켓 심볼 조회
             data = await make_request(session, UPBIT_URLS["market"])
             if not data:
-                unified_logger.error("[Upbit] 마켓 정보 조회 실패")
+                logger.error(f"[{EXCHANGE_NAMES_KR['upbit']}] 마켓 정보 조회 실패")
                 return []
                 
             symbols = [
@@ -121,7 +123,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 if item["market"].startswith("KRW-")
             ]
             
-            unified_logger.info(f"[{EXCHANGE_NAMES_KR['upbit']}] KRW 마켓 심볼 조회 완료: {len(symbols)}개")
+            logger.info(f"[{EXCHANGE_NAMES_KR['upbit']}] KRW 마켓 심볼 조회 완료: {len(symbols)}개")
             
             # 2. 거래량 조회 (청크 단위로 분할)
             volume_dict: Dict[str, float] = {}
@@ -129,7 +131,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             
             for i, chunk in enumerate(chunks, 1):
                 markets = ",".join(f"KRW-{symbol}" for symbol in chunk)
-                unified_logger.info(
+                logger.info(
                     f"[{EXCHANGE_NAMES_KR['upbit']}] 거래량 조회 진행 중 | "
                     f"청크={i}/{len(chunks)}, 심볼={len(chunk)}개"
                 )
@@ -141,7 +143,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 )
                 
                 if not data:
-                    unified_logger.warning(
+                    logger.warning(
                         f"[{EXCHANGE_NAMES_KR['upbit']}] 거래량 조회 실패 | "
                         f"청크={i}/{len(chunks)}, markets={markets}"
                     )
@@ -151,7 +153,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                     symbol = item['market'].split('-')[1]
                     volume = float(item.get('acc_trade_price_24h', 0))
                     volume_dict[symbol] = volume
-                    # unified_logger.info(
+                    # logger.info(
                     #     f"[Upbit] 거래량 데이터 | "
                     #     f"symbol={symbol}, volume={volume:,.0f} KRW"
                     # )
@@ -164,17 +166,17 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 if vol >= min_volume
             ]
             
-            unified_logger.info(
+            logger.info(
                 f"[{EXCHANGE_NAMES_KR['upbit']}] 필터링 결과 | "
                 f"전체={len(symbols)}개, "
                 f"거래량 {min_volume:,.0f} KRW 이상={len(filtered_symbols)}개"
             )
-            unified_logger.info(f"[{EXCHANGE_NAMES_KR['upbit']}] 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.info(f"[{EXCHANGE_NAMES_KR['upbit']}] 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
     except Exception as e:
-        unified_logger.error(
+        logger.error(
             f"[{EXCHANGE_NAMES_KR['upbit']}] 심볼/거래량 조회 실패: {str(e)}",
             exc_info=True
         )
@@ -194,7 +196,7 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        unified_logger.info(
+        logger.info(
             f"[{EXCHANGE_NAMES_KR['bithumb']}] 심볼/거래량 조회 시작 | "
             f"최소거래량={min_volume:,.0f} KRW"
         )
@@ -202,7 +204,7 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
         async with aiohttp.ClientSession() as session:
             data = await make_request(session, BITHUMB_URLS["ticker"])
             if not data or data.get("status") != "0000":
-                unified_logger.error(
+                logger.error(
                     f"[{EXCHANGE_NAMES_KR['bithumb']}] API 응답 오류 | "
                     f"status={data.get('status') if data else 'No data'}"
                 )
@@ -218,27 +220,27 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
                     volume = float(market_data[symbol].get("acc_trade_value_24H", 0))
                     if volume >= min_volume:
                         filtered_symbols.append(symbol)
-                    # unified_logger.info(
+                    # logger.info(
                     #     f"[Bithumb] 거래량 데이터 | "
                     #     f"symbol={symbol}, volume={volume:,.0f} KRW"
                     # )
                 except (KeyError, ValueError) as e:
-                    unified_logger.warning(
+                    logger.warning(
                         f"[Bithumb] 거래량 파싱 실패 | "
                         f"symbol={symbol}, error={str(e)}"
                     )
             
-            unified_logger.info(
+            logger.info(
                 f"[{EXCHANGE_NAMES_KR['bithumb']}] 필터링 결과 | "
                 f"전체={len(symbols)}개, "
                 f"거래량 {min_volume:,.0f} KRW 이상={len(filtered_symbols)}개"
             )
-            unified_logger.info(f"[{EXCHANGE_NAMES_KR['bithumb']}] 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.info(f"[{EXCHANGE_NAMES_KR['bithumb']}] 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
     except Exception as e:
-        unified_logger.error(
+        logger.error(
             f"[{EXCHANGE_NAMES_KR['bithumb']}] 심볼/거래량 조회 실패: {str(e)}",
             exc_info=True
         )
@@ -258,13 +260,13 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        unified_logger.info(f"[{EXCHANGE_NAMES_KR['binance']}] 심볼 조회 시작")
+        logger.info(f"[{EXCHANGE_NAMES_KR['binance']}] 심볼 조회 시작")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot/Margin 심볼
             data = await make_request(session, BINANCE_URLS["spot"])
             if not data:
-                unified_logger.error(f"[{EXCHANGE_NAMES_KR['binance']}] Spot API 응답 실패")
+                logger.error(f"[{EXCHANGE_NAMES_KR['binance']}] Spot API 응답 실패")
                 return []
                 
             spot_symbols = {
@@ -281,7 +283,7 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
                 and s["status"] == "TRADING"
             }
             
-            unified_logger.info(
+            logger.info(
                 f"[{EXCHANGE_NAMES_KR['binance']}] Spot/Margin 심볼 조회 완료 | "
                 f"spot={len(spot_symbols)}개, margin={len(margin_symbols)}개"
             )
@@ -289,7 +291,7 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             # 2. Future 심볼
             data = await make_request(session, BINANCE_URLS["future"])
             if not data:
-                unified_logger.error(f"[{EXCHANGE_NAMES_KR['binance']}] Future API 응답 실패")
+                logger.error(f"[{EXCHANGE_NAMES_KR['binance']}] Future API 응답 실패")
                 return []
                 
             future_symbols = {
@@ -298,7 +300,7 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
                 if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
             }
             
-            unified_logger.info(
+            logger.info(
                 f"[{EXCHANGE_NAMES_KR['binance']}] Future 심볼 조회 완료 | "
                 f"future={len(future_symbols)}개"
             )
@@ -306,19 +308,19 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             # 3. 교집합 계산
             common_symbols = spot_symbols & margin_symbols & future_symbols
             
-            unified_logger.info(
+            logger.info(
                 f"[{EXCHANGE_NAMES_KR['binance']}] 심볼 통계 | "
                 f"Spot({len(spot_symbols)}), "
                 f"Margin({len(margin_symbols)}), "
                 f"Future({len(future_symbols)}), "
                 f"공통={len(common_symbols)}"
             )
-            unified_logger.info(f"[{EXCHANGE_NAMES_KR['binance']}] 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"[{EXCHANGE_NAMES_KR['binance']}] 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
-        unified_logger.error(
+        logger.error(
             f"[{EXCHANGE_NAMES_KR['binance']}] 심볼 조회 실패: {str(e)}",
             exc_info=True
         )
@@ -338,13 +340,13 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        unified_logger.info(f"[{EXCHANGE_NAMES_KR['bybit']}] 심볼 조회 시작")
+        logger.info(f"[{EXCHANGE_NAMES_KR['bybit']}] 심볼 조회 시작")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot 심볼
             data = await make_request(session, BYBIT_URLS["spot"])
             if not data or data.get("retCode") != 0:
-                unified_logger.error(f"[{EXCHANGE_NAMES_KR['bybit']}] Spot API 응답 실패")
+                logger.error(f"[{EXCHANGE_NAMES_KR['bybit']}] Spot API 응답 실패")
                 return []
                 
             spot_symbols = {
@@ -356,7 +358,7 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             # 2. Future 심볼
             data = await make_request(session, BYBIT_URLS["future"])
             if not data or data.get("retCode") != 0:
-                unified_logger.error(f"[{EXCHANGE_NAMES_KR['bybit']}] Future API 응답 실패")
+                logger.error(f"[{EXCHANGE_NAMES_KR['bybit']}] Future API 응답 실패")
                 return []
                 
             future_symbols = {
@@ -368,16 +370,16 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             # 3. 교집합 계산
             common_symbols = spot_symbols & future_symbols
             
-            unified_logger.info(
+            logger.info(
                 f"[{EXCHANGE_NAMES_KR['bybit']}] 심볼 통계: "
                 f"Spot({len(spot_symbols)}), Future/Linear({len(future_symbols)})"
             )
-            unified_logger.info(f"[{EXCHANGE_NAMES_KR['bybit']}] 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"[{EXCHANGE_NAMES_KR['bybit']}] 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
-        unified_logger.error(
+        logger.error(
             f"[{EXCHANGE_NAMES_KR['bybit']}] 심볼 조회 실패: {str(e)}",
             exc_info=True
         )
@@ -405,7 +407,7 @@ async def get_paired_symbols(
         Dict[str, Set[str]]: 거래소별 최종 심볼 세트
     """
     try:
-        unified_logger.info("[Pairing] 거래소 간 동시 상장 분석 시작")
+        logger.info("[Pairing] 거래소 간 동시 상장 분석 시작")
         
         # 1. 국내 거래소 ↔ 해외 거래소 페어링
         pair_bithumb_binance = set(bithumb_symbols) & set(binance_symbols)
@@ -414,11 +416,11 @@ async def get_paired_symbols(
         pair_upbit_bybit = set(upbit_symbols) & set(bybit_symbols)
         
         # 2. 결과 로깅
-        unified_logger.info(f"{LOG_SYSTEM} === 거래소 간 동시 상장 현황 ===")
-        unified_logger.info(f"빗썸↔바이낸스: {len(pair_bithumb_binance)}개 → {sorted(list(pair_bithumb_binance))}")
-        unified_logger.info(f"빗썸↔바이빗: {len(pair_bithumb_bybit)}개 → {sorted(list(pair_bithumb_bybit))}")
-        unified_logger.info(f"업비트↔바이낸스: {len(pair_upbit_binance)}개 → {sorted(list(pair_upbit_binance))}")
-        unified_logger.info(f"업비트↔바이빗: {len(pair_upbit_bybit)}개 → {sorted(list(pair_upbit_bybit))}")
+        logger.info(f"{LOG_SYSTEM} === 거래소 간 동시 상장 현황 ===")
+        logger.info(f"빗썸↔바이낸스: {len(pair_bithumb_binance)}개 → {sorted(list(pair_bithumb_binance))}")
+        logger.info(f"빗썸↔바이빗: {len(pair_bithumb_bybit)}개 → {sorted(list(pair_bithumb_bybit))}")
+        logger.info(f"업비트↔바이낸스: {len(pair_upbit_binance)}개 → {sorted(list(pair_upbit_binance))}")
+        logger.info(f"업비트↔바이빗: {len(pair_upbit_bybit)}개 → {sorted(list(pair_upbit_bybit))}")
         
         # 3. 최종 심볼 세트 구성
         final_symbols = {
@@ -437,7 +439,7 @@ async def get_paired_symbols(
         return final_symbols
 
     except Exception as e:
-        unified_logger.error(f"[Pairing] 심볼 페어링 실패: {e}")
+        logger.error(f"[Pairing] 심볼 페어링 실패: {e}")
         return {}
 
 # ============================
@@ -490,8 +492,8 @@ class Aggregator:
             Dict[str, List[str]]: 거래소별 필터링된 심볼 목록
         """
         try:
-            unified_logger.info(f"{LOG_SYSTEM} === 심볼 필터링 시작 ===")
-            unified_logger.info(f"{LOG_SYSTEM} 최소 거래량: {self.min_volume:,} KRW")
+            logger.info(f"{LOG_SYSTEM} === 심볼 필터링 시작 ===")
+            logger.info(f"{LOG_SYSTEM} 최소 거래량: {self.min_volume:,} KRW")
             
             # 1. 거래소별 필터링
             filtered_data: Dict[str, List[str]] = {}
@@ -533,7 +535,7 @@ class Aggregator:
                                  .get("excluded_symbols", {})
                                  .get("list", []))
             
-            unified_logger.info(f"{LOG_SYSTEM} === 제외할 심볼 === {sorted(list(excluded_symbols))}")
+            logger.info(f"{LOG_SYSTEM} === 제외할 심볼 === {sorted(list(excluded_symbols))}")
             
             for exchange in filtered_data:
                 before_symbols = filtered_data[exchange]
@@ -544,21 +546,21 @@ class Aggregator:
                 
                 removed = set(before_symbols) - set(filtered_data[exchange])
                 if removed:
-                    unified_logger.info(
+                    logger.info(
                         f"[{EXCHANGE_NAMES_KR[exchange]}] 제외된 심볼: {sorted(list(removed))}"
                     )
             
             # # 4. 최종 결과 저장 및 로깅
             # self.save_filtered_symbols(filtered_data)
             
-            unified_logger.info(f"{LOG_SYSTEM} === 거래소별 최종 구독 심볼 ===")
+            logger.info(f"{LOG_SYSTEM} === 거래소별 최종 구독 심볼 ===")
             for exchange, symbols in filtered_data.items():
                 name = EXCHANGE_NAMES_KR.get(exchange, exchange)
-                unified_logger.info(f"[{name}] 구독 심볼: {len(symbols)}개 → {sorted(symbols)}")
+                logger.info(f"[{name}] 구독 심볼: {len(symbols)}개 → {sorted(symbols)}")
             
             return filtered_data
 
         except Exception as e:
-            unified_logger.error(f"{LOG_SYSTEM} 심볼 필터링 실패: {e}")
+            logger.error(f"{LOG_SYSTEM} 심볼 필터링 실패: {e}")
             return {}
 

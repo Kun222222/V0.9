@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Dict, Optional
 from datetime import datetime
-from utils.logging.logger import market_price_logger
+from utils.logging.logger import unified_logger
 from config.config_loader import get_settings
 
 class MarketPriceMonitor:
@@ -16,7 +16,7 @@ class MarketPriceMonitor:
     def __init__(self):
         self.settings = get_settings()
         self.base_order_amount = self.settings["trading"]["general"]["base_order_amount_krw"]
-        self.logger = market_price_logger
+        self.logger = unified_logger
         
         # 각 거래소별 최신 오더북 데이터 저장
         self.orderbooks = {

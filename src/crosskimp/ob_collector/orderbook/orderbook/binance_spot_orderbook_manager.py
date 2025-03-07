@@ -6,9 +6,12 @@ from typing import Dict, Optional, List
 from aiohttp import ClientSession, ClientTimeout
 import aiohttp
 
-from utils.logging.logger import binance_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
 from orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 GLOBAL_AIOHTTP_SESSION: Optional[ClientSession] = None
 GLOBAL_SESSION_LOCK = asyncio.Lock()
@@ -23,7 +26,7 @@ async def get_global_aiohttp_session() -> ClientSession:
                 timeout=ClientTimeout(total=30),
                 connector=aiohttp.TCPConnector(limit=100)  # 동시 연결 제한
             )
-            binance_logger.info("[binance] Created new global aiohttp session")
+            logger.info("[binance] Created new global aiohttp session")
         return GLOBAL_AIOHTTP_SESSION
 
 class BinanceSpotOrderBookManager(BaseOrderBookManager):
@@ -37,7 +40,6 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         super().__init__(depth)
         self.exchangename = "binance"
         self.snapshot_url = "https://api.binance.com/api/v3/depth"
-        self.logger = binance_logger
         
         # 버퍼 및 시퀀스 관리 초기화
         self.buffer_events: Dict[str, List[dict]] = {}
@@ -86,7 +88,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                 return res
 
             except Exception as e:
-                self.logger.error(
+                logger.error(
                     f"[{self.exchangename}] {symbol} 초기화 중 오류: {e}",
                     exc_info=True
                 )
@@ -112,7 +114,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         # 초기화 상태 확인
         st = self.sequence_states.get(symbol)
         if not st or not st["initialized"]:
-            self.logger.debug(f"[{self.exchangename}] {symbol} 초기화 전 버퍼링")
+            logger.debug(f"[{self.exchangename}] {symbol} 초기화 전 버퍼링")
             return ValidationResult(True, [])
 
         # 초기화 완료 후 이벤트 적용
@@ -135,7 +137,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         for attempt in range(max_retries):
             try:
                 session = await get_global_aiohttp_session()
-                self.logger.info(
+                logger.info(
                     f"[{self.exchangename}] {symbol} snapshot request attempt={attempt+1}/{max_retries}, depth={self.depth}"
                 )
                 async with session.get(self.snapshot_url, params=params) as resp:
@@ -143,15 +145,15 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                         data = await resp.json()
                         return self.parse_snapshot(data, symbol)
                     else:
-                        self.logger.error(
+                        logger.error(
                             f"[{self.exchangename}] {symbol} snapshot response error status={resp.status}"
                         )
             except asyncio.TimeoutError:
-                self.logger.error(
+                logger.error(
                     f"[{self.exchangename}] {symbol} snapshot timeout (attempt={attempt+1})"
                 )
             except Exception as e:
-                self.logger.error(
+                logger.error(
                     f"[{self.exchangename}] {symbol} snapshot fail: {e}",
                     exc_info=True
                 )
@@ -172,7 +174,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
     def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
         """스냅샷 데이터 파싱"""
         if "lastUpdateId" not in data:
-            self.logger.error(f"[{self.exchangename}] {symbol} snapshot missing lastUpdateId")
+            logger.error(f"[{self.exchangename}] {symbol} snapshot missing lastUpdateId")
             return None
 
         last_id = data["lastUpdateId"]
@@ -224,7 +226,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
 
             first_id = evt.get("first_update_id", 0)
             if first_id > last_id + 1:
-                self.logger.warning(
+                logger.warning(
                     f"[{self.exchangename}] {symbol} gap detected U={first_id}, last_id={last_id} -> skip resync"
                 )
 
@@ -236,7 +238,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                 last_id = final_id
                 applied_count += 1
             else:
-                self.logger.error(
+                logger.error(
                     f"[{self.exchangename}] {symbol} delta apply fail: {res.error_messages}"
                 )
 
@@ -256,7 +258,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                     self.last_queue_log_time[symbol] = current_time
                     
             except Exception as e:
-                self.logger.error(
+                logger.error(
                     f"[{self.exchangename}] queue fail: {e}",
                     exc_info=True
                 )

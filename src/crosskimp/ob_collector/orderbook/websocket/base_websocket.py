@@ -8,8 +8,8 @@ from asyncio import Event
 from dataclasses import dataclass
 from datetime import datetime
 
-from utils.logging.logger import unified_logger
-from utils.logging.logger import binance_logger, binance_future_logger, bybit_logger, bybit_future_logger, upbit_logger, bithumb_logger
+from utils.logging.logger import get_unified_logger
+from config.constants import EXCHANGE_NAMES_KR
 
 @dataclass
 class WebSocketStats:
@@ -63,6 +63,9 @@ class ReconnectStrategy:
     def reset(self):
         self.attempt = 0
 
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
+
 class BaseWebsocket:
     """
     웹소켓 공통 기능 (재연결, 헬스체크, 상태 콜백 등).
@@ -101,19 +104,13 @@ class BaseWebsocket:
         self.connection_status_callback: Optional[Callable[[str, str], None]] = None
 
         # 거래소별 로거 매핑
-        logger_map = {
-            'binance': binance_logger,
-            'binancefuture': binance_future_logger,
-            'bybit': bybit_logger,
-            'bybitfuture': bybit_future_logger,
-            'upbit': upbit_logger,
-            'bithumb': bithumb_logger
-        }
-        self.logger = logger_map.get(exchangename.lower(), unified_logger)
+        self.logger = logger
         
         self.logger.info(
-            f"[BaseWebsocket][{self.exchangename}] init complete: "
-            f"health_check={self.health_check_interval}, message_timeout={self.message_timeout}, ping={self.ping_interval}"
+            f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] 초기화 완료 | "
+            f"헬스체크={self.health_check_interval}초, "
+            f"메시지 타임아웃={self.message_timeout}초, "
+            f"핑 간격={self.ping_interval}초"
         )
 
         self.message_processing_times = []
@@ -135,7 +132,7 @@ class BaseWebsocket:
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         self.output_queue = queue
-        self.logger.info(f"[{self.exchangename}] output_queue set")
+        self.logger.info(f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] 출력 큐 설정 완료")
 
     def log_raw_message(self, message_type: str, data: dict, symbol: str = None) -> None:
         """
@@ -147,9 +144,9 @@ class BaseWebsocket:
             symbol: 심볼명 (옵션)
         """
         if symbol:
-            self.logger.debug(f"raw: [{self.exchangename}] ({symbol}) {data}")
+            self.logger.debug(f"원본: [{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] ({symbol}) {data}")
         else:
-            self.logger.debug(f"raw: [{self.exchangename}] {data}")
+            self.logger.debug(f"원본: [{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] {data}")
 
     def log_sequence_gap(self, symbol: str, last_id: int, first_id: int, gap_size: int = None) -> None:
         """
@@ -163,13 +160,13 @@ class BaseWebsocket:
         """
         if gap_size is not None:
             self.logger.warning(
-                f"[{self.exchangename}] {symbol} 시퀀스 갭 발생: "
-                f"last_id={last_id}, first_id={first_id}, gap={gap_size}"
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] {symbol} 시퀀스 갭 발생 | "
+                f"마지막ID={last_id}, 시작ID={first_id}, 갭={gap_size}"
             )
         else:
             self.logger.warning(
-                f"[{self.exchangename}] {symbol} 시퀀스 갭 발생: "
-                f"last_id={last_id}, first_id={first_id}"
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] {symbol} 시퀀스 갭 발생 | "
+                f"마지막ID={last_id}, 시작ID={first_id}"
             )
 
     def log_error(self, msg: str, exc_info: bool = True):
@@ -177,11 +174,87 @@ class BaseWebsocket:
         self.stats.error_count += 1
         self.stats.last_error_time = time.time()
         self.stats.last_error_message = msg
-        self.logger.error(f"[{self.exchangename}] {msg}", exc_info=exc_info)
+        self.logger.error(f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] {msg}", exc_info=exc_info)
 
     async def connect(self):
-        """자식 클래스에서 구현"""
-        raise NotImplementedError
+        """웹소켓 연결 시도"""
+        try:
+            self.logger.info(
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                f"연결 시도 중..."
+            )
+            # ... existing code ...
+        except Exception as e:
+            self.logger.error(
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                f"연결 실패: {str(e)}"
+            )
+            raise
+
+    async def disconnect(self):
+        """웹소켓 연결 종료"""
+        try:
+            self.logger.info(
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                f"연결 종료 중..."
+            )
+            # ... existing code ...
+        except Exception as e:
+            self.logger.error(
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                f"연결 종료 실패: {str(e)}"
+            )
+
+    async def reconnect(self):
+        """웹소켓 재연결"""
+        try:
+            self.logger.warning(
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                f"재연결 시도 중..."
+            )
+            # ... existing code ...
+        except Exception as e:
+            self.logger.error(
+                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                f"재연결 실패: {str(e)}"
+            )
+
+    async def health_check(self):
+        """웹소켓 상태 체크"""
+        while not self.stop_event.is_set():
+            try:
+                current_time = time.time()
+                if self.is_connected and (current_time - self.stats.last_message_time) > self.message_timeout:
+                    self.logger.warning(
+                        f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                        f"메시지 타임아웃 발생 ({self.message_timeout}초)"
+                    )
+                    await self.reconnect()
+                await asyncio.sleep(self.health_check_interval)
+            except Exception as e:
+                self.logger.error(
+                    f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                    f"상태 체크 중 오류 발생: {str(e)}"
+                )
+                await asyncio.sleep(1)
+
+    async def ping(self):
+        """주기적으로 핑 메시지 전송"""
+        while not self.stop_event.is_set():
+            try:
+                if self.is_connected:
+                    self.logger.debug(
+                        f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                        f"핑 전송"
+                    )
+                    # ... existing code ...
+                await asyncio.sleep(self.ping_interval)
+            except Exception as e:
+                self.logger.error(
+                    f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                    f"핑 전송 중 오류 발생: {str(e)}"
+                )
+                await asyncio.sleep(1)
 
     async def subscribe(self, symbols: List[str]):
         """자식 클래스에서 구현"""

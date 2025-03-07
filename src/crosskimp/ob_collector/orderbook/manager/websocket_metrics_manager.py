@@ -3,7 +3,10 @@
 import time
 from typing import Dict, Optional
 from datetime import datetime
-from utils.logging.logger import unified_logger, EXCHANGE_LOGGER_MAP
+from utils.logging.logger import get_unified_logger, EXCHANGE_LOGGER_MAP
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 class WebsocketMetricsManager:
     """웹소켓 메트릭 관리 클래스"""
@@ -31,6 +34,8 @@ class WebsocketMetricsManager:
         # 알림 상태
         self.last_delay_alert = {}
         
+        self.logger = get_unified_logger()
+
     def initialize_exchange(self, exchange: str) -> None:
         """새로운 거래소 메트릭 초기화"""
         current_time = time.time()
@@ -51,20 +56,19 @@ class WebsocketMetricsManager:
         """메트릭 업데이트"""
         try:
             current_time = time.time()
-            logger = EXCHANGE_LOGGER_MAP.get(exchange.lower(), unified_logger)
+            exchange_logger = EXCHANGE_LOGGER_MAP.get(exchange.lower(), self.logger)
             
             if event_type == "message":
-                self._handle_message_event(exchange, current_time, logger)
+                self._handle_message_event(exchange, current_time, exchange_logger)
             elif event_type == "error":
-                self._handle_error_event(exchange, logger)
+                self._handle_error_event(exchange, exchange_logger)
             elif event_type == "connect":
-                self._handle_connect_event(exchange, current_time, logger)
+                self._handle_connect_event(exchange, current_time, exchange_logger)
             elif event_type == "disconnect":
-                self._handle_disconnect_event(exchange, logger)
+                self._handle_disconnect_event(exchange, exchange_logger)
                 
         except Exception as e:
-            logger = EXCHANGE_LOGGER_MAP.get(exchange.lower(), unified_logger)
-            logger.error(
+            self.logger.error(
                 f"[Metrics] 메트릭 업데이트 실패 | "
                 f"exchange={exchange}, event={event_type}, error={str(e)}",
                 exc_info=True
@@ -168,7 +172,7 @@ class WebsocketMetricsManager:
             avg_latency = sum(latencies[-10:]) / len(latencies[-10:]) if latencies else 0
             
             # 디버그 로깅 추가
-            logger = EXCHANGE_LOGGER_MAP.get(exchange.lower(), unified_logger)
+            logger = EXCHANGE_LOGGER_MAP.get(exchange.lower(), self.logger)
             logger.debug(
                 f"[Metrics] {exchange} 상태 | "
                 f"rate={messages_per_second:.1f} msg/s, "

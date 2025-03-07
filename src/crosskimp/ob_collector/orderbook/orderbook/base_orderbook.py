@@ -4,10 +4,10 @@ import time
 import asyncio
 from dataclasses import dataclass
 from typing import List, Dict, Optional
-from utils.logging.logger import (
-    unified_logger, binance_logger, binance_future_logger,
-    bybit_logger, bybit_future_logger, upbit_logger, bithumb_logger
-)
+from utils.logging.logger import get_unified_logger
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 @dataclass
 class ValidationResult:
@@ -34,17 +34,7 @@ class OrderBook:
         self.exchangename = exchangename
         self.symbol = symbol
         self.depth = depth  # 기본 100
-        if logger:
-            self.logger = logger
-        else:
-            self.logger = {
-                'binance': binance_logger,
-                'binancefuture': binance_future_logger,
-                'bybit': bybit_logger,
-                'bybitfuture': bybit_future_logger,
-                'upbit': upbit_logger,
-                'bithumb': bithumb_logger
-            }.get(exchangename.lower(), unified_logger)
+        self.logger = logger if logger else get_unified_logger()
 
         self.bids: Dict[float, float] = {}
         self.asks: Dict[float, float] = {}

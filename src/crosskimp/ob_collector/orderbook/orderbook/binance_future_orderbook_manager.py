@@ -5,9 +5,12 @@ import time
 from typing import Dict, Optional, List
 from dataclasses import dataclass
 
-from utils.logging.logger import binance_future_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
 from orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 @dataclass
 class OrderBookUpdate:
@@ -67,7 +70,7 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
     def __init__(self, depth: int = 100):
         super().__init__(depth)
         self.exchangename = "binancefuture"
-        self.logger = binance_future_logger
+        self.logger = logger
         
         # 선물 특화 설정
         self.force_jump = True  # 시퀀스 갭 발생 시 강제 진행

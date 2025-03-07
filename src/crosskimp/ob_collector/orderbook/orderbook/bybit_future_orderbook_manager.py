@@ -3,9 +3,12 @@
 import asyncio
 import time
 from typing import Dict, List, Optional
-from utils.logging.logger import bybit_future_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
 from orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 class BybitFutureOrderBookManager(BaseOrderBookManager):
     """
@@ -17,7 +20,7 @@ class BybitFutureOrderBookManager(BaseOrderBookManager):
     def __init__(self, depth: int = 10):
         super().__init__(depth)
         self.exchangename = "bybitfuture"
-        self.logger = bybit_future_logger
+        self.logger = logger
         self.max_buffer_size = 1000
         self.max_snapshot_retries = 3
         

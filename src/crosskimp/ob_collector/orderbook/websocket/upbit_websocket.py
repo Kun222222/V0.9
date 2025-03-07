@@ -6,10 +6,13 @@ import time
 import aiohttp
 from websockets import connect
 from typing import Dict, List, Optional
-from utils.logging.logger import upbit_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.websocket.base_websocket import BaseWebsocket
 from orderbook.orderbook.base_orderbook import ValidationResult
 from orderbook.orderbook.upbit_orderbook_manager import UpbitOrderBookManager
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 class UpbitWebsocket(BaseWebsocket):
     """
@@ -31,7 +34,6 @@ class UpbitWebsocket(BaseWebsocket):
         self.last_request_time = 0.0
         self.request_interval = 0.125
         self.initialized_symbols = set()  # 초기화된 심볼 추적
-        self.logger = upbit_logger
         self.last_ping_time = 0
         self.ping_interval = 60  # 60초
 
@@ -44,13 +46,13 @@ class UpbitWebsocket(BaseWebsocket):
             )
             self.is_connected = True
             self.current_retry = 0
-            self.logger.info(
+            logger.info(
                 f"[{self.exchangename}] WebSocket 연결 성공 | "
                 f"url={self.ws_url}"
             )
             return True
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"[{self.exchangename}] WebSocket 연결 실패 | "
                 f"error={str(e)}",
                 exc_info=True
@@ -59,16 +61,16 @@ class UpbitWebsocket(BaseWebsocket):
 
     async def subscribe(self, symbols: List[str]) -> None:
         try:
-            self.logger.info(f"[{self.exchangename}] 구독 시작 | symbols={symbols}")
+            logger.info(f"[{self.exchangename}] 구독 시작 | symbols={symbols}")
             
             if not self.ws:
-                self.logger.error(f"[{self.exchangename}] WebSocket이 연결되지 않음")
+                logger.error(f"[{self.exchangename}] WebSocket이 연결되지 않음")
                 return
             
             # 아직 초기화되지 않은 심볼만 처리
             new_symbols = [s for s in symbols if s.upper() not in self.initialized_symbols]
             if not new_symbols:
-                self.logger.info("모든 심볼이 이미 초기화됨")
+                logger.info("모든 심볼이 이미 초기화됨")
                 return
 
             # 초기화 락 추가
@@ -81,23 +83,23 @@ class UpbitWebsocket(BaseWebsocket):
                         continue  # 이중 체크로 동시성 문제 방지
                         
                     market = f"KRW-{symbol.upper()}"
-                    self.logger.info(f"- {symbol} 스냅샷 요청 시작")
+                    logger.info(f"- {symbol} 스냅샷 요청 시작")
                     
                     snap = await self.request_snapshot(symbol.upper())
                     if snap:
                         init_res = await self.orderbook_manager.initialize_orderbook(symbol.upper(), snap)
                         if not init_res.is_valid:
-                            self.logger.error(f"- {symbol} 스냅샷 초기화 실패 | error={init_res.error_messages}")
+                            logger.error(f"- {symbol} 스냅샷 초기화 실패 | error={init_res.error_messages}")
                             continue
                         
                         self.initialized_symbols.add(symbol.upper())
-                        self.logger.info(f"- {symbol} 스냅샷 초기화 완료")
+                        logger.info(f"- {symbol} 스냅샷 초기화 완료")
                         markets.append(market)
                         
                         # 레이트 리밋 준수를 위한 짧은 대기
                         await asyncio.sleep(0.1)
                     else:
-                        self.logger.error(f"- {symbol} 스냅샷 요청 실패")
+                        logger.error(f"- {symbol} 스냅샷 요청 실패")
                         continue
 
             if markets:
@@ -110,9 +112,9 @@ class UpbitWebsocket(BaseWebsocket):
                     }
                 ]
                 await self.ws.send(json.dumps(sub_message))
-                self.logger.info(f"[{self.exchangename}] 구독 메시지 전송 | markets={markets}")
+                logger.info(f"[{self.exchangename}] 구독 메시지 전송 | markets={markets}")
         except Exception as e:
-            self.logger.error(f"[{self.exchangename}] 구독 처리 중 오류 발생 | error={str(e)}")
+            logger.error(f"[{self.exchangename}] 구독 처리 중 오류 발생 | error={str(e)}")
             raise
 
     async def parse_message(self, message: str) -> Optional[dict]:
@@ -122,12 +124,12 @@ class UpbitWebsocket(BaseWebsocket):
             
             # PING 응답 처리 추가
             if message == '{"status":"UP"}':
-                self.logger.debug("[Upbit] Received PONG (UP status)")
+                logger.debug("[Upbit] Received PONG (UP status)")
                 return None
             
             data = json.loads(message)
             if data.get("type") != "orderbook":
-                self.logger.debug(
+                logger.debug(
                     f"[{self.exchangename}] 처리되지 않는 메시지 타입 | "
                     f"type={data.get('type', 'unknown')}"
                 )
@@ -135,7 +137,7 @@ class UpbitWebsocket(BaseWebsocket):
 
             symbol = data.get("code", "").replace("KRW-","")
             if not symbol:
-                self.logger.warning(
+                logger.warning(
                     f"[{self.exchangename}] 심볼 정보 누락 | "
                     f"data={data}"
                 )
@@ -175,7 +177,7 @@ class UpbitWebsocket(BaseWebsocket):
                 "type": msg_type
             }
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"[{self.exchangename}] 메시지 파싱 실패 | "
                 f"error={str(e)}, "
                 f"raw={message[:200]}...",
@@ -189,17 +191,17 @@ class UpbitWebsocket(BaseWebsocket):
             
             # 이미 초기화된 심볼만 처리
             if symbol not in self.initialized_symbols:
-                self.logger.debug(f"[{self.exchangename}] {symbol} 아직 초기화되지 않음, 메시지 스킵")
+                logger.debug(f"[{self.exchangename}] {symbol} 아직 초기화되지 않음, 메시지 스킵")
                 return
 
             if not self.orderbook_manager.is_initialized(symbol):
-                self.logger.warning(f"[{self.exchangename}] {symbol} 오더북 초기화 상태 불일치")
+                logger.warning(f"[{self.exchangename}] {symbol} 오더북 초기화 상태 불일치")
                 self.initialized_symbols.remove(symbol)  # 상태 불일치 시 재초기화 필요
                 return
 
             orderbook = self.orderbook_manager.get_orderbook(symbol)
             if not orderbook:
-                self.logger.warning(f"[{self.exchangename}] {symbol} 오더북 객체 없음")
+                logger.warning(f"[{self.exchangename}] {symbol} 오더북 객체 없음")
                 self.initialized_symbols.remove(symbol)
                 return
 
@@ -212,12 +214,12 @@ class UpbitWebsocket(BaseWebsocket):
                     await self.output_queue.put(("upbit", ob_dict))
                     # self.logger.debug(f"[{self.exchangename}] {symbol} 오더북 큐 전송 완료")
             else:
-                self.logger.error(f"[{self.exchangename}] {symbol} 오더북 업데이트 실패 | error={result.error_messages}")
+                logger.error(f"[{self.exchangename}] {symbol} 오더북 업데이트 실패 | error={result.error_messages}")
                 self.initialized_symbols.remove(symbol)  # 업데이트 실패 시 재초기화 필요
                 await self._request_snapshot_and_reinit(symbol)
 
         except Exception as e:
-            self.logger.error(f"[{self.exchangename}] 메시지 처리 중 오류: {e}")
+            logger.error(f"[{self.exchangename}] 메시지 처리 중 오류: {e}")
 
     async def request_snapshot(self, symbol: str) -> Optional[dict]:
         try:
@@ -235,7 +237,7 @@ class UpbitWebsocket(BaseWebsocket):
             params = {"markets": market_str}
             headers = {"Accept": "application/json"}
 
-            self.logger.info(
+            logger.info(
                 f"[{self.exchangename}] {symbol} 스냅샷 요청 | "
                 f"url={url}, market={market_str}"
             )
@@ -244,7 +246,7 @@ class UpbitWebsocket(BaseWebsocket):
                 if resp.status == 200:
                     data = await resp.json()
                     if not data or not isinstance(data, list):
-                        self.logger.error(
+                        logger.error(
                             f"[{self.exchangename}] {symbol} 스냅샷 응답 형식 오류 | "
                             f"response={data}"
                         )
@@ -257,16 +259,16 @@ class UpbitWebsocket(BaseWebsocket):
 
                     parsed = await self._parse_snapshot(snapshot_data)
                     if parsed:
-                        self.logger.info(f"[{self.exchangename}] {symbol} 스냅샷 파싱 완료")
+                        logger.info(f"[{self.exchangename}] {symbol} 스냅샷 파싱 완료")
                         return parsed
                     return None
                 else:
-                    self.logger.error(
+                    logger.error(
                         f"[{self.exchangename}] {symbol} 스냅샷 요청 실패 | "
                         f"status={resp.status}"
                     )
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"[{self.exchangename}] {symbol} 스냅샷 요청 중 오류 발생 | "
                 f"error={str(e)}",
                 exc_info=True
@@ -279,7 +281,7 @@ class UpbitWebsocket(BaseWebsocket):
             if not symbol:
                 symbol = data.get("code", "").replace("KRW-","")
             if not symbol:
-                self.logger.warning(
+                logger.warning(
                     f"[{self.exchangename}] 스냅샷 심볼 정보 누락 | "
                     f"data={data}"
                 )
@@ -299,7 +301,7 @@ class UpbitWebsocket(BaseWebsocket):
                 if ap > 0:
                     asks.append([ap, as_])
 
-            self.logger.info(
+            logger.info(
                 f"[{self.exchangename}] - {symbol} 스냅샷 파싱 완료 | "
                 f"bids={len(bids)}, asks={len(asks)}, "
                 f"timestamp={ts}"
@@ -315,7 +317,7 @@ class UpbitWebsocket(BaseWebsocket):
                 "type": msg_type
             }
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"[{self.exchangename}] - {symbol} 스냅샷 파싱 실패 | "
                 f"error={str(e)}",
                 exc_info=True
@@ -332,25 +334,25 @@ class UpbitWebsocket(BaseWebsocket):
             try:
                 await self.ws.send("PING")  # 단순 "PING" 텍스트 전송
                 self.last_ping_time = time.time()
-                self.logger.debug("[Upbit] PING 전송")
+                logger.debug("[Upbit] PING 전송")
             except Exception as e:
-                self.logger.error(f"[Upbit] PING 전송 실패: {e}")
+                logger.error(f"[Upbit] PING 전송 실패: {e}")
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         try:
             symbols = symbols_by_exchange.get(self.exchangename, [])
             if not symbols:
-                self.logger.warning("[Upbit] 구독할 심볼이 없음")
+                logger.warning("[Upbit] 구독할 심볼이 없음")
                 return
 
-            self.logger.info(f"[Upbit] WebSocket 시작 | symbols={symbols}")
+            logger.info(f"[Upbit] WebSocket 시작 | symbols={symbols}")
 
             while not self.stop_event.is_set():
                 try:
                     await self.connect()
                     if hasattr(self, "connection_status_callback") and callable(self.connection_status_callback):
                         self.connection_status_callback(self.exchangename, "connect")
-                        self.logger.info("[Upbit] 연결 상태 콜백 'connect' 호출")
+                        logger.info("[Upbit] 연결 상태 콜백 'connect' 호출")
 
                     # 재연결 시 초기화된 심볼 초기화
                     self.initialized_symbols.clear()
@@ -365,11 +367,11 @@ class UpbitWebsocket(BaseWebsocket):
                             if parsed:
                                 await self.handle_parsed_message(parsed)
                         except Exception as e:
-                            self.logger.error(f"[Upbit] 메시지 수신 중 오류 발생 | error={str(e)}", exc_info=True)
+                            logger.error(f"[Upbit] 메시지 수신 중 오류 발생 | error={str(e)}", exc_info=True)
                             break
 
                 except Exception as e:
-                    self.logger.error(f"[Upbit] WebSocket 처리 중 오류 발생 | error={str(e)}", exc_info=True)
+                    logger.error(f"[Upbit] WebSocket 처리 중 오류 발생 | error={str(e)}", exc_info=True)
                     await asyncio.sleep(5)
                 finally:
                     if self.ws:
@@ -377,11 +379,11 @@ class UpbitWebsocket(BaseWebsocket):
                     self.is_connected = False
                     if hasattr(self, "connection_status_callback") and callable(self.connection_status_callback):
                         self.connection_status_callback(self.exchangename, "disconnect")
-                        self.logger.debug("[Upbit] 연결 상태 콜백 'disconnect' 호출")
+                        logger.debug("[Upbit] 연결 상태 콜백 'disconnect' 호출")
                     await asyncio.sleep(1)
 
         except Exception as e:
-            self.logger.error(f"[Upbit] 시작 처리 중 오류 발생 | error={str(e)}", exc_info=True)
+            logger.error(f"[Upbit] 시작 처리 중 오류 발생 | error={str(e)}", exc_info=True)
 
     async def stop(self) -> None:
         try:
@@ -389,9 +391,9 @@ class UpbitWebsocket(BaseWebsocket):
             if self.ws:
                 try:
                     await self.ws.close()
-                    self.logger.info("[Upbit] WebSocket 연결 종료")
+                    logger.info("[Upbit] WebSocket 연결 종료")
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"[Upbit] WebSocket 종료 중 오류 발생 | "
                         f"error={str(e)}"
                     )
@@ -399,9 +401,9 @@ class UpbitWebsocket(BaseWebsocket):
                 await self.session.close()
                 self.session = None
             self.orderbook_manager.clear_all()
-            self.logger.info("[Upbit] 오더북 및 버퍼 초기화 완료")
+            logger.info("[Upbit] 오더북 및 버퍼 초기화 완료")
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"[Upbit] 종료 처리 중 오류 발생 | "
                 f"error={str(e)}",
                 exc_info=True
@@ -409,4 +411,4 @@ class UpbitWebsocket(BaseWebsocket):
 
     def _log_connection_status(self, status: str):
         """연결 상태 로깅"""
-        self.logger.debug(f"[{self.exchangename}] 연결 상태 콜백 '{status}' 호출")
+        logger.debug(f"[{self.exchangename}] 연결 상태 콜백 '{status}' 호출")

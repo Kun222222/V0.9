@@ -6,11 +6,14 @@ import time
 from websockets import connect
 from typing import Dict, List, Optional
 
-from utils.logging.logger import bithumb_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.websocket.base_websocket import BaseWebsocket
 from orderbook.orderbook.bithumb_spot_orderbook_manager import (
     BithumbSpotOrderBookManager
 )
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
     """
@@ -74,7 +77,7 @@ class BithumbSpotWebsocket(BaseWebsocket):
         self.manager = BithumbSpotOrderBookManager(depth=self.depth)
         self.subscribed_symbols: List[str] = []
         self.ws = None
-        self.logger = bithumb_logger
+        self.logger = logger
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)

@@ -8,10 +8,13 @@ from fastapi import websockets
 from websockets import connect
 from typing import Dict, List, Optional
 
-from utils.logging.logger import bybit_future_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.websocket.base_websocket import BaseWebsocket
 from orderbook.orderbook.base_orderbook import ValidationResult
 from orderbook.orderbook.bybit_future_orderbook_manager import BybitFutureOrderBookManager
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 class BybitFutureWebsocket(BaseWebsocket):
     """
@@ -40,6 +43,8 @@ class BybitFutureWebsocket(BaseWebsocket):
         self.max_reconnect_attempts = reconnect_cfg.get("max_attempts", 5)
         self.reconnect_delay = reconnect_cfg.get("delay", 5)
         self.current_reconnect_attempt = 0
+
+        self.logger = logger  # bybit_future_logger 대신 unified_logger 사용
 
     async def connect(self) -> bool:
         max_retries = 3
@@ -342,7 +347,7 @@ class BybitFutureWebsocket(BaseWebsocket):
             return True
             
         except Exception as e:
-            bybit_future_logger.error(f"[BybitFuture] 연결 확인 중 오류: {e}")
+            logger.error(f"[BybitFuture] 연결 확인 중 오류: {e}")
             return False
 
     async def stop(self) -> None:

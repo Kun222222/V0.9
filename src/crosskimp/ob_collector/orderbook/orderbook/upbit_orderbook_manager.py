@@ -2,9 +2,12 @@
 
 import asyncio
 from typing import Dict, Optional
-from utils.logging.logger import upbit_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
 from orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 class UpbitOrderBookManager(BaseOrderBookManager):
     """
@@ -15,7 +18,6 @@ class UpbitOrderBookManager(BaseOrderBookManager):
     def __init__(self, depth: int = 100):
         super().__init__(depth)
         self.exchangename = "upbit"
-        self.logger = upbit_logger
 
     def is_initialized(self, symbol: str) -> bool:
         """오더북 스냅샷 초기화 여부"""
@@ -49,7 +51,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
 
             result = await self.orderbooks[symbol].update(snapshot)
             if not result.is_valid:
-                self.logger.error(
+                logger.error(
                     f"[{self.exchangename}] {symbol} 스냅샷 적용 실패 | "
                     f"error={result.error_messages}"
                 )
@@ -70,7 +72,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
             return result
 
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"[{self.exchangename}] {symbol} 초기화 중 예외 발생 | "
                 f"error={str(e)}",
                 exc_info=True
@@ -85,7 +87,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
             
             # 초기화 상태 확인
             if not self.is_initialized(symbol):
-                self.logger.debug(f"[{self.exchangename}] {symbol} 초기화 전 버퍼링")
+                logger.debug(f"[{self.exchangename}] {symbol} 초기화 전 버퍼링")
                 return ValidationResult(True, [])
 
             # 버퍼 처리
@@ -98,12 +100,12 @@ class UpbitOrderBookManager(BaseOrderBookManager):
 
             # 시퀀스 검증
             if delta_seq <= current_seq:
-                self.logger.debug(f"[{self.exchangename}] {symbol} 이전 시퀀스 스킵 | delta_seq={delta_seq}, current_seq={current_seq}")
+                logger.debug(f"[{self.exchangename}] {symbol} 이전 시퀀스 스킵 | delta_seq={delta_seq}, current_seq={current_seq}")
                 return ValidationResult(True, [])
 
             # 시퀀스 갭 체크
             if delta_seq > current_seq + 1:
-                self.logger.warning(
+                logger.warning(
                     f"[{self.exchangename}] {symbol} 시퀀스 갭 감지 | "
                     f"expected={current_seq + 1}, received={delta_seq}"
                 )
@@ -116,12 +118,12 @@ class UpbitOrderBookManager(BaseOrderBookManager):
                 if self._output_queue:
                     ob_dict = orderbook.to_dict()
                     await self._output_queue.put((self.exchangename, ob_dict))
-                    self.logger.debug(f"[{self.exchangename}] {symbol} 오더북 큐 전송 완료")
+                    logger.debug(f"[{self.exchangename}] {symbol} 오더북 큐 전송 완료")
 
             return result
 
         except Exception as e:
-            self.logger.error(f"[{self.exchangename}] {symbol} 업데이트 중 오류: {e}")
+            logger.error(f"[{self.exchangename}] {symbol} 업데이트 중 오류: {e}")
             return ValidationResult(False, [str(e)])
 
     def get_orderbook(self, symbol: str) -> Optional[OrderBook]:
@@ -133,7 +135,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
         if symbol not in self.delta_buffers:
             self.delta_buffers[symbol] = asyncio.Queue()
         await self.delta_buffers[symbol].put(delta)
-        self.logger.debug(
+        logger.debug(
             f"[{self.exchangename}] {symbol} 델타 버퍼링 | "
             f"queue_size={self.delta_buffers[symbol].qsize()}"
         )
@@ -146,7 +148,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
             async with lock:
                 orderbook = self.get_orderbook(symbol)
                 if not orderbook:
-                    self.logger.warning(
+                    logger.warning(
                         f"[{self.exchangename}] {symbol} 오더북 객체 없음"
                     )
                     self.delta_buffers[symbol].task_done()
@@ -155,7 +157,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
                 current_seq = self.get_sequence(symbol)
                 delta_seq = delta.get("sequence")
                 if delta_seq is None:
-                    self.logger.warning(
+                    logger.warning(
                         f"[{self.exchangename}] {symbol} 시퀀스 누락 | "
                         f"delta={delta}"
                     )
@@ -163,7 +165,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
                     continue
 
                 if delta_seq <= current_seq:
-                    self.logger.debug(
+                    logger.debug(
                         f"[{self.exchangename}] {symbol} 이전 시퀀스 스킵 | "
                         f"delta_seq={delta_seq}, current_seq={current_seq}"
                     )
@@ -172,7 +174,7 @@ class UpbitOrderBookManager(BaseOrderBookManager):
 
                 # 시퀀스가 올바른지 확인 (delta_seq > current_seq)
                 if delta_seq > current_seq + 1:
-                    self.logger.warning(
+                    logger.warning(
                         f"[{self.exchangename}] {symbol} 시퀀스 갭 감지 | "
                         f"expected={current_seq + 1}, "
                         f"received={delta_seq}, "
@@ -192,17 +194,17 @@ class UpbitOrderBookManager(BaseOrderBookManager):
 
                     # 파싱 로깅
                     ob_dict = orderbook.to_dict()
-                    self.logger.info(f"[{self.exchangename}] {symbol} 오더북 업데이트: {ob_dict}")
+                    logger.info(f"[{self.exchangename}] {symbol} 오더북 업데이트: {ob_dict}")
 
                     # 큐 전송
                     if self._output_queue:
                         await self._output_queue.put((self.exchangename, ob_dict))
-                        self.logger.debug(
+                        logger.debug(
                             f"[{self.exchangename}] {symbol} 오더북 큐 전송 완료"
                         )
                 else:
                     # 역전 등 실패 시 스냅샷 재동기화
-                    self.logger.error(
+                    logger.error(
                         f"[{self.exchangename}] {symbol} 업데이트 실패 | "
                         f"error={result.error_messages}"
                     )

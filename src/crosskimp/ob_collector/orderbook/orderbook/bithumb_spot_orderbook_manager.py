@@ -5,9 +5,12 @@ import time
 from typing import Dict, List, Optional
 from aiohttp import ClientSession, ClientTimeout
 
-from utils.logging.logger import bithumb_logger
+from utils.logging.logger import get_unified_logger
 from orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
 from orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 ############################################
 # 전역 aiohttp 세션 및 세마포어 (바이낸스 스타일)
@@ -20,7 +23,7 @@ async def get_global_aiohttp_session() -> ClientSession:
     global GLOBAL_AIOHTTP_SESSION
     async with GLOBAL_SESSION_LOCK:
         if GLOBAL_AIOHTTP_SESSION is None or GLOBAL_AIOHTTP_SESSION.closed:
-            bithumb_logger.info("[BithumbSpot] 전역 aiohttp 세션 생성")
+            logger.info("[BithumbSpot] 전역 aiohttp 세션 생성")
             GLOBAL_AIOHTTP_SESSION = ClientSession(timeout=ClientTimeout(total=None))
         return GLOBAL_AIOHTTP_SESSION
 
@@ -61,7 +64,7 @@ class BithumbSpotOrderBookManager(BaseOrderBookManager):
         super().__init__(depth)
         self.exchangename = "bithumb"
         self.snapshot_url = "https://api.bithumb.com/public/orderbook"
-        self.logger = bithumb_logger
+        self.logger = get_unified_logger()
         self.orderbooks: Dict[str, BithumbSpotOrderBook] = {}
         self.sequence_states: Dict[str, Dict] = {}  # { symbol: { "initialized": bool, "last_update_id": int, "first_delta_applied": bool } }
         self.buffer_events: Dict[str, List[dict]] = {}
@@ -175,7 +178,7 @@ class BithumbSpotOrderBookManager(BaseOrderBookManager):
                 "last_update_id": seq,
                 "first_delta_applied": False
             }
-            ob = BithumbSpotOrderBook("bithumb", symbol, depth=self.depth, logger=bithumb_logger)
+            ob = BithumbSpotOrderBook("bithumb", symbol, depth=self.depth, logger=self.logger)
             self.orderbooks[symbol] = ob
             self.buffer_events.setdefault(symbol, [])
 
