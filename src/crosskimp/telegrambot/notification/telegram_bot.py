@@ -16,8 +16,8 @@
 import asyncio
 import aiohttp
 from datetime import datetime
-from utils.logging.logger import unified_logger
-from config.config_loader import get_settings
+from crosskimp.ob_collector.utils.logging.logger import unified_logger
+from crosskimp.ob_collector.config.config_loader import get_settings
 from typing import Dict, Optional, List, Union
 
 # ============================
