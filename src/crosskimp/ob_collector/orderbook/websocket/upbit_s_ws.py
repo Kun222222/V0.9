@@ -7,9 +7,11 @@ import aiohttp
 from websockets import connect
 from typing import Dict, List, Optional
 
-from crosskimp.ob_collector.utils.logging.logger import get_raw_logger
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
 from crosskimp.ob_collector.orderbook.orderbook.upbit_s_ob import UpbitOrderBookManager
+
+logger = get_unified_logger()
 
 class UpbitWebsocket(BaseWebsocket):
     """
@@ -35,7 +37,7 @@ class UpbitWebsocket(BaseWebsocket):
         self.ping_interval = 60  # 60초
         
         # raw 로거 초기화
-        self.raw_logger = get_raw_logger("upbit")
+        self.raw_logger = get_unified_logger()
 
     def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
         """
@@ -115,11 +117,8 @@ class UpbitWebsocket(BaseWebsocket):
 
             symbol = data.get("code", "").replace("KRW-","")
             if not symbol:
-                self.log_error("심볼 정보 누락")
+                logger.error("심볼 정보 누락")
                 return None
-
-            # raw 메시지 로깅
-            self.log_raw_message("depthUpdate", message, symbol)
 
             ts = data.get("timestamp", int(time.time()*1000))
             msg_type = "delta"  # 업비트 웹소켓은 실시간 델타 업데이트
@@ -132,9 +131,15 @@ class UpbitWebsocket(BaseWebsocket):
                 ask_price = float(unit.get("ask_price",0))
                 ask_size = float(unit.get("ask_size",0))
                 if bid_price > 0:
-                    bids.append([bid_price, bid_size])
+                    bids.append({'price': bid_price, 'size': bid_size})
                 if ask_price > 0:
-                    asks.append([ask_price, ask_size])
+                    asks.append({'price': ask_price, 'size': ask_size})
+
+            # bids와 asks가 비어 있는 경우 로깅
+            if not bids:
+                logger.error(f"{symbol} bids가 비어 있습니다: {units}")
+            if not asks:
+                logger.error(f"{symbol} asks가 비어 있습니다: {units}")
 
             return {
                 "exchangename": "upbit",
@@ -146,7 +151,7 @@ class UpbitWebsocket(BaseWebsocket):
                 "type": msg_type
             }
         except Exception as e:
-            self.log_error(f"메시지 파싱 실패: {str(e)}, raw={message[:200]}...", exc_info=True)
+            logger.error(f"메시지 파싱 실패: {str(e)}, raw={{message[:200]}}...", exc_info=True)
             return None
 
     async def handle_parsed_message(self, parsed: dict) -> None:
@@ -228,9 +233,9 @@ class UpbitWebsocket(BaseWebsocket):
                 ask_price = float(unit.get("ask_price",0))
                 ask_size = float(unit.get("ask_size",0))
                 if bid_price > 0:
-                    bids.append([bid_price, bid_size])
+                    bids.append({'price': bid_price, 'size': bid_size})
                 if ask_price > 0:
-                    asks.append([ask_price, ask_size])
+                    asks.append({'price': ask_price, 'size': ask_size})
 
             return {
                 "exchangename": "upbit",

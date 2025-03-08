@@ -103,7 +103,7 @@ class WebsocketManager:
                     exchange=exchange,
                     event_type="connect"
                 )
-                logger.info(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결됨")
+                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['CONNECTED']} 웹소켓 연결됨")
                 # 연결 상태 변경 시에만 전체 상태 표시
                 self._display_all_connection_status()
             
@@ -112,7 +112,7 @@ class WebsocketManager:
                     exchange=exchange,
                     event_type="disconnect"
                 )
-                logger.info(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결 해제됨")
+                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['DISCONNECTED']} 웹소켓 연결 해제됨")
                 # 연결 상태 변경 시에만 전체 상태 표시
                 self._display_all_connection_status()
             
@@ -206,7 +206,7 @@ class WebsocketManager:
                 
                 # 메시지 타입 판별 및 큐 데이터 로깅
                 msg_type = self._determine_message_type(data)
-                queue_logger.info(f"큐 데이터 [{msg_type}] - exchange: {exchange}, data: {data}")
+                queue_logger.info(f"{exchange} {data}")
                 
                 if self.callback:
                     await self.callback(exchange, data)
@@ -403,7 +403,7 @@ class WebsocketManager:
                 logger.warning(f"[{exchange_kr}] {STATUS_EMOJIS['ERROR']} 구독할 심볼이 없음")
                 return
 
-            logger.info(f"[{exchange_kr}] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 시작 | symbols={len(symbols)}개: {symbols}")
+            logger.info(f"[{exchange_kr}] 웹소켓 초기화 시작 | symbols={len(symbols)}개: {symbols}")
 
             # 기존 인스턴스가 있다면 정리
             if exchange_name_lower in self.websockets:
@@ -424,7 +424,7 @@ class WebsocketManager:
 
         except Exception as e:
             self.record_error(exchange_name_lower, str(e))
-            logger.error(f"{LOG_SYSTEM} [{exchange_name}] 시작 실패: {str(e)}", exc_info=True)
+            logger.error(f"[{exchange_name}] 시작 실패: {str(e)}", exc_info=True)
 
     async def start_all_websockets(self, filtered_data: Dict[str, List[str]]):
         try:
@@ -437,9 +437,9 @@ class WebsocketManager:
             logger.info(f"{LOG_SYSTEM} 메트릭 모니터링 태스크 생성 완료")
             
             for exchange, syms in filtered_data.items():
-                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 초기화 준비 | symbols={syms}")
+                # logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 초기화 준비")
                 await self.start_exchange_websocket(exchange, syms)
-                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 초기화 완료")
+                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
                 
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 웹소켓 시작 실패: {e}", exc_info=True)

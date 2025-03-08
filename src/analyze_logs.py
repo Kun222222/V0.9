@@ -27,13 +27,12 @@ def analyze_exchange_data(log_file):
         for line in f:
             try:
                 # 새로운 로그 형식에 맞는 정규식 패턴
-                log_pattern = r'\[.*?\] \[.*?\] 큐 데이터 \[(\w+)\] - exchange: (\w+), data: ({.*})'
+                log_pattern = r'\[.*?\] \[.*?:.*?\] (\w+) ({.*})'
                 match = re.search(log_pattern, line)
                 
                 if match:
-                    msg_type = match.group(1)    # 메시지 타입 (orderbook_delta 등)
-                    exchange = match.group(2)     # exchange 이름
-                    json_str = match.group(3)     # JSON 데이터
+                    exchange = match.group(1)     # exchange 이름
+                    json_str = match.group(2)     # JSON 데이터
                     
                     # 작은따옴표를 큰따옴표로 변환
                     json_str = json_str.replace("'", '"')
@@ -43,8 +42,8 @@ def analyze_exchange_data(log_file):
                     
                     json_data = json.loads(json_str)
                     
-                    # 거래소 카운트 증가 (orderbook_delta 타입만 카운트)
-                    if msg_type == "orderbook_delta":
+                    # 거래소 카운트 증가 (orderbook 데이터만 카운트)
+                    if 'bids' in json_data and 'asks' in json_data:
                         exchange_counts[exchange] += 1
                 
             except json.JSONDecodeError as e:
@@ -57,7 +56,7 @@ def analyze_exchange_data(log_file):
     
     # 결과 출력
     print(f"\n분석 파일: {os.path.basename(log_file)}")
-    print("\n각 거래소별 orderbook_delta 데이터 수:")
+    print("\n각 거래소별 orderbook 데이터 수:")
     print("-" * 40)
     for exchange, count in sorted(exchange_counts.items()):
         print(f"{exchange:<20} : {count:>8,}개")

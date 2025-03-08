@@ -42,17 +42,15 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
             self.orderbooks[symbol].last_update_id = sequence
 
     async def initialize_orderbook(self, symbol: str, data: dict) -> ValidationResult:
-        """웹소켓 데이터로 오더북 초기화"""
+        """웹소켓 데이터로 스냅샷으로 오더북 초기화"""
         try:
-            start_time = time.time()
-            
             if symbol not in self.orderbooks:
                 self.orderbooks[symbol] = OrderBookV2(
                     exchangename=self.exchangename,
                     symbol=symbol,
                     depth=self.depth
                 )
-
+            
             # 데이터 변환
             converted = self._convert_upbit_format(data)
             bids = converted["bids"]
@@ -80,10 +78,6 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
                 # 오더북 카운트 메트릭 업데이트
                 self.record_metric("orderbook", symbol=symbol)
                 
-                # 처리 시간 기록
-                processing_time = (time.time() - start_time) * 1000  # ms로 변환
-                self.record_metric("processing_time", time_ms=processing_time)
-                
                 # 데이터 크기 메트릭 업데이트
                 data_size = len(str(data))  # 간단한 크기 측정
                 self.record_metric("bytes", size=data_size)
@@ -108,40 +102,23 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
         return await self.initialize_orderbook(symbol, data)
 
     def _convert_upbit_format(self, data: dict) -> dict:
-        """업비트 웹소켓 데이터를 기본 오더북 형식으로 변환"""
-        try:
-            symbol = data.get("code", "").replace("KRW-", "")
-            bids = []
-            asks = []
-            
-            # 상위 depth개만 처리
-            for unit in data.get("orderbook_units", [])[:self.depth]:
-                bid_price = float(unit.get("bid_price", 0))
-                bid_size = float(unit.get("bid_size", 0))
-                ask_price = float(unit.get("ask_price", 0))
-                ask_size = float(unit.get("ask_size", 0))
-                
-                if bid_price > 0 and bid_size > 0:
-                    bids.append([bid_price, bid_size])
-                if ask_price > 0 and ask_size > 0:
-                    asks.append([ask_price, ask_size])
-
-            return {
-                "exchangename": self.exchangename,
-                "symbol": symbol,
-                "bids": bids,
-                "asks": asks,
-                "timestamp": data.get("timestamp", 0),
-                "sequence": data.get("timestamp", 0)
-            }
-            
-        except Exception as e:
-            logger.error(
-                f"[{EXCHANGE_NAMES_KR[self.exchangename]}] 데이터 변환 중 오류 | "
-                f"error={str(e)}",
-                exc_info=True
-            )
-            raise
+        """업비트 데이터 형식으로 변환"""
+        # 이미 변환된 형식인지 확인
+        if isinstance(data.get('bids', []), list) and isinstance(data.get('asks', []), list):
+            bids = [[item['price'], item['size']] for item in data['bids']]
+            asks = [[item['price'], item['size']] for item in data['asks']]
+        else:
+            # 원본 데이터에서 변환
+            orderbook_units = data.get('orderbook_units', [])
+            bids = [[float(unit['bid_price']), float(unit['bid_size'])] for unit in orderbook_units]
+            asks = [[float(unit['ask_price']), float(unit['ask_size'])] for unit in orderbook_units]
+        
+        return {
+            'bids': bids,
+            'asks': asks,
+            'timestamp': data.get('timestamp'),
+            'sequence': data.get('sequence')
+        }
 
     def get_orderbook(self, symbol: str) -> Optional[OrderBookV2]:
         """심볼의 오더북 반환"""
