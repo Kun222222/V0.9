@@ -3,7 +3,6 @@
 import asyncio
 import json
 import time
-import aiohttp
 from websockets import connect
 from typing import Dict, List, Optional
 
@@ -24,33 +23,14 @@ class UpbitWebsocket(BaseWebsocket):
         self.ws_url = "wss://api.upbit.com/websocket/v1"
         depth = settings.get("websocket", {}).get("orderbook_depth", 10)
         self.orderbook_manager = UpbitOrderBookManager(depth=depth)
-        self.session: Optional[aiohttp.ClientSession] = None
         self.is_connected = False
         reconnect_cfg = settings.get("websocket", {}).get("reconnect", {})
         self.max_retries = reconnect_cfg.get("max_retries", 5)
         self.retry_delay = reconnect_cfg.get("retry_delay", 5)
         self.current_retry = 0
-        self.last_request_time = 0.0
-        self.request_interval = 0.125
         self.initialized_symbols = set()  # 초기화된 심볼 추적
         self.last_ping_time = 0
         self.ping_interval = 60  # 60초
-        
-        # raw 로거 초기화
-        self.raw_logger = get_unified_logger()
-
-    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
-        """
-        Raw 메시지 로깅
-        Args:
-            msg_type: 메시지 타입 (snapshot/depthUpdate)
-            message: raw 메시지
-            symbol: 심볼명
-        """
-        try:
-            self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
-        except Exception as e:
-            self.log_error(f"Raw 로깅 실패: {str(e)}")
 
     async def connect(self) -> bool:
         try:
@@ -170,85 +150,6 @@ class UpbitWebsocket(BaseWebsocket):
 
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {e}")
-
-    async def request_snapshot(self, symbol: str) -> Optional[dict]:
-        try:
-            now = time.time()
-            elapsed = now - self.last_request_time
-            if elapsed < self.request_interval:
-                await asyncio.sleep(self.request_interval - elapsed)
-            self.last_request_time = time.time()
-
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-
-            market_str = f"KRW-{symbol}"
-            url = "https://api.upbit.com/v1/orderbook"
-            params = {"markets": market_str}
-            headers = {"Accept": "application/json"}
-
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "snapshot_request")
-
-            async with self.session.get(url, params=params, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if not data or not isinstance(data, list):
-                        self.log_error(f"{symbol} 스냅샷 응답 형식 오류")
-                        return None
-
-                    snapshot_data = data[0]
-                    snapshot_data["stream_type"] = "SNAPSHOT"
-                    # raw 메시지 로깅
-                    self.log_raw_message("snapshot", json.dumps(snapshot_data), symbol)
-
-                    parsed = await self._parse_snapshot(snapshot_data)
-                    if parsed:
-                        if self.connection_status_callback:
-                            self.connection_status_callback(self.exchangename, "snapshot_received")
-                        return parsed
-                    return None
-                else:
-                    self.log_error(f"{symbol} 스냅샷 요청 실패: status={resp.status}")
-        except Exception as e:
-            self.log_error(f"{symbol} 스냅샷 요청 중 오류 발생: {str(e)}", exc_info=True)
-        return None
-
-    async def _parse_snapshot(self, data: dict) -> Optional[dict]:
-        try:
-            symbol = data.get("market", "").replace("KRW-","")
-            if not symbol:
-                symbol = data.get("code", "").replace("KRW-","")
-            if not symbol:
-                self.log_error("심볼 정보 누락")
-                return None
-
-            ts = data.get("timestamp", int(time.time()*1000))
-            units = data.get("orderbook_units", [])
-            bids = []
-            asks = []
-            for unit in units:
-                bid_price = float(unit.get("bid_price",0))
-                bid_size = float(unit.get("bid_size",0))
-                ask_price = float(unit.get("ask_price",0))
-                ask_size = float(unit.get("ask_size",0))
-                if bid_price > 0:
-                    bids.append({'price': bid_price, 'size': bid_size})
-                if ask_price > 0:
-                    asks.append({'price': ask_price, 'size': ask_size})
-
-            return {
-                "exchangename": "upbit",
-                "symbol": symbol.upper(),
-                "bids": bids,
-                "asks": asks,
-                "timestamp": ts,
-                "sequence": ts,
-                "type": "snapshot"
-            }
-        except Exception as e:
-            self.log_error(f"{symbol} 스냅샷 파싱 실패: {str(e)}")
-            return None
 
     async def _send_ping(self):
         try:
