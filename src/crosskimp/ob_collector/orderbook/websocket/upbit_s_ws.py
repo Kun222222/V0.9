@@ -24,13 +24,10 @@ class UpbitWebsocket(BaseWebsocket):
         depth = settings.get("websocket", {}).get("orderbook_depth", 10)
         self.orderbook_manager = UpbitOrderBookManager(depth=depth)
         self.is_connected = False
-        reconnect_cfg = settings.get("websocket", {}).get("reconnect", {})
-        self.max_retries = reconnect_cfg.get("max_retries", 5)
-        self.retry_delay = reconnect_cfg.get("retry_delay", 5)
-        self.current_retry = 0
         self.initialized_symbols = set()  # 초기화된 심볼 추적
         self.last_ping_time = 0
-        self.ping_interval = 60  # 60초
+        self.ping_interval = 60  # 60초 (서버 타임아웃 120초의 절반)
+        self.ping_timeout = 10   # 10초 내에 응답 필요
 
     async def connect(self) -> bool:
         try:
@@ -43,8 +40,6 @@ class UpbitWebsocket(BaseWebsocket):
                 compression=None
             )
             self.is_connected = True
-            self.current_retry = 0
-            self.stats.connection_start_time = time.time()
             
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect")
@@ -151,13 +146,28 @@ class UpbitWebsocket(BaseWebsocket):
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {e}")
 
-    async def _send_ping(self):
+    async def _send_ping(self) -> None:
+        """PING 메시지 전송"""
         try:
             if self.ws and self.is_connected:
-                await self.ws.ping()
+                # 일반 PING 메시지 전송 방식 사용
+                await self.ws.send("PING")
                 self.last_ping_time = time.time()
+                self.logger.debug(f"[Upbit] PING 전송")
         except Exception as e:
-            self.log_error(f"Ping 전송 실패: {str(e)}")
+            self.log_error(f"PING 전송 실패: {str(e)}")
+
+    async def _handle_pong(self, message: str) -> bool:
+        """PONG 메시지 처리"""
+        try:
+            if message == '{"status":"UP"}':
+                self.stats.last_pong_time = time.time()
+                self.logger.debug(f"[Upbit] PONG 수신")
+                return True
+            return False
+        except Exception as e:
+            self.log_error(f"PONG 처리 실패: {str(e)}")
+            return False
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         while not self.stop_event.is_set():
@@ -171,8 +181,11 @@ class UpbitWebsocket(BaseWebsocket):
                 await super().start(symbols_by_exchange)
 
                 # 연결
-                if not await self.connect():
-                    await asyncio.sleep(self.retry_delay)
+                await self.connect()
+                if not self.is_connected:
+                    delay = self.reconnect_strategy.next_delay()
+                    self.log_error(f"연결 실패, {delay}초 후 재시도")
+                    await asyncio.sleep(delay)
                     continue
 
                 # 구독
@@ -181,15 +194,22 @@ class UpbitWebsocket(BaseWebsocket):
                 # 메시지 처리 루프
                 while not self.stop_event.is_set():
                     try:
-                        # Ping 전송
+                        # PING 전송 체크
                         now = time.time()
                         if now - self.last_ping_time >= self.ping_interval:
                             await self._send_ping()
 
+                        # 메시지 수신
                         message = await asyncio.wait_for(
                             self.ws.recv(),
-                            timeout=self.ping_interval
+                            timeout=self.ping_timeout
                         )
+                        
+                        # PONG 메시지 체크
+                        if await self._handle_pong(message):
+                            continue
+
+                        # 일반 메시지 처리
                         self.stats.last_message_time = time.time()
                         self.stats.message_count += 1
 
@@ -200,22 +220,21 @@ class UpbitWebsocket(BaseWebsocket):
                                 self.connection_status_callback(self.exchangename, "message")
 
                     except asyncio.TimeoutError:
+                        # PONG 응답 체크
+                        if time.time() - self.stats.last_pong_time > self.ping_timeout:
+                            self.log_error("PONG 응답 타임아웃")
+                            break
                         continue
                     except Exception as e:
                         self.log_error(f"메시지 처리 실패: {str(e)}")
                         break
 
             except Exception as e:
-                self.current_retry += 1
-                self.log_error(f"연결 실패: {str(e)}, retry={self.current_retry}")
-                
-                if self.current_retry > self.max_retries:
-                    self.log_error("최대 재시도 횟수 초과")
-                    break
-                    
-                await asyncio.sleep(self.retry_delay)
+                delay = self.reconnect_strategy.next_delay()
+                self.log_error(f"연결 실패: {str(e)}, {delay}초 후 재연결")
+                await asyncio.sleep(delay)
                 continue
-                
+
             finally:
                 if self.ws:
                     await self.ws.close()
