@@ -1,0 +1,7 @@
+# 메트릭 분석 프로그램에 필요한 패키지
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+kaleido>=0.2.1  # plotly 이미지 저장용 

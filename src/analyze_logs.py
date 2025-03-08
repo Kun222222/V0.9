@@ -24,26 +24,30 @@ def analyze_exchange_data(log_file):
     exchange_counts = defaultdict(int)
     
     with open(log_file, 'r', encoding='utf-8') as f:
-        content = f.read()
-        # 로그 라인을 정규식으로 찾기
-        log_pattern = r'큐 데이터 - ({.*?})'
-        matches = re.finditer(log_pattern, content, re.DOTALL)
-        
-        for match in matches:
+        for line in f:
             try:
-                json_str = match.group(1)
-                # 줄바꿈과 공백 제거
-                json_str = json_str.replace('\n', '').replace('\r', '').strip()
-                # 작은따옴표를 큰따옴표로 변환
-                json_str = json_str.replace("'", '"')
-                json_data = json.loads(json_str)
+                # 새로운 로그 형식에 맞는 정규식 패턴
+                log_pattern = r'\[.*?\] - \[.*?\] - 큐 데이터 \[orderbook_delta\] - exchange: (\w+), data: ({.*})'
+                match = re.search(log_pattern, line)
                 
-                # 거래소 이름 추출 및 카운트 증가
-                exchange = json_data.get('exchangename')
-                if exchange:
+                if match:
+                    exchange = match.group(1)  # exchange 이름 추출
+                    json_str = match.group(2)  # JSON 데이터 추출
+                    
+                    # 작은따옴표를 큰따옴표로 변환
+                    json_str = json_str.replace("'", '"')
+                    
+                    # 키를 큰따옴표로 감싸기
+                    json_str = re.sub(r'([{,])\s*(\w+):', r'\1 "\2":', json_str)
+                    
+                    json_data = json.loads(json_str)
+                    
+                    # 거래소 카운트 증가
                     exchange_counts[exchange] += 1
+                
             except json.JSONDecodeError as e:
                 print(f"JSON 파싱 에러: {e}")
+                print(f"문제가 발생한 JSON 문자열: {json_str}")
                 continue
             except Exception as e:
                 print(f"에러 발생: {e}")

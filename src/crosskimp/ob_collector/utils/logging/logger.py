@@ -211,11 +211,11 @@ def get_raw_logger(exchange_name: str) -> logging.Logger:
         today = datetime.now().strftime("%Y%m%d")
         log_file = os.path.join(LOG_DIRS['raw'], f"raw_{exchange_name}_{today}.log")
         
-        # 파일 핸들러 설정 (50MB 단위로 로테이션, 최대 10개 파일 유지)
+        # 파일 핸들러 설정 (100MB 단위로 로테이션, 최대 100개 파일 유지)
         file_handler = RotatingFileHandler(
             log_file,
-            maxBytes=50*1024*1024,  # 50MB
-            backupCount=10,
+            maxBytes=100*1024*1024,  # 100MB
+            backupCount=100,         # 최대 100개 파일
             encoding='utf-8'
         )
         
