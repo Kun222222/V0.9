@@ -55,31 +55,6 @@ EXCHANGE_CLASS_MAP = {
 logger = get_unified_logger()
 queue_logger = get_queue_logger()
 
-class ExchangeMetrics:
-    def __init__(self):
-        self.connection_status = False
-        self.last_message_time = 0
-        self.message_count = 0
-        self.message_rates = defaultdict(int)  # 분당 메시지 수
-        self.orderbook_count = 0
-        self.orderbook_rates = defaultdict(int)  # 분당 오더북 수
-        self.error_count = 0
-        self.reconnect_count = 0  # 재연결 횟수 추가
-        self.errors = []
-        self.latency_ms = 0
-        self.last_latency_check = 0
-        self.last_minute = ""
-        
-        # 성능 메트릭
-        self.processing_times = []  # 메시지 처리 시간 기록
-        self.memory_usage = 0
-        self.thread_count = 0
-        
-        # 네트워크 메트릭
-        self.bytes_sent = 0
-        self.bytes_received = 0
-        self.last_network_check = 0
-
 class WebsocketManager:
     """
     여러 거래소 웹소켓 연결을 중앙에서 관리
@@ -93,15 +68,14 @@ class WebsocketManager:
         self.callback: Optional[Callable[[str, dict], None]] = None
         self.start_time = time.time()
 
-        # 메트릭 매니저 초기화
-        self.metrics = {
-            "binance": ExchangeMetrics(),
-            "binancefuture": ExchangeMetrics(),
-            "bybit": ExchangeMetrics(),
-            "bybitfuture": ExchangeMetrics(),
-            "upbit": ExchangeMetrics(),
-            "bithumb": ExchangeMetrics()
-        }
+        # 메트릭 매니저로 통합
+        self.metrics_manager = WebsocketMetricsManager()
+        
+        # 메트릭 매니저의 설정값 사용
+        self.delay_threshold_ms = self.metrics_manager.delay_threshold_ms
+        self.ping_interval = self.metrics_manager.ping_interval
+        self.pong_timeout = self.metrics_manager.pong_timeout
+        self.health_threshold = self.metrics_manager.health_threshold
 
         # 메트릭 저장 경로 설정 (절대 경로 사용)
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
@@ -113,127 +87,78 @@ class WebsocketManager:
             logger.info(f"메트릭 디렉토리 생성/확인 완료: {self.metrics_dir}")
         except Exception as e:
             logger.error(f"메트릭 디렉토리 생성 실패: {str(e)}", exc_info=True)
-        
-        self.last_save_time = 0  # 초기값을 0으로 설정하여 첫 실행시 즉시 저장되도록 함
-        self.save_interval = 60  # 1분마다 저장
 
         # 시장가격 모니터 초기화
         self.current_usdt_rate = 0.0  # USDT 환율 캐시
 
-        # 지연 감지 설정
-        self.delay_threshold_ms = settings.get("websocket", {}).get("delay_threshold_ms", 1000)  # 1초
-        self.last_delay_alert = {}  # 마지막 알림 시간 기록
-        self.alert_cooldown = 300  # 알림 쿨다운 5분
-        self.metric_update_interval = 1.0  # 메트릭 업데이트 주기 (초)
-
-        # 연결 상태 관리 추가
-        self._active_connections = set()
-        self._connection_lock = asyncio.Lock()
-
-        # 메트릭 히스토리 제한
-        self.max_metric_history = 3600  # 1시간치 데이터만 보관
-        self.metric_cleanup_interval = 300  # 5분마다 정리
-        
-        # 메모리 사용량 모니터링
-        self.memory_stats = {
-            'peak_usage': 0,
-            'current_usage': 0,
-            'last_cleanup': time.time()
-        }
-
-        # 처리율 계산 주기 (초)
-        self.rate_calculation_interval = 1.0
-
         # 거래소 초기화
-        current_time = time.time()
         for exchange in EXCHANGE_CLASS_MAP.keys():
-            self.metrics[exchange].last_message_time = current_time  # 초 단위로 저장
+            self.metrics_manager.initialize_exchange(exchange)
 
     def update_connection_status(self, exchange: str, status: str):
         """연결 상태 업데이트"""
-        metrics = self.metrics.get(exchange)
-        if metrics:
-            is_connected = (status == "connect")
-            if metrics.connection_status != is_connected:
-                metrics.connection_status = is_connected
-                
-                # 모든 거래소의 현재 상태를 수집
-                status_summary = []
-                for ex_name, ex_metrics in self.metrics.items():
-                    exchange_kr = EXCHANGE_NAMES_KR.get(ex_name, ex_name)
-                    status_emoji = STATUS_EMOJIS['CONNECTED'] if ex_metrics.connection_status else STATUS_EMOJIS['DISCONNECTED']
-                    status_summary.append(f"{exchange_kr}: {status_emoji}")
-                
-                # 상태 변경 로그와 함께 전체 거래소 상태 출력
-                logger.info(
-                    f"\n=== 거래소 연결 상태 ===\n"
-                    f"{' | '.join(status_summary)}\n"
-                    f"{'=' * 50}"
+        try:
+            if status == "connect":
+                self.metrics_manager.update_metric(
+                    exchange=exchange,
+                    event_type="connect"
+                )
+                logger.info(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결됨")
+                # 연결 상태 변경 시에만 전체 상태 표시
+                self._display_all_connection_status()
+            
+            elif status == "disconnect":
+                self.metrics_manager.update_metric(
+                    exchange=exchange,
+                    event_type="disconnect"
+                )
+                logger.info(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결 해제됨")
+                # 연결 상태 변경 시에만 전체 상태 표시
+                self._display_all_connection_status()
+            
+            elif status == "message":
+                self.metrics_manager.update_metric(
+                    exchange=exchange,
+                    event_type="message"
                 )
                 
-                if is_connected:
-                    metrics.last_message_time = time.time()
-                else:
-                    metrics.reconnect_count += 1
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 연결 상태 업데이트 오류: {str(e)}")
+
+    def _display_all_connection_status(self):
+        """전체 거래소 연결 상태 표시"""
+        try:
+            metrics = self.metrics_manager.get_metrics()
+            status_lines = []
+            
+            # 모든 거래소에 대해 상태 표시 (EXCHANGE_CLASS_MAP의 순서 유지)
+            for exchange in EXCHANGE_CLASS_MAP.keys():
+                metric = metrics.get(exchange, {})
+                status_emoji = "🟢" if metric.get('connected', False) else "⚪"
+                msg_rate = metric.get('messages_per_second', 0.0)
+                status_lines.append(
+                    f"{EXCHANGE_NAMES_KR.get(exchange, exchange)}: {status_emoji} "
+                    f"({msg_rate:.1f}/s)"
+                )
+            
+            logger.info(f"{LOG_SYSTEM} 거래소 연결 | {' | '.join(status_lines)}")
+            
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 전체 상태 표시 오류: {str(e)}", exc_info=True)
 
     def record_message(self, exchange: str, size: int = 0):
-        """메시지 수신 기록"""
-        metrics = self.metrics.get(exchange)
-        if metrics:
-            current_minute = datetime.now().strftime("%Y-%m-%d %H:%M")
-            if current_minute != metrics.last_minute:
-                metrics.message_rates[current_minute] = 0
-                metrics.last_minute = current_minute
-            
-            metrics.message_count += 1
-            metrics.message_rates[current_minute] += 1
-            metrics.last_message_time = time.time()  # 메시지 수신 시 시간 업데이트
-            metrics.bytes_received += size
-            logger.debug(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 메시지 수신 | 크기={format(size, ',')}bytes, 총={format(metrics.message_count, ',')}개")
-
-    def record_orderbook(self, exchange: str, processing_time: float):
-        """오더북 처리 기록"""
-        metrics = self.metrics.get(exchange)
-        if metrics:
-            current_minute = datetime.now().strftime("%Y-%m-%d %H:%M")
-            metrics.orderbook_count += 1
-            metrics.orderbook_rates[current_minute] += 1
-            metrics.processing_times.append(processing_time)
-            
-            logger.debug(
-                f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 오더북 처리 | "
-                f"처리시간={processing_time:.2f}ms, "
-                f"총={format(metrics.orderbook_count, ',')}개"
-            )
-            
-            # 최근 100개의 처리 시간만 유지
-            if len(metrics.processing_times) > 100:
-                metrics.processing_times.pop(0)
+        """메시지 수신 기록 - 메트릭 매니저 위임"""
+        self.metrics_manager.update_metric(
+            exchange=exchange,
+            event_type="message"
+        )
 
     def record_error(self, exchange: str, error: str):
-        """에러 기록"""
-        metrics = self.metrics.get(exchange)
-        if metrics:
-            metrics.error_count += 1
-            metrics.errors.append({
-                "timestamp": datetime.now().isoformat(),
-                "error": error
-            })
-            logger.error(
-                f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['ERROR']} 오류 발생 | "
-                f"메시지={error}, "
-                f"총={metrics.error_count:,}회"
-            )
-            # 최근 100개의 에러만 유지
-            if len(metrics.errors) > 100:
-                metrics.errors.pop(0)
-
-    def record_latency(self, exchange: str, latency_ms: float):
-        """레이턴시 기록"""
-        metrics = self.metrics.get(exchange)
-        if metrics:
-            metrics.latency_ms = latency_ms
-            metrics.last_latency_check = time.time()
+        """에러 기록 - 메트릭 매니저 위임"""
+        self.metrics_manager.update_metric(
+            exchange=exchange,
+            event_type="error"
+        )
 
     def register_callback(self, callback: Callable[[str, dict], None]):
         """콜백 함수 등록"""
@@ -242,6 +167,81 @@ class WebsocketManager:
     def update_usdt_rate(self, rate: float):
         """USDT 환율 업데이트"""
         self.current_usdt_rate = rate
+
+    async def monitor_metrics(self):
+        """메트릭 모니터링 태스크"""
+        logger.info(f"{LOG_SYSTEM} 메트릭 모니터링 시작")
+        last_periodic_log = time.time()  # 마지막 주기적 로그 시간을 현재 시간으로 초기화
+        
+        while not self.stop_event.is_set():
+            try:
+                current_time = time.time()
+                
+                # 메트릭 정리
+                self.metrics_manager.cleanup_old_metrics()
+                
+                # 1분마다 주기적으로 상태 표시
+                if current_time - last_periodic_log >= 60:
+                    self._display_all_connection_status()
+                    last_periodic_log = current_time
+                
+                await asyncio.sleep(1)  # 1초마다 체크
+                
+            except Exception as e:
+                logger.error(f"{LOG_SYSTEM} 메트릭 모니터링 오류: {str(e)}", exc_info=True)
+                await asyncio.sleep(5)  # 오류 발생시 5초 대기
+
+    async def process_queue(self):
+        """메시지 큐 처리"""
+        while not self.stop_event.is_set():
+            try:
+                start_time = time.time()
+                exchange, data = await self.output_queue.get()
+                
+                # 메시지 처리 시간 측정
+                processing_time = (time.time() - start_time) * 1000  # ms 단위
+                
+                # 모든 메시지 기록
+                self.record_message(exchange, len(str(data)))
+                
+                # 메시지 타입 판별 및 큐 데이터 로깅
+                msg_type = self._determine_message_type(data)
+                queue_logger.info(f"큐 데이터 [{msg_type}] - exchange: {exchange}, data: {data}")
+                
+                if self.callback:
+                    await self.callback(exchange, data)
+
+                self.output_queue.task_done()
+                
+            except Exception as e:
+                self.record_error("unknown", str(e))
+                logger.error(f"{LOG_SYSTEM} 큐 처리 실패: {str(e)}", exc_info=True)
+
+    def _determine_message_type(self, data: dict) -> str:
+        """메시지 타입 판별"""
+        if isinstance(data, dict):
+            if 'stream' in data and 'depth' in data['stream'] and 'data' in data:
+                actual_data = data['data']
+                if actual_data.get('e') == 'depthUpdate':
+                    return "orderbook_delta"
+            elif 'e' in data and data['e'] == 'depthUpdate':
+                return "orderbook_delta"
+            elif 'type' in data and data['type'] == 'orderbookdepth':
+                return "orderbook_delta"
+            elif 'result' in data and isinstance(data['result'], dict):
+                result = data['result']
+                if 'b' in result and 'a' in result:
+                    return "orderbook_delta"
+            elif 'topic' in data and 'orderbook' in data['topic']:
+                if data.get('type') == 'delta':
+                    return "orderbook_delta"
+                elif data.get('type') == 'snapshot':
+                    return "orderbook_snapshot"
+            elif 'type' in data and data['type'] == 'orderbook':
+                return "orderbook_delta"
+            elif 'bids' in data and 'asks' in data:
+                return "orderbook_delta"
+        return "other"
 
     async def add_connection(self, websocket):
         """웹소켓 연결 추가"""
@@ -265,28 +265,28 @@ class WebsocketManager:
         while not self.stop_event.is_set():
             try:
                 current_time = time.time()
-                for exchange, metrics in self.metrics.items():
-                    if not metrics.last_message_time:
+                for exchange, metrics in self.metrics_manager.get_metrics().items():
+                    if not metrics['last_message_time']:
                         continue
                         
-                    delay = current_time - metrics.last_message_time  # 초 단위로 계산
-                    if metrics.connection_status and delay > (self.delay_threshold_ms / 1000):  # ms를 초로 변환하여 비교
+                    delay = current_time - metrics['last_message_time']  # 초 단위로 계산
+                    if metrics['connected'] and delay > (self.delay_threshold_ms / 1000):  # ms를 초로 변환하여 비교
                         # 연결이 끊어진 것으로 판단하고 상태 업데이트
-                        if metrics.connection_status:  # 현재 연결된 상태일 때만 업데이트
-                            self.update_connection_status(exchange, "disconnect")
+                        self.metrics_manager.update_metric(exchange, "disconnect")
                         
                     logger.info(
                         f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결 상태 체크 | "
-                        f"연결={'예' if metrics.connection_status else '아니오'}, "
+                        f"연결={'예' if metrics['connected'] else '아니오'}, "
                         f"지연={delay:.1f}초, "
-                        f"총 메시지={format(metrics.message_count, ',')}개, "
-                        f"재연결={metrics.reconnect_count}회"
+                        f"총 메시지={format(metrics['message_count'], ',')}개, "
+                        f"재연결={metrics['reconnect_count']}회"
                     )
                     
                 await asyncio.sleep(60)  # 1분마다 체크
                 
             except Exception as e:
-                logger.error(f"연결 상태 체크 중 오류: {e}")
+                logger.error(f"연결 상태 체크 중 오류: {e}", exc_info=True)
+                await asyncio.sleep(5)  # 오류 발생시 5초 대기
 
     def get_usdt_price(self) -> float:
         """현재 USDT/KRW 가격 조회"""
@@ -320,20 +320,20 @@ class WebsocketManager:
             }
             
             # 거래소 데이터 수집
-            for exchange, metrics in self.metrics.items():
+            for exchange, metrics in self.metrics_manager.get_metrics().items():
                 current_minute = datetime.now().strftime("%Y-%m-%d %H:%M")
                 new_metric["exchanges"][exchange] = {
-                    "connection_status": metrics.connection_status,
-                    "message_count": metrics.message_count,
-                    "message_rate": metrics.message_rates[current_minute],
-                    "orderbook_count": metrics.orderbook_count,
-                    "orderbook_rate": metrics.orderbook_rates[current_minute],
-                    "error_count": metrics.error_count,
-                    "reconnect_count": metrics.reconnect_count,
-                    "latency_ms": metrics.latency_ms,
-                    "avg_processing_time": sum(metrics.processing_times) / len(metrics.processing_times) if metrics.processing_times else 0,
-                    "bytes_received": metrics.bytes_received,
-                    "bytes_sent": metrics.bytes_sent
+                    "connection_status": metrics['connected'],
+                    "message_count": metrics['message_count'],
+                    "message_rate": metrics['messages_per_second'],
+                    "orderbook_count": metrics['orderbook_count'],
+                    "orderbook_rate": metrics['orderbook_per_second'],
+                    "error_count": metrics['error_count'],
+                    "reconnect_count": metrics['reconnect_count'],
+                    "latency_ms": metrics['latency_ms'],
+                    "avg_processing_time": metrics['avg_processing_time'],
+                    "bytes_received": metrics['bytes_received'],
+                    "bytes_sent": metrics['bytes_sent']
                 }
             
             # 기존 데이터 로드 또는 새로운 데이터 구조 생성
@@ -388,67 +388,6 @@ class WebsocketManager:
             "network_bytes_sent": network.bytes_sent,
             "network_bytes_recv": network.bytes_recv
         }
-
-    async def process_queue(self):
-        """메시지 큐 처리"""
-        while not self.stop_event.is_set():
-            try:
-                start_time = time.time()
-                exchange, data = await self.output_queue.get()
-                
-                # 메시지 처리 시간 측정
-                processing_time = (time.time() - start_time) * 1000  # ms 단위
-                
-                # 모든 메시지 기록
-                self.record_message(exchange, len(str(data)))
-                
-                # 메시지 타입 판별
-                msg_type = "other"
-                if isinstance(data, dict):
-                    # 바이낸스 선물/현물
-                    if 'stream' in data and 'depth' in data['stream'] and 'data' in data:
-                        actual_data = data['data']
-                        if actual_data.get('e') == 'depthUpdate':
-                            msg_type = "orderbook_delta"
-                    elif 'e' in data and data['e'] == 'depthUpdate':
-                        msg_type = "orderbook_delta"
-                    # 빗썸
-                    elif 'type' in data and data['type'] == 'orderbookdepth':
-                        msg_type = "orderbook_delta"
-                    # 바이빗 선물
-                    elif 'result' in data and isinstance(data['result'], dict):
-                        result = data['result']
-                        if 'b' in result and 'a' in result:
-                            msg_type = "orderbook_delta"
-                    # 바이빗
-                    elif 'topic' in data and 'orderbook' in data['topic']:
-                        if data.get('type') == 'delta':
-                            msg_type = "orderbook_delta"
-                        elif data.get('type') == 'snapshot':
-                            msg_type = "orderbook_snapshot"
-                    # 업비트
-                    elif 'type' in data and data['type'] == 'orderbook':
-                        msg_type = "orderbook_delta"
-                    # 일반적인 오더북 형식 (bids/asks)
-                    elif 'bids' in data and 'asks' in data:
-                        msg_type = "orderbook_delta"
-                
-                # 큐 데이터 로깅 (메시지 타입 포함)
-                queue_logger.info(f"큐 데이터 [{msg_type}] - exchange: {exchange}, data: {data}")
-                
-                # 오더북 메시지인 경우 처리 (스냅샷과 델타 모두 포함)
-                if "orderbook" in msg_type:
-                    self.record_orderbook(exchange, processing_time)
-                    logger.debug(f"오더북 데이터 처리 - exchange: {exchange}, type: {msg_type}, processing_time: {processing_time:.2f}ms")
-
-                if self.callback:
-                    await self.callback(exchange, data)
-
-                self.output_queue.task_done()
-                
-            except Exception as e:
-                self.record_error("unknown", str(e))
-                logger.error(f"{LOG_SYSTEM} 큐 처리 실패: {str(e)}", exc_info=True)
 
     async def start_exchange_websocket(self, exchange_name: str, symbols: List[str]):
         try:
@@ -534,28 +473,15 @@ class WebsocketManager:
             logger.warning(f"{LOG_SYSTEM} {STATUS_EMOJIS['ERROR']} 디스크 사용량 높음: {system['disk_percent']}%")
         
         # 거래소별 체크
-        for exchange, metrics in self.metrics.items():
+        for exchange, metrics in self.metrics_manager.get_metrics().items():
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             # 초기 연결 시도 전인지 확인
-            is_initial_state = metrics.last_message_time == 0 or metrics.last_message_time == current_time
+            is_initial_state = metrics['last_message_time'] == 0 or metrics['last_message_time'] == current_time
 
             # 이미 연결 시도가 있었고 현재 연결이 끊긴 상태일 때만 경고
-            if not is_initial_state and not metrics.connection_status:
+            if not is_initial_state and not metrics['connected']:
                 self.update_connection_status(exchange, "disconnect")  # 연결 끊김 상태 업데이트
-            elif not is_initial_state and current_time - metrics.last_message_time > 60:
+            elif not is_initial_state and current_time - metrics['last_message_time'] > 60:
                 self.update_connection_status(exchange, "disconnect")  # 1분 이상 메시지 없으면 연결 끊김으로 처리
-            if metrics.latency_ms > 1000:  # 1초 이상
-                logger.warning(f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} 높은 레이턴시: {metrics.latency_ms:.2f}ms")
-
-    async def monitor_metrics(self):
-        """메트릭 모니터링 태스크"""
-        logger.info(f"{LOG_SYSTEM} 메트릭 모니터링 시작 (저장 간격: {self.save_interval}초)")
-        while not self.stop_event.is_set():
-            try:
-                logger.debug("메트릭 저장 시도 중...")
-                self.save_metrics()
-                await self.check_alerts()
-                await asyncio.sleep(self.metric_update_interval)
-            except Exception as e:
-                logger.error(f"메트릭 모니터링 중 오류: {str(e)}", exc_info=True)
-                await asyncio.sleep(60)  # 오류 발생시 1분 대기 후 재시도
+            if metrics['latency_ms'] > 1000:  # 1초 이상
+                logger.warning(f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} 높은 레이턴시: {metrics['latency_ms']:.2f}ms")
