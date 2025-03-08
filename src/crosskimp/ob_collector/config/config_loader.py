@@ -129,24 +129,6 @@ SETTINGS_SCHEMA = {
             "excluded_symbols": dict
         }
     },
-    "connection": {
-        "required_fields": [
-            "websocket.delay_threshold_ms",
-            "websocket.alert_cooldown_sec",
-            "websocket.max_retries",
-            "websocket.retry_delay_sec",
-            "websocket.ping_interval_sec"
-        ],
-        "types": {
-            "websocket": dict,
-            "websocket.delay_threshold_ms": (int, float),
-            "websocket.alert_cooldown_sec": (int, float),
-            "websocket.max_retries": int,
-            "websocket.retry_delay_sec": (int, float),
-            "websocket.ping_interval_sec": (int, float),
-            "rest_api": dict
-        }
-    },
     "monitoring": {
         "required_fields": [
             "port",

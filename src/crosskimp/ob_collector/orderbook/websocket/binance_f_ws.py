@@ -9,7 +9,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
 from crosskimp.ob_collector.orderbook.orderbook.binance_future_orderbook_manager import BinanceFutureOrderBookManager, parse_binance_future_depth_update
 
 # 로거 인스턴스 가져오기
@@ -56,7 +56,6 @@ class BinanceFutureWebsocket(BaseWebsocket):
         super().set_output_queue(queue)
         if self.orderbook_manager:
             self.orderbook_manager.output_queue = queue
-        logger.info("[BinanceFuture] 출력 큐 설정 완료")
 
     async def connect(self):
         """
@@ -223,10 +222,11 @@ class BinanceFutureWebsocket(BaseWebsocket):
 
         while not self.stop_event.is_set():
             try:
+                # 단일 연결로 모든 심볼 구독
                 await self.subscribe(exchange_symbols)
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "connect")
-                logger.info("[BinanceFuture] 연결 성공")
+                logger.info(f"[BinanceFuture] 연결 성공 | 구독 심볼: {len(exchange_symbols)}개")
 
                 while not self.stop_event.is_set():
                     try:

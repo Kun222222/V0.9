@@ -10,7 +10,7 @@ from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.config.config_loader import get_settings, initialize_config, add_config_observer, shutdown_config
 from crosskimp.ob_collector.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT
 from crosskimp.ob_collector.server.backend.monitor_server import MonitoringServer
-from crosskimp.ob_collector.orderbook.websocket.websocket_manager import WebsocketManager
+from crosskimp.ob_collector.orderbook.websocket.base_ws_manager import WebsocketManager
 
 from crosskimp.telegrambot.notification.telegram_bot import send_telegram_message, MessageType, send_system_status, send_market_status, send_error
 

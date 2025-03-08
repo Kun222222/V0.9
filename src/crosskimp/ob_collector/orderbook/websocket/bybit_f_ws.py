@@ -9,7 +9,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
 from crosskimp.ob_collector.orderbook.orderbook.base_orderbook import ValidationResult
 from crosskimp.ob_collector.orderbook.orderbook.bybit_future_orderbook_manager import BybitFutureOrderBookManager
 

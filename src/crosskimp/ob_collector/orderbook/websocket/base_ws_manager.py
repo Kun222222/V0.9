@@ -26,14 +26,14 @@ import os
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.config.config_loader import get_settings
-from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM
-from crosskimp.ob_collector.orderbook.manager.websocket_metrics_manager import WebsocketMetricsManager
-from crosskimp.ob_collector.orderbook.websocket.binance_spot_websocket import BinanceSpotWebsocket
-from crosskimp.ob_collector.orderbook.websocket.binance_future_websocket import BinanceFutureWebsocket
-from crosskimp.ob_collector.orderbook.websocket.bybit_spot_websocket import BybitSpotWebsocket
-from crosskimp.ob_collector.orderbook.websocket.bybit_future_websocket import BybitFutureWebsocket
-from crosskimp.ob_collector.orderbook.websocket.upbit_websocket import UpbitWebsocket
-from crosskimp.ob_collector.orderbook.websocket.bithumb_spot_websocket import BithumbSpotWebsocket
+from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS
+from crosskimp.ob_collector.orderbook.manager.metrics_manager import WebsocketMetricsManager
+from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutureWebsocket
+from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotWebsocket
+from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
+from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
+from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebsocket
+from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 
 from crosskimp.telegrambot.notification.telegram_bot import send_telegram_message
 
@@ -64,7 +64,7 @@ class ExchangeMetrics:
         self.orderbook_count = 0
         self.orderbook_rates = defaultdict(int)  # 분당 오더북 수
         self.error_count = 0
-        self.reconnect_count = 0
+        self.reconnect_count = 0  # 재연결 횟수 추가
         self.errors = []
         self.latency_ms = 0
         self.last_latency_check = 0
@@ -147,21 +147,34 @@ class WebsocketManager:
         # 거래소 초기화
         current_time = time.time()
         for exchange in EXCHANGE_CLASS_MAP.keys():
-            self.metrics[exchange].last_message_time = current_time * 1000
+            self.metrics[exchange].last_message_time = current_time  # 초 단위로 저장
 
-    def update_connection_status(self, exchange: str, status: bool):
+    def update_connection_status(self, exchange: str, status: str):
         """연결 상태 업데이트"""
         metrics = self.metrics.get(exchange)
         if metrics:
-            if metrics.connection_status != status:
-                if status:
-                    logger.info(f"[{exchange}] 연결됨")
+            is_connected = (status == "connect")
+            if metrics.connection_status != is_connected:
+                metrics.connection_status = is_connected
+                
+                # 모든 거래소의 현재 상태를 수집
+                status_summary = []
+                for ex_name, ex_metrics in self.metrics.items():
+                    exchange_kr = EXCHANGE_NAMES_KR.get(ex_name, ex_name)
+                    status_emoji = STATUS_EMOJIS['CONNECTED'] if ex_metrics.connection_status else STATUS_EMOJIS['DISCONNECTED']
+                    status_summary.append(f"{exchange_kr}: {status_emoji}")
+                
+                # 상태 변경 로그와 함께 전체 거래소 상태 출력
+                logger.info(
+                    f"\n=== 거래소 연결 상태 ===\n"
+                    f"{' | '.join(status_summary)}\n"
+                    f"{'=' * 50}"
+                )
+                
+                if is_connected:
+                    metrics.last_message_time = time.time()
                 else:
                     metrics.reconnect_count += 1
-                    logger.warning(f"[{exchange}] 연결 끊김 (재연결 {metrics.reconnect_count}회)")
-            metrics.connection_status = status
-            metrics.last_message_time = time.time()
-            logger.debug(f"[{exchange}] 연결 상태 업데이트: {status}")
 
     def record_message(self, exchange: str, size: int = 0):
         """메시지 수신 기록"""
@@ -174,8 +187,9 @@ class WebsocketManager:
             
             metrics.message_count += 1
             metrics.message_rates[current_minute] += 1
-            metrics.last_message_time = time.time()
+            metrics.last_message_time = time.time()  # 메시지 수신 시 시간 업데이트
             metrics.bytes_received += size
+            logger.debug(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 메시지 수신 | 크기={format(size, ',')}bytes, 총={format(metrics.message_count, ',')}개")
 
     def record_orderbook(self, exchange: str, processing_time: float):
         """오더북 처리 기록"""
@@ -185,6 +199,12 @@ class WebsocketManager:
             metrics.orderbook_count += 1
             metrics.orderbook_rates[current_minute] += 1
             metrics.processing_times.append(processing_time)
+            
+            logger.debug(
+                f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 오더북 처리 | "
+                f"처리시간={processing_time:.2f}ms, "
+                f"총={format(metrics.orderbook_count, ',')}개"
+            )
             
             # 최근 100개의 처리 시간만 유지
             if len(metrics.processing_times) > 100:
@@ -199,6 +219,11 @@ class WebsocketManager:
                 "timestamp": datetime.now().isoformat(),
                 "error": error
             })
+            logger.error(
+                f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['ERROR']} 오류 발생 | "
+                f"메시지={error}, "
+                f"총={metrics.error_count:,}회"
+            )
             # 최근 100개의 에러만 유지
             if len(metrics.errors) > 100:
                 metrics.errors.pop(0)
@@ -222,13 +247,13 @@ class WebsocketManager:
         """웹소켓 연결 추가"""
         async with self._connection_lock:
             self._active_connections.add(websocket)
-            logger.info(f"{LOG_SYSTEM} 새 연결 추가됨. 총 {len(self._active_connections)}개")
+            logger.info(f"새 연결 추가됨. 총 {len(self._active_connections)}개")
     
     async def remove_connection(self, websocket):
         """웹소켓 연결 제거"""
         async with self._connection_lock:
             self._active_connections.discard(websocket)
-            logger.info(f"{LOG_SYSTEM} 연결 제거됨. 남은 연결 {len(self._active_connections)}개")
+            logger.info(f"연결 제거됨. 남은 연결 {len(self._active_connections)}개")
     
     async def is_connected(self, websocket) -> bool:
         """웹소켓 연결 상태 확인"""
@@ -244,18 +269,24 @@ class WebsocketManager:
                     if not metrics.last_message_time:
                         continue
                         
-                    delay = current_time - metrics.last_message_time
+                    delay = current_time - metrics.last_message_time  # 초 단위로 계산
+                    if metrics.connection_status and delay > (self.delay_threshold_ms / 1000):  # ms를 초로 변환하여 비교
+                        # 연결이 끊어진 것으로 판단하고 상태 업데이트
+                        if metrics.connection_status:  # 현재 연결된 상태일 때만 업데이트
+                            self.update_connection_status(exchange, "disconnect")
+                        
                     logger.info(
-                        f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결 상태 체크 | "
+                        f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결 상태 체크 | "
                         f"연결={'예' if metrics.connection_status else '아니오'}, "
                         f"지연={delay:.1f}초, "
-                        f"총 메시지={metrics.message_count:,}개"
+                        f"총 메시지={format(metrics.message_count, ',')}개, "
+                        f"재연결={metrics.reconnect_count}회"
                     )
                     
                 await asyncio.sleep(60)  # 1분마다 체크
                 
             except Exception as e:
-                logger.error(f"{LOG_SYSTEM} 연결 상태 체크 중 오류: {e}")
+                logger.error(f"연결 상태 체크 중 오류: {e}")
 
     def get_usdt_price(self) -> float:
         """현재 USDT/KRW 가격 조회"""
@@ -422,62 +453,35 @@ class WebsocketManager:
     async def start_exchange_websocket(self, exchange_name: str, symbols: List[str]):
         try:
             exchange_name_lower = exchange_name.lower()
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange_name_lower, exchange_name_lower)
             ws_class = EXCHANGE_CLASS_MAP.get(exchange_name_lower)
             
             if not ws_class:
-                logger.error(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 지원하지 않는 거래소")
+                logger.error(f"[{exchange_kr}] {STATUS_EMOJIS['ERROR']} 지원하지 않는 거래소")
                 return
 
             if not symbols:
-                logger.warning(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 구독할 심볼이 없음")
+                logger.warning(f"[{exchange_kr}] {STATUS_EMOJIS['ERROR']} 구독할 심볼이 없음")
                 return
 
-            logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 웹소켓 시작 | symbols={len(symbols)}개: {symbols}")
+            logger.info(f"[{exchange_kr}] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 시작 | symbols={len(symbols)}개: {symbols}")
 
-            # binancefuture: 여러 그룹으로 나누어 처리
-            if exchange_name_lower == "binancefuture":
-                group_size = 10
-                symbol_groups = [symbols[i:i+group_size] for i in range(0, len(symbols), group_size)]
-                
-                # 기존 인스턴스가 있다면 정리
-                for key in list(self.websockets.keys()):
-                    if key.startswith(exchange_name_lower):
-                        if self.websockets[key]:
-                            await self.websockets[key].shutdown()
-                        self.websockets.pop(key, None)
-                        self.tasks.pop(key, None)
-                
-                for idx, group_syms in enumerate(symbol_groups):
-                    instance_key = f"{exchange_name_lower}_{idx}"
-                    logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange_name, exchange_name)}] 그룹 {idx+1}/{len(symbol_groups)} 시작 | symbols={group_syms}")
-                    
-                    ws_instance = ws_class(self.settings)
-                    ws_instance.instance_key = "binancefuture"
-                    ws_instance.set_output_queue(self.output_queue)
-                    ws_instance.connection_status_callback = self.update_connection_status
-                    ws_instance.start_time = time.time()
+            # 기존 인스턴스가 있다면 정리
+            if exchange_name_lower in self.websockets:
+                if self.websockets[exchange_name_lower]:
+                    await self.websockets[exchange_name_lower].shutdown()
+                self.websockets.pop(exchange_name_lower, None)
+                self.tasks.pop(exchange_name_lower, None)
+            
+            ws_instance = ws_class(self.settings)
+            ws_instance.set_output_queue(self.output_queue)
+            ws_instance.connection_status_callback = self.update_connection_status
+            ws_instance.start_time = time.time()
 
-                    self.websockets[instance_key] = ws_instance
-                    self.tasks[instance_key] = asyncio.create_task(
-                        ws_instance.start({exchange_name_lower: group_syms})
-                    )
-            else:
-                # 기존 인스턴스가 있다면 정리
-                if exchange_name_lower in self.websockets:
-                    if self.websockets[exchange_name_lower]:
-                        await self.websockets[exchange_name_lower].shutdown()
-                    self.websockets.pop(exchange_name_lower, None)
-                    self.tasks.pop(exchange_name_lower, None)
-                
-                ws_instance = ws_class(self.settings)
-                ws_instance.set_output_queue(self.output_queue)
-                ws_instance.connection_status_callback = self.update_connection_status
-                ws_instance.start_time = time.time()
-
-                self.websockets[exchange_name_lower] = ws_instance
-                self.tasks[exchange_name_lower] = asyncio.create_task(
-                    ws_instance.start({exchange_name_lower: symbols})
-                )
+            self.websockets[exchange_name_lower] = ws_instance
+            self.tasks[exchange_name_lower] = asyncio.create_task(
+                ws_instance.start({exchange_name_lower: symbols})
+            )
 
         except Exception as e:
             self.record_error(exchange_name_lower, str(e))
@@ -485,7 +489,6 @@ class WebsocketManager:
 
     async def start_all_websockets(self, filtered_data: Dict[str, List[str]]):
         try:
-            logger.info(f"{LOG_SYSTEM} 웹소켓 시작 | filtered_data={filtered_data}")
             
             self.tasks['queue'] = asyncio.create_task(self.process_queue())
             logger.info(f"{LOG_SYSTEM} 큐 처리 태스크 생성 완료")
@@ -495,9 +498,9 @@ class WebsocketManager:
             logger.info(f"{LOG_SYSTEM} 메트릭 모니터링 태스크 생성 완료")
             
             for exchange, syms in filtered_data.items():
-                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 시작 준비 | symbols={syms}")
+                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 초기화 준비 | symbols={syms}")
                 await self.start_exchange_websocket(exchange, syms)
-                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 시작 완료")
+                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 초기화 완료")
                 
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 웹소켓 시작 실패: {e}", exc_info=True)
@@ -524,20 +527,25 @@ class WebsocketManager:
         
         # 시스템 리소스 체크
         if system["cpu_percent"] > 90:
-            logger.warning(f"CPU 사용량 높음: {system['cpu_percent']}%")
+            logger.warning(f"{LOG_SYSTEM} {STATUS_EMOJIS['ERROR']} CPU 사용량 높음: {system['cpu_percent']}%")
         if system["memory_percent"] > 90:
-            logger.warning(f"메모리 사용량 높음: {system['memory_percent']}%")
+            logger.warning(f"{LOG_SYSTEM} {STATUS_EMOJIS['ERROR']} 메모리 사용량 높음: {system['memory_percent']}%")
         if system["disk_percent"] > 90:
-            logger.warning(f"디스크 사용량 높음: {system['disk_percent']}%")
-            
+            logger.warning(f"{LOG_SYSTEM} {STATUS_EMOJIS['ERROR']} 디스크 사용량 높음: {system['disk_percent']}%")
+        
         # 거래소별 체크
         for exchange, metrics in self.metrics.items():
-            if not metrics.connection_status:
-                logger.warning(f"{exchange} 웹소켓 연결 끊김")
-            elif current_time - metrics.last_message_time > 60:
-                logger.warning(f"{exchange} 1분 이상 메시지 수신 없음")
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            # 초기 연결 시도 전인지 확인
+            is_initial_state = metrics.last_message_time == 0 or metrics.last_message_time == current_time
+
+            # 이미 연결 시도가 있었고 현재 연결이 끊긴 상태일 때만 경고
+            if not is_initial_state and not metrics.connection_status:
+                self.update_connection_status(exchange, "disconnect")  # 연결 끊김 상태 업데이트
+            elif not is_initial_state and current_time - metrics.last_message_time > 60:
+                self.update_connection_status(exchange, "disconnect")  # 1분 이상 메시지 없으면 연결 끊김으로 처리
             if metrics.latency_ms > 1000:  # 1초 이상
-                logger.warning(f"{exchange} 높은 레이턴시: {metrics.latency_ms:.2f}ms")
+                logger.warning(f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} 높은 레이턴시: {metrics.latency_ms:.2f}ms")
 
     async def monitor_metrics(self):
         """메트릭 모니터링 태스크"""

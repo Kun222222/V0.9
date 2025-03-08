@@ -47,11 +47,11 @@ class Exchange(Enum):
 # 거래소 한글 이름
 EXCHANGE_NAMES_KR = {
     "binance": "바이낸스",
-    "bybit": "바이비트",
+    "bybit": "바이빗",
     "upbit": "업비트",
     "bithumb": "빗썸",
     "binancefuture": "바이낸스 선물",
-    "bybitfuture": "바이비트 선물"
+    "bybitfuture": "바이빗 선물"
 }
 
 # ============================
@@ -114,34 +114,51 @@ API_URLS = {
 # ============================
 WEBSOCKET_CONFIG = {
     "upbit": {
-        "update_speed": 100,  # ms
-        "depth_levels": 15,   # 호가 단계
-        "ping_interval": 60   # 초
+        "depth_levels": 15,
+        "ping_interval": 60,
+        "ping_timeout": 10,
+        "update_speed_ms": 100
     },
     "bithumb": {
-        "update_speed": 100,
         "depth_levels": 15,
-        "ping_interval": 30
+        "ping_interval": 30,
+        "ping_timeout": 10,
+        "update_speed_ms": 100
     },
     "binance": {
-        "update_speed": 100,
         "depth_levels": 20,
-        "ping_interval": 20
+        "ping_interval": 150,  # 바이낸스는 더 긴 핑 간격 사용
+        "ping_timeout": 10,
+        "update_speed_ms": 100
     },
     "binance_futures": {
-        "update_speed": 100,
         "depth_levels": 20,
-        "ping_interval": 20
+        "ping_interval": 150,  # 바이낸스는 더 긴 핑 간격 사용
+        "ping_timeout": 10,
+        "update_speed_ms": 100
     },
     "bybit": {
-        "update_speed": 100,
         "depth_levels": 25,
-        "ping_interval": 20
+        "ping_interval": 20,
+        "ping_timeout": 10,
+        "update_speed_ms": 100
     },
     "bybit_futures": {
-        "update_speed": 100,
         "depth_levels": 25,
-        "ping_interval": 20
+        "ping_interval": 20,
+        "ping_timeout": 10,
+        "update_speed_ms": 100
+    }
+}
+
+# 웹소켓 공통 설정
+WEBSOCKET_COMMON_CONFIG = {
+    "health_check_interval": 10,  # 헬스체크 간격 (초)
+    "message_timeout": 30,        # 메시지 타임아웃 (초)
+    "reconnect": {
+        "initial_delay": 1.0,     # 초기 재연결 대기 시간
+        "max_delay": 60.0,        # 최대 재연결 대기 시간
+        "max_attempts": 0         # 무제한 재시도 (0)
     }
 }
 
@@ -152,5 +169,5 @@ __all__ = [
     'LOAD_TIMEOUT', 'SAVE_TIMEOUT', 'RETRY_DELAY', 'MAX_RETRIES',
     'Exchange', 'EXCHANGE_NAMES_KR',
     'STATUS_EMOJIS', 'LOG_SYSTEM',
-    'WEBSOCKET_URLS', 'API_URLS', 'WEBSOCKET_CONFIG'
+    'WEBSOCKET_URLS', 'API_URLS', 'WEBSOCKET_CONFIG', 'WEBSOCKET_COMMON_CONFIG'
 ] 

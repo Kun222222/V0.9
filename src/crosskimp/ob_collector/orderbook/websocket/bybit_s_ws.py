@@ -7,7 +7,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
 from crosskimp.ob_collector.orderbook.orderbook.bybit_spot_orderbook_manager import BybitSpotOrderBookManager
 
 # 로거 인스턴스 가져오기
@@ -91,9 +91,9 @@ class BybitSpotWebsocket(BaseWebsocket):
         self.raw_logger = get_raw_logger("bybit_spot")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
-        super().set_output_queue(queue)
-        self.orderbook_manager.set_output_queue(queue)
-        logger.info("[BybitSpot] output queue set")
+        super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)
+        self.orderbook_manager.set_output_queue(queue)  # 오더북 매니저 큐 설정
+        # 부모 클래스에서 이미 로깅하므로 여기서는 생략
 
     async def connect(self) -> None:
         while True:  # 무한 재시도 루프

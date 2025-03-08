@@ -5,8 +5,8 @@
     "spot": {
       "binance": {
         "enabled": true,
-        "name": "\ubc14\uc774\ub0b8\uc2a4",
-        "description": "\uae00\ub85c\ubc8c \ucd5c\ub300 \uac70\ub798\uc18c",
+        "name": "바이낸스",
+        "description": "글로벌 최대 거래소",
         "trading": {
           "fees": {
             "maker": 0.1,
@@ -18,18 +18,12 @@
           "max_order": {
             "amount_usdt": 100000
           }
-        },
-        "websocket": {
-          "orderbook": {
-            "depth": 10,
-            "update_interval_ms": 100
-          }
         }
       },
       "bybit": {
         "enabled": true,
-        "name": "\ubc14\uc774\ube44\ud2b8",
-        "description": "\uae00\ub85c\ubc8c \uc8fc\uc694 \uac70\ub798\uc18c",
+        "name": "바이빗",
+        "description": "글로벌 주요 거래소",
         "trading": {
           "fees": {
             "maker": 0.1,
@@ -41,13 +35,12 @@
           "max_order": {
             "amount_usdt": 10000
           }
-        },
-        "websocket": {}
+        }
       },
       "upbit": {
         "enabled": false,
-        "name": "\uc5c5\ube44\ud2b8",
-        "description": "\uad6d\ub0b4 \ucd5c\ub300 \uac70\ub798\uc18c",
+        "name": "업비트",
+        "description": "국내 최대 거래소",
         "trading": {
           "fees": {
             "maker": 0.05,
@@ -59,18 +52,12 @@
           "max_order": {
             "amount_krw": 100000000
           }
-        },
-        "websocket": {
-          "orderbook": {
-            "depth": 10,
-            "update_interval_ms": 100
-          }
         }
       },
       "bithumb": {
         "enabled": true,
-        "name": "\ube57\uc378",
-        "description": "\uad6d\ub0b4 \uc8fc\uc694 \uac70\ub798\uc18c",
+        "name": "빗썸",
+        "description": "국내 주요 거래소",
         "trading": {
           "fees": {
             "maker": 0.037,
@@ -82,20 +69,14 @@
           "max_order": {
             "amount_krw": 100000000
           }
-        },
-        "websocket": {
-          "orderbook": {
-            "depth": 10,
-            "update_interval_ms": 100
-          }
         }
       }
     },
     "future": {
       "binance": {
         "enabled": true,
-        "name": "\ubc14\uc774\ub0b8\uc2a4 \uc120\ubb3c",
-        "description": "\ubc14\uc774\ub0b8\uc2a4 USDT-M \uc120\ubb3c",
+        "name": "바이낸스 선물",
+        "description": "바이낸스 USDT-M 선물",
         "trading": {
           "fees": {
             "maker": 0.05,
@@ -105,18 +86,12 @@
             "max": 5,
             "default": 1
           }
-        },
-        "websocket": {
-          "orderbook": {
-            "depth": 10,
-            "update_interval_ms": 100
-          }
         }
       },
       "bybit": {
         "enabled": true,
-        "name": "\ubc14\uc774\ube44\ud2b8 \uc120\ubb3c",
-        "description": "\ubc14\uc774\ube44\ud2b8 USDT-M \uc120\ubb3c",
+        "name": "바이빗 선물",
+        "description": "바이빗 USDT-M 선물",
         "trading": {
           "fees": {
             "maker": 0.055,
@@ -125,12 +100,6 @@
           "leverage": {
             "max": 5,
             "default": 1
-          }
-        },
-        "websocket": {
-          "orderbook": {
-            "depth": 10,
-            "update_interval_ms": 100
           }
         }
       }
@@ -231,39 +200,6 @@
         "TEST$",
         "IEO"
       ]
-    }
-  },
-  "connection": {
-    "websocket": {
-      "delay_threshold_ms": 1000,
-      "alert_cooldown_sec": 300,
-      "max_retries": 5,
-      "retry_delay_sec": 3,
-      "ping_interval_sec": 30,
-      "monitoring": {
-        "update_interval_ms": 1000,
-        "reconnect_attempts": 3,
-        "reconnect_delay_ms": 1000
-      },
-      "depth_level": 50,
-      "orderbook_depth": 10
-    },
-    "rest_api": {
-      "timeout_sec": 10,
-      "max_retries": 3
-    }
-  },
-  "logging": {
-    "level": "INFO",
-    "format": "%(asctime)s - %(levelname)s - %(message)s",
-    "handlers": {
-      "console": true,
-      "file": true,
-      "websocket_data": false
-    },
-    "rotation": {
-      "max_bytes": 10485760,
-      "backup_count": 5
     }
   },
   "monitoring": {

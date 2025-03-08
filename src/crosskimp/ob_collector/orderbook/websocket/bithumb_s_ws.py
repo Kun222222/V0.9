@@ -7,7 +7,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_spot_orderbook_manager import BithumbSpotOrderBookManager
 
 # 로거 인스턴스 가져오기
@@ -81,9 +81,8 @@ class BithumbSpotWebsocket(BaseWebsocket):
         self.raw_logger = get_raw_logger("bithumb_spot")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
-        super().set_output_queue(queue)
-        self.manager.output_queue = queue
-        self.logger.info("[BithumbSpot] 출력 큐 설정 완료")
+        super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)
+        self.manager.output_queue = queue  # 오더북 매니저 큐 설정
 
     async def connect(self):
         try:

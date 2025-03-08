@@ -11,8 +11,8 @@ from crosskimp.ob_collector.config.constants import LOG_SYSTEM
 # ============================
 # 상수 정의
 # ============================
-LOG_FORMAT = '[%(asctime)s.%(msecs)03d] - [%(filename)s:%(lineno)d] - %(levelname)s - %(message)s'
-DEBUG_LOG_FORMAT = '[%(asctime)s.%(msecs)03d] - [%(filename)s:%(lineno)d] - %(message)s'
+LOG_FORMAT = '[%(asctime)s.%(msecs)03d] [%(filename)-30s:%(lineno)3d] %(levelname)-8s %(message)s'
+DEBUG_LOG_FORMAT = '[%(asctime)s.%(msecs)03d] [%(filename)s:%(lineno)d] %(message)s'
 LOG_ENCODING = 'utf-8'
 LOG_MODE = 'a'  # append 모드
 
@@ -160,6 +160,32 @@ def create_queue_logger(name: str, base_dir: str) -> logging.Logger:
 _loggers = {}  # 싱글톤 패턴을 위한 로거 캐시
 _unified_logger = None  # 통합 로거 인스턴스
 
+class SafeRotatingFileHandler(RotatingFileHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_refresh = time.time()
+        self.refresh_interval = 300  # 5분마다 리프레시
+
+    def emit(self, record):
+        try:
+            # 주기적으로 핸들러 리프레시
+            current_time = time.time()
+            if current_time - self.last_refresh > self.refresh_interval:
+                self.close()
+                self.stream = self._open()
+                self.last_refresh = current_time
+            
+            super().emit(record)
+            self.flush()  # 즉시 디스크에 기록
+        except Exception as e:
+            self.handleError(record)
+            # 에러 발생시 핸들러 리프레시 시도
+            try:
+                self.close()
+                self.stream = self._open()
+            except:
+                pass
+
 def get_unified_logger():
     """통합 로거 싱글톤 인스턴스 반환"""
     global _unified_logger
@@ -207,9 +233,9 @@ def get_raw_logger(exchange_name: str) -> logging.Logger:
     if not logger.handlers:  # 핸들러가 없을 때만 추가
         logger.setLevel(logging.INFO)
         
-        # 파일명 설정 (예: raw_upbit_20240307.log)
-        today = datetime.now().strftime("%Y%m%d")
-        log_file = os.path.join(LOG_DIRS['raw'], f"raw_{exchange_name}_{today}.log")
+        # 파일명 설정 (예: raw_upbit_20240307_153000.log)
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(LOG_DIRS['raw'], f"raw_{exchange_name}_{current_time}.log")
         
         # 파일 핸들러 설정 (100MB 단위로 로테이션, 최대 100개 파일 유지)
         file_handler = RotatingFileHandler(

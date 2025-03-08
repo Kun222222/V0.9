@@ -8,7 +8,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_websocket import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
 from crosskimp.ob_collector.orderbook.orderbook.binance_spot_orderbook_manager import BinanceSpotOrderBookManager
 
 # 로거 인스턴스 가져오기
@@ -62,10 +62,7 @@ class BinanceSpotWebsocket(BaseWebsocket):
         self.ws = None
         self.session = None
         self.ws_url = "wss://stream.binance.com:9443/ws"
-        # Ping/Pong 설정 추가
-        self.ping_interval = 150
-        self.ping_timeout = 10
-        self.logger = logger  # binance_logger 대신 unified_logger 사용
+        self.logger = logger
         
         # raw 로거 초기화
         self.raw_logger = get_raw_logger("binance_spot")
