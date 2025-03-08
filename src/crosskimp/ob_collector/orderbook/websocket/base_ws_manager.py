@@ -32,7 +32,8 @@ from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutur
 from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
-from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebsocket
+from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebSocket
+from crosskimp.ob_collector.orderbook.websocket.bybit_s_v2_ws import BybitSpotWebSocketV2
 from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 
 from crosskimp.telegrambot.notification.telegram_bot import send_telegram_message
@@ -43,7 +44,8 @@ from crosskimp.telegrambot.notification.telegram_bot import send_telegram_messag
 EXCHANGE_CLASS_MAP = {
     "binance": BinanceSpotWebsocket,
     "binancefuture": BinanceFutureWebsocket,
-    "bybit": BybitSpotWebsocket,
+    "bybit": BybitSpotWebSocket,
+    "bybit2": BybitSpotWebSocketV2,
     "bybitfuture": BybitFutureWebsocket,
     "upbit": UpbitWebsocket,
     "bithumb": BithumbSpotWebsocket

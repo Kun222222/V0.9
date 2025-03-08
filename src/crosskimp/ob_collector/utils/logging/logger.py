@@ -195,57 +195,39 @@ class SafeRotatingFileHandler(RotatingFileHandler):
         super().__init__(*args, **kwargs)
         self.last_refresh = time.time()
         self.refresh_interval = 300  # 5분마다 리프레시
-        self.lock = None  # 파일 락을 위한 변수
+        import threading
+        self.lock = threading.RLock()  # 스레드 안전한 재진입 락 사용
 
     def _open(self):
-        """파일 열기 시 락 획득"""
-        import fcntl
-        stream = super()._open()
+        """파일 열기"""
         try:
-            if hasattr(stream, 'fileno'):
-                self.lock = stream
-                fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (IOError, OSError):
-            if self.lock:
-                try:
-                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
-                except:
-                    pass
-                self.lock = None
-        return stream
+            return super()._open()
+        except Exception as e:
+            print(f"{LOG_SYSTEM} 로그 파일 열기 실패: {e}")
+            # 파일 열기 실패 시 임시 파일로 대체
+            import tempfile
+            return tempfile.TemporaryFile(mode='a+', encoding=LOG_ENCODING)
 
     def close(self):
-        """파일 닫기 시 락 해제"""
+        """파일 닫기"""
         try:
-            if self.lock:
-                import fcntl
-                try:
-                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
-                except:
-                    pass
-                self.lock = None
-        finally:
             super().close()
+        except Exception as e:
+            print(f"{LOG_SYSTEM} 로그 파일 닫기 실패: {e}")
 
     def doRollover(self):
         """로그 파일 로테이션 수행"""
         try:
-            if self.lock:
-                import fcntl
-                try:
-                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
-                except:
-                    pass
-                self.lock = None
-            super().doRollover()
+            with self.lock:  # 락 사용
+                super().doRollover()
         except Exception as e:
             print(f"{LOG_SYSTEM} 로그 로테이션 중 오류 발생: {e}")
             # 에러 발생 시 새로운 파일 생성 시도
             try:
                 self.close()
                 self.stream = self._open()
-            except:
-                pass
+            except Exception as inner_e:
+                print(f"{LOG_SYSTEM} 로그 스트림 재생성 실패: {inner_e}")
 
     def emit(self, record):
         """로그 레코드 출력"""
@@ -253,25 +235,40 @@ class SafeRotatingFileHandler(RotatingFileHandler):
             # 주기적으로 핸들러 리프레시
             current_time = time.time()
             if current_time - self.last_refresh > self.refresh_interval:
-                self.close()
-                self.stream = self._open()
-                self.last_refresh = current_time
+                with self.lock:  # 락 사용
+                    self.close()
+                    self.stream = self._open()
+                    self.last_refresh = current_time
             
             # 파일 크기 체크 및 로테이션
             if self.shouldRollover(record):
                 self.doRollover()
             
-            super().emit(record)
-            self.flush()  # 즉시 디스크에 기록
+            with self.lock:  # 락 사용
+                super().emit(record)
+                self.flush()  # 즉시 디스크에 기록
         except Exception as e:
             self.handleError(record)
             print(f"{LOG_SYSTEM} 로그 기록 중 오류 발생: {e}")
             # 에러 발생시 핸들러 리프레시 시도
             try:
-                self.close()
-                self.stream = self._open()
-            except:
-                pass
+                with self.lock:  # 락 사용
+                    self.close()
+                    self.stream = self._open()
+            except Exception as inner_e:
+                print(f"{LOG_SYSTEM} 로그 스트림 재생성 실패: {inner_e}")
+
+    def acquire(self):
+        """락 획득 - 오버라이드"""
+        self.lock.acquire()
+        
+    def release(self):
+        """락 해제 - 오버라이드"""
+        try:
+            self.lock.release()
+        except RuntimeError:
+            # 이미 해제된 락에 대한 예외 무시
+            pass
 
 def get_unified_logger():
     """통합 로거 싱글톤 인스턴스 반환"""
@@ -287,13 +284,51 @@ def get_unified_logger():
 
 def get_queue_logger():
     """큐 로거 싱글톤 인스턴스 반환"""
-    if 'queue_logger' not in _loggers:
-        ensure_log_directories()
-        _loggers['queue_logger'] = create_queue_logger(
-            name='queue_logger',
-            base_dir=LOG_DIRS['base']
-        )
-    return _loggers['queue_logger']
+    try:
+        if 'queue_logger' not in _loggers or not _loggers['queue_logger'].handlers:
+            ensure_log_directories()
+            _loggers['queue_logger'] = create_queue_logger(
+                name='queue_logger',
+                base_dir=LOG_DIRS['base']
+            )
+        
+        # 핸들러 상태 확인 및 복구
+        for handler in _loggers['queue_logger'].handlers[:]:
+            if isinstance(handler, SafeRotatingFileHandler):
+                try:
+                    # 핸들러 상태 테스트
+                    if handler.stream is None or handler.stream.closed:
+                        _loggers['queue_logger'].removeHandler(handler)
+                        new_handler = SafeRotatingFileHandler(
+                            filename=handler.baseFilename,
+                            maxBytes=handler.maxBytes,
+                            backupCount=handler.backupCount,
+                            encoding=handler.encoding,
+                            mode=handler.mode
+                        )
+                        new_handler.setFormatter(handler.formatter)
+                        new_handler.setLevel(handler.level)
+                        _loggers['queue_logger'].addHandler(new_handler)
+                except Exception as e:
+                    print(f"{LOG_SYSTEM} 큐 로거 핸들러 복구 실패: {e}")
+                    # 완전히 새로운 로거 생성
+                    _loggers['queue_logger'] = create_queue_logger(
+                        name='queue_logger',
+                        base_dir=LOG_DIRS['base']
+                    )
+                    break
+        
+        return _loggers['queue_logger']
+    except Exception as e:
+        print(f"{LOG_SYSTEM} 큐 로거 가져오기 실패: {e}")
+        # 비상용 로거 반환
+        fallback_logger = logging.getLogger('fallback_queue_logger')
+        if not fallback_logger.handlers:
+            fallback_logger.setLevel(logging.INFO)
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+            fallback_logger.addHandler(console_handler)
+        return fallback_logger
 
 # 거래소별 로거 매핑 - unified_logger로 통일
 EXCHANGE_LOGGER_MAP = {
