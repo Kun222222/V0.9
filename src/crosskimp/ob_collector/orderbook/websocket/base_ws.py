@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG
+from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG
 
 @dataclass
 class WebSocketStats:

@@ -25,8 +25,8 @@ import os
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.ob_collector.config.config_loader import get_settings
-from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS
+from crosskimp.ob_collector.utils.config.config_loader import get_settings
+from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS
 from crosskimp.ob_collector.orderbook.manager.metrics_manager import WebsocketMetricsManager
 from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutureWebsocket
 from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotWebsocket

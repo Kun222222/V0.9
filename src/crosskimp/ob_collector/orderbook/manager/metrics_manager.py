@@ -6,7 +6,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, EXCHANGE_LOGGER_MAP
-from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, STATUS_EMOJIS
+from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, STATUS_EMOJIS
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

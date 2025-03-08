@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Dict, List, Optional
 
-from crosskimp.ob_collector.orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
 
 class BaseOrderBookManager:
     """

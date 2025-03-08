@@ -6,8 +6,8 @@ from typing import Dict, Optional, List
 from aiohttp import ClientSession, ClientTimeout
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
-from crosskimp.ob_collector.orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
+from crosskimp.ob_collector.orderbook.orderbook.base_ob_manager import BaseOrderBookManager
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
 
 SNAPSHOT_SEMAPHORE = asyncio.Semaphore(5)
 

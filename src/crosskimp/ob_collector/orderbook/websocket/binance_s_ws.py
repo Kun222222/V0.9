@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
-from crosskimp.ob_collector.orderbook.orderbook.binance_spot_orderbook_manager import BinanceSpotOrderBookManager
+from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotOrderBookManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

@@ -6,12 +6,12 @@ import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
-from crosskimp.ob_collector.config.constants import LOG_SYSTEM
+from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM
 
 # ============================
 # 상수 정의
 # ============================
-LOG_FORMAT = '[%(asctime)s.%(msecs)03d] [%(filename)-30s:%(lineno)3d] %(levelname)-8s %(message)s'
+LOG_FORMAT = '[%(asctime)s.%(msecs)03d] [%(filename)-20s:%(lineno)3d] %(levelname)-7s %(message)s'
 DEBUG_LOG_FORMAT = '[%(asctime)s.%(msecs)03d] [%(filename)s:%(lineno)d] %(message)s'
 LOG_ENCODING = 'utf-8'
 LOG_MODE = 'a'  # append 모드

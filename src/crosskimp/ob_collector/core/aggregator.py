@@ -22,7 +22,7 @@ import aiohttp
 from typing import Dict, List, Set, Optional, Tuple
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM
+from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

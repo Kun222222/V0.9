@@ -4,8 +4,8 @@ import asyncio
 from typing import Dict, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_orderbook import OrderBook, ValidationResult
-from crosskimp.ob_collector.orderbook.orderbook.base_orderbook_manager import BaseOrderBookManager
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
+from crosskimp.ob_collector.orderbook.orderbook.base_ob_manager import BaseOrderBookManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
