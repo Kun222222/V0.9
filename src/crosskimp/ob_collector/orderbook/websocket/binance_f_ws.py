@@ -65,7 +65,9 @@ class BinanceFutureWebsocket(BaseWebsocket):
             if not self.wsurl:
                 raise ValueError("WebSocket URL is not set. Call subscribe() first.")
                 
-            logger.info("[BinanceFuture] WebSocket 연결 시도")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "connect_attempt")
+                
             self.session = aiohttp.ClientSession()
             self.ws = await connect(
                 self.wsurl,
@@ -75,14 +77,16 @@ class BinanceFutureWebsocket(BaseWebsocket):
             )
             self.is_connected = True
             self.stats.connection_start_time = time.time()
-            logger.info("[BinanceFuture] WebSocket 연결 성공")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "connect")
         except Exception as e:
             self.log_error(f"connect() 예외: {e}", exc_info=True)
             raise
 
     async def subscribe(self, symbols: List[str]):
         if not symbols:
-            logger.warning("[BinanceFuture] 구독할 심볼이 없음")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "warning")
             return
 
         streams = []
@@ -95,7 +99,8 @@ class BinanceFutureWebsocket(BaseWebsocket):
 
         combined = "/".join(streams)
         self.wsurl = self.ws_base + combined
-        logger.info(f"[BinanceFuture] combined stream 생성: {self.wsurl}")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "subscribe")
 
         await self.connect()
 
@@ -105,9 +110,9 @@ class BinanceFutureWebsocket(BaseWebsocket):
             if snapshot:
                 res = await self.orderbook_manager.initialize_orderbook(sym, snapshot)
                 if not res.is_valid:
-                    logger.error(f"[BinanceFuture] {sym} 스냅샷 적용 실패: {res.error_messages}")
+                    self.log_error(f"{sym} 스냅샷 적용 실패: {res.error_messages}")
             else:
-                logger.error(f"[BinanceFuture] {sym} 스냅샷 요청 실패")
+                self.log_error(f"{sym} 스냅샷 요청 실패")
 
     async def request_snapshot(self, symbol: str) -> Optional[dict]:
         """
@@ -119,7 +124,8 @@ class BinanceFutureWebsocket(BaseWebsocket):
         for attempt in range(max_retries):
             try:
                 url = f"{self.snapshot_base}?symbol={symbol.upper()}USDT&limit={self.snapshot_depth}"
-                logger.info(f"[BinanceFuture] 스냅샷 요청 시도 #{attempt+1}: {symbol} -> {url}")
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "snapshot_request")
                 
                 # TCP 커넥터에 DNS 캐시 설정 추가
                 connector = aiohttp.TCPConnector(
@@ -133,16 +139,16 @@ class BinanceFutureWebsocket(BaseWebsocket):
                             raw_data = await resp.json()
                             return self.parse_snapshot(raw_data, symbol)
                         else:
-                            logger.error(f"[BinanceFuture] {symbol} 스냅샷 status={resp.status}")
+                            self.log_error(f"{symbol} 스냅샷 status={resp.status}")
                             
             except Exception as e:
-                logger.error(f"[BinanceFuture] 스냅샷 요청 실패: {e}", exc_info=True)
+                self.log_error(f"스냅샷 요청 실패: {e}", exc_info=True)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
                     continue
                 
-        logger.error(f"[BinanceFuture] {symbol} ME 스냅샷 요청 최대 재시도 횟수 초과")
+        self.log_error(f"{symbol} ME 스냅샷 요청 최대 재시도 횟수 초과")
         return None
 
     def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
@@ -151,7 +157,7 @@ class BinanceFutureWebsocket(BaseWebsocket):
         """
         try:
             if "lastUpdateId" not in data:
-                logger.error(f"[BinanceFuture] {symbol} 'lastUpdateId' 없음")
+                self.log_error(f"{symbol} 'lastUpdateId' 없음")
                 return None
 
             last_id = data["lastUpdateId"]
@@ -167,10 +173,8 @@ class BinanceFutureWebsocket(BaseWebsocket):
                 "sequence": last_id,
                 "type": "snapshot"
             }
-            logger.info(
-                f"[BinanceFuture] {symbol} 스냅샷 파싱 | lastId={last_id}, "
-                f"bids={len(bids)}, asks={len(asks)}"
-            )
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "snapshot_parsed")
             return snapshot
         except Exception as e:
             self.log_error(f"parse_snapshot() 예외: {e}", exc_info=True)
@@ -184,7 +188,8 @@ class BinanceFutureWebsocket(BaseWebsocket):
 
             # 구독 응답
             if "result" in data and "id" in data:
-                logger.info(f"[BinanceFuture] 구독응답: {data}")
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "subscribe_response")
                 return None
 
             # depthUpdate
@@ -210,15 +215,18 @@ class BinanceFutureWebsocket(BaseWebsocket):
             
             res = await self.orderbook_manager.update(symbol, evt)
             if not res.is_valid:
-                logger.error(f"[BinanceFuture] {symbol} 오더북 업데이트 실패: {res.error_messages}")
+                self.log_error(f"{symbol} 오더북 업데이트 실패: {res.error_messages}")
         except Exception as e:
             self.log_error(f"handle_parsed_message() 예외: {e}", exc_info=True)
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         exchange_symbols = symbols_by_exchange.get(self.exchangename.lower(), [])
         if not exchange_symbols:
-            logger.warning(f"[BinanceFuture] 구독할 심볼 없음.")
+            self.log_error("구독할 심볼 없음.")
             return
+
+        # 공통 로깅을 위한 부모 클래스 start 호출
+        await super().start(symbols_by_exchange)
 
         while not self.stop_event.is_set():
             try:
@@ -226,7 +234,6 @@ class BinanceFutureWebsocket(BaseWebsocket):
                 await self.subscribe(exchange_symbols)
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "connect")
-                logger.info(f"[BinanceFuture] 연결 성공 | 구독 심볼: {len(exchange_symbols)}개")
 
                 while not self.stop_event.is_set():
                     try:
@@ -264,15 +271,16 @@ class BinanceFutureWebsocket(BaseWebsocket):
                 self.is_connected = False
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "disconnect")
-                logger.info("[BinanceFuture] 연결 종료")
 
     async def stop(self) -> None:
-        logger.info("[BinanceFuture] 웹소켓 종료 시작")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "stop")
         self.stop_event.set()
         if self.ws:
             await self.ws.close()
         self.is_connected = False
-        logger.info("[BinanceFuture] 웹소켓 종료 완료")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "disconnect")
 
     def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
         """
@@ -285,4 +293,4 @@ class BinanceFutureWebsocket(BaseWebsocket):
         try:
             self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
         except Exception as e:
-            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")
+            self.log_error(f"Raw 로깅 실패: {str(e)}")

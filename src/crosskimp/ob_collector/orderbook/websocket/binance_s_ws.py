@@ -62,9 +62,6 @@ class BinanceSpotWebsocket(BaseWebsocket):
         self.ws = None
         self.session = None
         self.ws_url = "wss://stream.binance.com:9443/ws"
-        self.logger = logger
-        
-        # raw 로거 초기화
         self.raw_logger = get_raw_logger("binance_spot")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
@@ -72,26 +69,22 @@ class BinanceSpotWebsocket(BaseWebsocket):
         self.manager.output_queue = queue
         # self.logger.debug(f"[{self.exchangename}] output_queue set")
 
-    async def connect(self):
-        try:
-            self.logger.info(f"[{self.exchangename}] connect attempt")
-            self.session = aiohttp.ClientSession()
-            self.ws = await connect(
-                self.ws_url,
-                ping_interval=self.ping_interval,  # 150초
-                ping_timeout=self.ping_timeout,    # 10초
-                compression=None
-            )
-            self.is_connected = True
-            self.stats.connection_start_time = time.time()
-            self.logger.info(f"[{self.exchangename}] WebSocket connected")
-        except Exception as e:
-            self.log_error(f"connect() error: {e}")
-            raise
+    async def _do_connect(self):
+        """실제 연결 로직"""
+        self.session = aiohttp.ClientSession()
+        self.ws = await connect(
+            self.ws_url,
+            ping_interval=self.ping_interval,  # 150초
+            ping_timeout=self.ping_timeout,    # 10초
+            compression=None
+        )
+        self.is_connected = True
+        self.stats.connection_start_time = time.time()
 
     async def subscribe(self, symbols: List[str]):
         if not symbols:
-            self.logger.warning(f"[{self.exchangename}] no symbols to subscribe")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "warning")
             return
 
         chunk_size = 10
@@ -104,7 +97,8 @@ class BinanceSpotWebsocket(BaseWebsocket):
                 "id": int(time.time() * 1000)
             }
             await self.ws.send(json.dumps(msg))
-            self.logger.info(f"[{self.exchangename}] SUBSCRIBE {msg}")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "subscribe")
             await asyncio.sleep(1)
 
         # 스냅샷
@@ -113,15 +107,16 @@ class BinanceSpotWebsocket(BaseWebsocket):
             if snapshot:
                 init_res = await self.manager.initialize_orderbook(sym, snapshot)
                 if not init_res.is_valid:
-                    self.logger.error(f"[{self.exchangename}] {sym} snap init fail: {init_res.error_messages}")
+                    self.log_error(f"{sym} snap init fail: {init_res.error_messages}")
             else:
-                self.logger.error(f"[{self.exchangename}] {sym} snapshot fail")
+                self.log_error(f"{sym} snapshot fail")
 
     async def parse_message(self, message: str) -> Optional[dict]:
         try:
             data = json.loads(message)
             if "result" in data and "id" in data:
-                self.logger.info(f"[{self.exchangename}] subscribe resp: {data}")
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "subscribe_response")
                 return None
             if data.get("e") == "depthUpdate":
                 symbol = data["s"].replace("USDT","").upper()
@@ -140,22 +135,24 @@ class BinanceSpotWebsocket(BaseWebsocket):
                 symbol = evt["symbol"]
                 res = await self.manager.update(symbol, evt)
                 if not res.is_valid:
-                    self.logger.error(f"[{self.exchangename}] {symbol} update fail: {res.error_messages}")
+                    self.log_error(f"{symbol} update fail: {res.error_messages}")
         except Exception as e:
             self.log_error(f"handle_parsed_message error: {e}")
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         exchange_symbols = symbols_by_exchange.get("binance", [])
         if not exchange_symbols:
-            self.logger.warning(f"[{self.exchangename}] no symbols to start")
+            self.log_error("no symbols to start")
             return
+
+        # 공통 로깅을 위한 부모 클래스 start 호출
+        await super().start(symbols_by_exchange)
 
         while not self.stop_event.is_set():
             try:
-                await self.connect()
+                await self._do_connect()
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "connect")
-                self.logger.info(f"[{self.exchangename}] connected")
 
                 await self.subscribe(exchange_symbols)
 
@@ -192,15 +189,16 @@ class BinanceSpotWebsocket(BaseWebsocket):
                 self.is_connected = False
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "disconnect")
-                self.logger.info(f"[{self.exchangename}] disconnected")
 
     async def stop(self) -> None:
-        self.logger.info(f"[{self.exchangename}] stop called")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "stop")
         self.stop_event.set()
         if self.ws:
             await self.ws.close()
         self.is_connected = False
-        self.logger.info(f"[{self.exchangename}] stopped")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "disconnect")
 
     def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
         """
@@ -213,4 +211,4 @@ class BinanceSpotWebsocket(BaseWebsocket):
         try:
             self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
         except Exception as e:
-            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")
+            self.log_error(f"Raw 로깅 실패: {str(e)}")

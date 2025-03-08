@@ -75,6 +75,8 @@ class DebugFilter(logging.Filter):
 def create_unified_logger(name: str, base_dir: str, level: int = logging.INFO) -> logging.Logger:
     """
     통합 로거 생성 - 단일 파일로 모든 로그 저장
+    - 파일 크기가 100MB를 초과하면 자동으로 새 파일 생성
+    - 최대 100개의 백업 파일 유지
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -88,14 +90,26 @@ def create_unified_logger(name: str, base_dir: str, level: int = logging.INFO) -
     
     current_time = get_current_time_str()
     
-    # 일반 로그 핸들러
+    # 일반 로그 핸들러 (RotatingFileHandler 사용)
     log_file = f"{base_dir}/{current_time}_{name}.log"
-    file_handler = logging.FileHandler(filename=log_file, encoding=LOG_ENCODING, mode=LOG_MODE)
+    file_handler = SafeRotatingFileHandler(
+        filename=log_file,
+        maxBytes=100*1024*1024,  # 100MB
+        backupCount=100,         # 최대 100개 파일
+        encoding=LOG_ENCODING,
+        mode=LOG_MODE
+    )
     file_handler.setLevel(level)
     
     # raw 로그 핸들러 (raw 디렉토리에 저장)
     raw_log_file = f"{LOG_DIRS['raw']}/{current_time}_{name}_raw.log"
-    raw_handler = logging.FileHandler(filename=raw_log_file, encoding=LOG_ENCODING, mode=LOG_MODE)
+    raw_handler = SafeRotatingFileHandler(
+        filename=raw_log_file,
+        maxBytes=100*1024*1024,  # 100MB
+        backupCount=100,         # 최대 100개 파일
+        encoding=LOG_ENCODING,
+        mode=LOG_MODE
+    )
     raw_handler.setLevel(logging.DEBUG)
     raw_handler.addFilter(lambda record: (
         'raw:' in record.getMessage() or
@@ -127,7 +141,11 @@ def create_unified_logger(name: str, base_dir: str, level: int = logging.INFO) -
 # 큐 로거 생성
 # ============================
 def create_queue_logger(name: str, base_dir: str) -> logging.Logger:
-    """큐 데이터 전용 로거 생성"""
+    """
+    큐 데이터 전용 로거 생성
+    - 파일 크기가 100MB를 초과하면 자동으로 새 파일 생성
+    - 최대 100개의 백업 파일 유지
+    """
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
     
@@ -139,7 +157,13 @@ def create_queue_logger(name: str, base_dir: str) -> logging.Logger:
     current_time = get_current_time_str()
     
     log_file = f"{base_dir}/{current_time}_{name}.log"
-    handler = logging.FileHandler(filename=log_file, encoding=LOG_ENCODING, mode=LOG_MODE)
+    handler = SafeRotatingFileHandler(
+        filename=log_file,
+        maxBytes=100*1024*1024,  # 100MB
+        backupCount=100,         # 최대 100개 파일
+        encoding=LOG_ENCODING,
+        mode=LOG_MODE
+    )
     handler.setLevel(logging.DEBUG)
     
     formatter = logging.Formatter(DEBUG_LOG_FORMAT, datefmt='%Y-%m-%d %H:%M:%S')
@@ -161,12 +185,70 @@ _loggers = {}  # 싱글톤 패턴을 위한 로거 캐시
 _unified_logger = None  # 통합 로거 인스턴스
 
 class SafeRotatingFileHandler(RotatingFileHandler):
+    """
+    안전한 로그 파일 로테이션 핸들러
+    - 파일 크기 제한 및 백업 파일 관리
+    - 주기적인 핸들러 리프레시로 파일 디스크립터 누수 방지
+    - 에러 발생 시 자동 복구 시도
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.last_refresh = time.time()
         self.refresh_interval = 300  # 5분마다 리프레시
+        self.lock = None  # 파일 락을 위한 변수
+
+    def _open(self):
+        """파일 열기 시 락 획득"""
+        import fcntl
+        stream = super()._open()
+        try:
+            if hasattr(stream, 'fileno'):
+                self.lock = stream
+                fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            if self.lock:
+                try:
+                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
+                except:
+                    pass
+                self.lock = None
+        return stream
+
+    def close(self):
+        """파일 닫기 시 락 해제"""
+        try:
+            if self.lock:
+                import fcntl
+                try:
+                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
+                except:
+                    pass
+                self.lock = None
+        finally:
+            super().close()
+
+    def doRollover(self):
+        """로그 파일 로테이션 수행"""
+        try:
+            if self.lock:
+                import fcntl
+                try:
+                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
+                except:
+                    pass
+                self.lock = None
+            super().doRollover()
+        except Exception as e:
+            print(f"{LOG_SYSTEM} 로그 로테이션 중 오류 발생: {e}")
+            # 에러 발생 시 새로운 파일 생성 시도
+            try:
+                self.close()
+                self.stream = self._open()
+            except:
+                pass
 
     def emit(self, record):
+        """로그 레코드 출력"""
         try:
             # 주기적으로 핸들러 리프레시
             current_time = time.time()
@@ -175,10 +257,15 @@ class SafeRotatingFileHandler(RotatingFileHandler):
                 self.stream = self._open()
                 self.last_refresh = current_time
             
+            # 파일 크기 체크 및 로테이션
+            if self.shouldRollover(record):
+                self.doRollover()
+            
             super().emit(record)
             self.flush()  # 즉시 디스크에 기록
         except Exception as e:
             self.handleError(record)
+            print(f"{LOG_SYSTEM} 로그 기록 중 오류 발생: {e}")
             # 에러 발생시 핸들러 리프레시 시도
             try:
                 self.close()

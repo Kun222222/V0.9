@@ -102,19 +102,11 @@ class BaseWebsocket:
         self.ping_timeout = exchange_config.get("ping_timeout", 10)
 
         # 모니터링 콜백
-        self.on_status_change: Optional[Callable[[str, ConnectionStatus], None]] = None
         self.connection_status_callback: Optional[Callable[[str, str], None]] = None
 
         # 로거 설정
         self.logger = logger
         
-        self.logger.info(
-            f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] 초기화 완료 | "
-            f"헬스체크={self.health_check_interval}초, "
-            f"메시지 타임아웃={self.message_timeout}초, "
-            f"핑 간격={self.ping_interval}초"
-        )
-
         self.message_processing_times = []
         self.last_performance_log = time.time()
         self.performance_log_interval = 300  # 5분
@@ -134,123 +126,67 @@ class BaseWebsocket:
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         self.output_queue = queue
-        self.logger.info(f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] 출력 큐 설정 완료")
-
-    def log_raw_message(self, message_type: str, data: dict, symbol: str = None) -> None:
-        """
-        웹소켓 raw 메시지 로깅을 위한 공통 메서드
-        
-        Args:
-            message_type: 메시지 타입 (예: depthUpdate)
-            data: 원본 메시지 데이터
-            symbol: 심볼명 (옵션)
-        """
-        if symbol:
-            self.logger.debug(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] ({symbol}) 원본 데이터: {data}")
-        else:
-            self.logger.debug(f"{LOG_SYSTEM} [{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] 원본 데이터: {data}")
-
-    def log_sequence_gap(self, symbol: str, last_id: int, first_id: int, gap_size: int = None) -> None:
-        """
-        시퀀스 갭 발생 시 공통 로깅 메서드
-        
-        Args:
-            symbol: 심볼명
-            last_id: 마지막으로 처리된 시퀀스 ID
-            first_id: 새로 받은 시퀀스의 시작 ID
-            gap_size: 갭 크기 (옵션)
-        """
-        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-        if gap_size is not None:
-            self.logger.warning(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} {symbol} 시퀀스 갭 발생 | "
-                f"마지막ID={last_id}, 시작ID={first_id}, 갭={gap_size}"
-            )
-        else:
-            self.logger.warning(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} {symbol} 시퀀스 갭 발생 | "
-                f"마지막ID={last_id}, 시작ID={first_id}"
-            )
 
     def log_error(self, msg: str, exc_info: bool = True):
         """에러 로깅 공통 메서드"""
         self.stats.error_count += 1
         self.stats.last_error_time = time.time()
         self.stats.last_error_message = msg
-        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-        self.logger.error(
-            f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} {msg}",
-            exc_info=exc_info
-        )
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "error")
 
     async def connect(self):
-        """웹소켓 연결 시도"""
+        """웹소켓 연결 시도 (로깅 처리)"""
         try:
-            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-            self.logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['CONNECTING']} "
-                f"연결 시도 중..."
-            )
-            # ... existing code ...
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "connect_attempt")
+            # 실제 연결 수행
+            await self._do_connect()
+            
+            # 연결 성공 로깅
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "connect")
+            
         except Exception as e:
-            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-            self.logger.error(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} "
-                f"연결 실패: {str(e)}"
-            )
+            self.log_error(f"연결 실패: {str(e)}")
             raise
+
+    async def _do_connect(self):
+        """실제 연결 로직 (자식 클래스에서 구현)"""
+        raise NotImplementedError
 
     async def disconnect(self):
         """웹소켓 연결 종료"""
         try:
-            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-            self.logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['DISCONNECTED']} "
-                f"연결 종료 중..."
-            )
-            # ... existing code ...
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "disconnect")
+            if self.ws:
+                await self.ws.close()
+            self.is_connected = False
         except Exception as e:
-            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-            self.logger.error(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} "
-                f"연결 종료 실패: {str(e)}"
-            )
+            self.log_error(f"연결 종료 실패: {str(e)}")
 
     async def reconnect(self):
         """웹소켓 재연결"""
         try:
-            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-            self.logger.warning(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['RECONNECTING']} "
-                f"재연결 시도 중..."
-            )
-            # ... existing code ...
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "reconnect_attempt")
+            await self.disconnect()
+            await self.connect()
         except Exception as e:
-            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-            self.logger.error(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} "
-                f"재연결 실패: {str(e)}"
-            )
+            self.log_error(f"재연결 실패: {str(e)}")
 
     async def health_check(self):
         """웹소켓 상태 체크"""
         while not self.stop_event.is_set():
             try:
                 current_time = time.time()
-                exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
                 if self.is_connected and (current_time - self.stats.last_message_time) > self.message_timeout:
-                    self.logger.warning(
-                        f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} "
-                        f"메시지 타임아웃 발생 ({self.message_timeout}초)"
-                    )
+                    self.log_error(f"메시지 타임아웃 발생 ({self.message_timeout}초)")
                     await self.reconnect()
                 await asyncio.sleep(self.health_check_interval)
             except Exception as e:
-                exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-                self.logger.error(
-                    f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} "
-                    f"상태 체크 중 오류 발생: {str(e)}"
-                )
+                self.log_error(f"상태 체크 중 오류 발생: {str(e)}")
                 await asyncio.sleep(1)
 
     async def ping(self):
@@ -258,19 +194,14 @@ class BaseWebsocket:
         while not self.stop_event.is_set():
             try:
                 if self.is_connected:
-                    exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-                    self.logger.debug(
-                        f"{LOG_SYSTEM} [{exchange_kr}] "
-                        f"핑 전송"
-                    )
-                    # ... existing code ...
+                    if self.connection_status_callback:
+                        self.connection_status_callback(self.exchangename, "ping")
+                    if self.ws:
+                        await self.ws.ping()
+                        self.stats.last_ping_time = time.time()
                 await asyncio.sleep(self.ping_interval)
             except Exception as e:
-                exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-                self.logger.error(
-                    f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} "
-                    f"핑 전송 중 오류 발생: {str(e)}"
-                )
+                self.log_error(f"핑 전송 중 오류 발생: {str(e)}")
                 await asyncio.sleep(1)
 
     async def subscribe(self, symbols: List[str]):
@@ -281,7 +212,6 @@ class BaseWebsocket:
         """
         메시지 파싱 공통 로직
         - 모든 메시지 카운팅
-        - raw 메시지 로깅
         - 자식 클래스에서는 _parse_message를 구현
         """
         try:
@@ -293,17 +223,6 @@ class BaseWebsocket:
             
             # 자식 클래스의 구체적인 파싱 로직 호출
             parsed = await self._parse_message(data)
-            if parsed:
-                # raw 메시지 로깅 (파싱 성공한 경우만)
-                symbol = self._extract_symbol(parsed)
-                self.log_raw_message(self._get_message_type(parsed), message, symbol)
-                
-                # 주기적 통계 출력
-                if self.stats.message_count % 1000 == 0:
-                    self.logger.info(
-                        f"[{self.exchangename}] 메시지 통계: "
-                        f"전체={self.stats.message_count}"
-                    )
             
             return parsed
             
@@ -317,61 +236,18 @@ class BaseWebsocket:
         """자식 클래스에서 구현할 실제 파싱 로직"""
         raise NotImplementedError
 
-    def _extract_symbol(self, parsed: dict) -> Optional[str]:
-        """
-        심볼 추출 기본 로직 (자식 클래스에서 오버라이드 가능)
-        """
-        return parsed.get("symbol", "UNKNOWN")
-
-    def _get_message_type(self, parsed: dict) -> str:
-        """
-        메시지 타입 추출 기본 로직 (자식 클래스에서 오버라이드 가능)
-        """
-        return "depthUpdate"  # 대부분의 거래소가 사용하는 기본값
-
     async def handle_parsed_message(self, parsed: dict) -> None:
-        start_time = time.time()
-        try:
-            # 기존 메시지 처리 코드...
-            
-            # 처리 시간 기록
-            processing_time = (time.time() - start_time) * 1000
-            self.message_processing_times.append(processing_time)
-            
-            # 주기적으로 성능 로그 출력
-            current_time = time.time()
-            if current_time - self.last_performance_log > self.performance_log_interval:
-                avg_time = sum(self.message_processing_times) / len(self.message_processing_times)
-                max_time = max(self.message_processing_times)
-                exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-                
-                self.logger.info(
-                    f"{LOG_SYSTEM} [{exchange_kr}] 메시지 처리 성능 | "
-                    f"평균={avg_time:.2f}ms, "
-                    f"최대={max_time:.2f}ms, "
-                    f"샘플수={len(self.message_processing_times):,}개"
-                )
-                
-                # 메트릭 초기화
-                self.message_processing_times = []
-                self.last_performance_log = current_time
-                
-        except Exception as e:
-            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-            self.logger.error(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} "
-                f"메시지 처리 중 오류: {str(e)}"
-            )
-
-    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
-        """자식 클래스에서 오버라이드"""
+        """자식 클래스에서 구현할 메시지 처리 로직"""
         raise NotImplementedError
 
+    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
+        """자식 클래스에서 구현할 시작 로직"""
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "start")
+
     async def stop(self) -> None:
-        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
-        self.logger.info(f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['DISCONNECTED']} 정지 요청됨")
+        """자식 클래스에서 구현할 종료 로직"""
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "stop")
         self.stop_event.set()
-        if self.ws:
-            await self.ws.close()
-        self.is_connected = False
-        self.logger.info(f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['DISCONNECTED']} 웹소켓 정지됨")
+        await self.disconnect()

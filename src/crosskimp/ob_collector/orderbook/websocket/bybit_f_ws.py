@@ -40,8 +40,6 @@ class BybitFutureWebsocket(BaseWebsocket):
         self.current_retry = 0
         self.message_timeout = 30
         self._last_message_time = time.time()
-
-        self.logger = logger
         
         # raw 로거 초기화
         self.raw_logger = get_raw_logger("bybit_future")
@@ -57,17 +55,13 @@ class BybitFutureWebsocket(BaseWebsocket):
         try:
             self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
         except Exception as e:
-            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")
+            self.log_error(f"Raw 로깅 실패: {str(e)}")
 
     async def connect(self) -> bool:
         while True:  # 무한 재시도 루프
             try:
-                logger.info(
-                    f"[BybitFuture] 웹소켓 연결 시도 | "
-                    f"시도={self.current_retry + 1}회차, "
-                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
-                    f"url={self.ws_url}"
-                )
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "connect_attempt")
                 
                 # 초기 연결 시에만 0.5초 타임아웃 설정
                 timeout = 0.5 if self.initial_connection else 30
@@ -90,42 +84,26 @@ class BybitFutureWebsocket(BaseWebsocket):
                 self.stats.connection_start_time = time.time()
                 self.initial_connection = False  # 초기 연결 완료 표시
                 
-                logger.info(
-                    f"[BybitFuture] 웹소켓 연결 성공 | "
-                    f"시도={self.current_retry + 1}회차, "
-                    f"url={self.ws_url}, "
-                    f"ping_interval={self.ping_interval}초"
-                )
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "connect")
                 return True
                 
             except asyncio.TimeoutError:
                 self.current_retry += 1
-                logger.warning(
-                    f"[BybitFuture] 웹소켓 연결 타임아웃 | "
-                    f"시도={self.current_retry}회차, "
-                    f"timeout={timeout}초, "
-                    f"초기연결={'예' if self.initial_connection else '아니오'}"
-                )
+                self.log_error(f"웹소켓 연결 타임아웃 | 시도={self.current_retry}회차, timeout={timeout}초, 초기연결={'예' if self.initial_connection else '아니오'}")
                 await asyncio.sleep(self.retry_delay)
                 continue
                 
             except Exception as e:
                 self.current_retry += 1
-                logger.error(
-                    f"[BybitFuture] 웹소켓 연결 실패 | "
-                    f"시도={self.current_retry}회차, "
-                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
-                    f"error={str(e)}"
-                )
+                self.log_error(f"웹소켓 연결 실패 | 시도={self.current_retry}회차, 초기연결={'예' if self.initial_connection else '아니오'}, error={str(e)}")
                 await asyncio.sleep(self.retry_delay)
                 continue
 
     async def subscribe(self, symbols: List[str]):
         try:
-            self.logger.info(f"[{self.exchangename}] 구독 시작 | symbols={symbols}")
-            
             if not self.ws:
-                self.logger.error(f"[{self.exchangename}] WebSocket이 연결되지 않음")
+                self.log_error("WebSocket이 연결되지 않음")
                 return
             
             # 심볼을 10개씩 나누어 구독
@@ -139,7 +117,8 @@ class BybitFutureWebsocket(BaseWebsocket):
                 }
                 
                 try:
-                    self.logger.info(f"[{self.exchangename}] 구독 메시지 전송: {sub_msg}")
+                    if self.connection_status_callback:
+                        self.connection_status_callback(self.exchangename, "subscribe")
                     await self.ws.send(json.dumps(sub_msg))
                     
                     # 구독 응답 대기를 위한 짧은 지연
@@ -147,11 +126,11 @@ class BybitFutureWebsocket(BaseWebsocket):
                         async with asyncio.timeout(2.0):  # 2초 타임아웃
                             await asyncio.sleep(0.5)
                     except asyncio.TimeoutError:
-                        self.logger.warning(f"[{self.exchangename}] 구독 지연 타임아웃")
+                        self.log_error("구독 지연 타임아웃")
                         continue
                         
                 except Exception as e:
-                    self.logger.error(f"[{self.exchangename}] 구독 메시지 전송 실패: {e}")
+                    self.log_error(f"구독 메시지 전송 실패: {e}")
                     continue
                 
                 # 청크 간 지연
@@ -161,21 +140,19 @@ class BybitFutureWebsocket(BaseWebsocket):
                 except asyncio.TimeoutError:
                     pass
                 
-            self.logger.info(f"[{self.exchangename}] 구독 완료")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "subscribe_complete")
             
         except Exception as e:
-            self.logger.error(
-                f"[{self.exchangename}] 구독 처리 중 오류 발생 | "
-                f"error={str(e)}",
-                exc_info=True
-            )
+            self.log_error(f"구독 처리 중 오류 발생: {str(e)}", exc_info=True)
             raise
 
     async def parse_message(self, message: str) -> Optional[dict]:
         try:
             data = json.loads(message)
             if data.get("op") == "subscribe":
-                self.logger.info(f"구독 응답: {data}")
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "subscribe_response")
                 return None
             if "topic" in data and "data" in data and "type" in data:
                 topic = data["topic"]
@@ -205,7 +182,7 @@ class BybitFutureWebsocket(BaseWebsocket):
                 }
             return None
         except Exception as e:
-            self.logger.error(f"[{self.exchangename}] BybitFuture 메시지 파싱 실패: {e}, raw={message}")
+            self.log_error(f"메시지 파싱 실패: {e}, raw={message}")
             return None
 
     async def handle_parsed_message(self, parsed: dict) -> None:
@@ -217,17 +194,16 @@ class BybitFutureWebsocket(BaseWebsocket):
             return
         orderbook = self.orderbook_manager.get_orderbook(symbol)
         if not orderbook:
-            self.logger.warning(f"[{self.exchangename}] {symbol} 오더북 객체 없음")
+            self.log_error(f"{symbol} 오더북 객체 없음")
             return
         result = await orderbook.update(parsed)
         if result.is_valid:
             self.orderbook_manager.update_sequence(symbol, parsed["sequence"])
             ob_dict = orderbook.to_dict()
-            # self.logger.info(f"[{self.exchangename}] {symbol} 오더북 업데이트 성공")
             if self.output_queue:
                 await self.output_queue.put(("bybitfuture", ob_dict))
         else:
-            self.logger.error(f"[{self.exchangename}] {symbol} 오더북 업데이트 실패: {result.error_messages}")
+            self.log_error(f"{symbol} 오더북 업데이트 실패: {result.error_messages}")
             snap = await self.request_snapshot(f"{symbol.upper()}USDT")
             if snap:
                 await self.orderbook_manager.initialize_orderbook(symbol, snap)
@@ -241,179 +217,114 @@ class BybitFutureWebsocket(BaseWebsocket):
             url = (f"https://api.bybit.com/v5/market/orderbook"
                    f"?category=linear&symbol={market}"
                    f"&limit={self.orderbook_manager.depth}")
-            self.logger.info(f"[{self.exchangename}] {market} 스냅샷 요청: {url}")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "snapshot_request")
             async with self.session.get(url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     self.log_raw_message("snapshot", json.dumps(data), market)
                     if data.get("retCode") == 0:
                         result = data.get("result", {})
-                        raw_symbol = market.replace("USDT", "")
-                        parsed = self._parse_snapshot_data(result, raw_symbol)
-                        if parsed:
-                            self.logger.info(f"[{self.exchangename}] {raw_symbol} 스냅샷 파싱 완료")
-                        return parsed
+                        if self.connection_status_callback:
+                            self.connection_status_callback(self.exchangename, "snapshot_received")
+                        return self._parse_snapshot_data(result, market)
                     else:
-                        self.logger.error(f"[{self.exchangename}] {market} 스냅샷 응답 실패: {data}")
+                        self.log_error(f"{market} 스냅샷 응답 에러: {data}")
                 else:
-                    self.logger.error(f"[{self.exchangename}] {market} 스냅샷 HTTP 에러: {resp.status}")
+                    self.log_error(f"{market} 스냅샷 요청 실패: status={resp.status}")
         except Exception as e:
-            self.logger.error(f"[{self.exchangename}] {market} 스냅샷 요청 실패: {e}")
+            self.log_error(f"{market} 스냅샷 요청 예외: {e}")
         return None
 
     def _parse_snapshot_data(self, data: dict, symbol: str) -> dict:
-        seq = data.get("seq", 0)
-        ts = data.get("ts", int(time.time()*1000))
-        b_raw = data.get("b", [])
-        a_raw = data.get("a", [])
-        bids = [ [float(b[0]), float(b[1])] for b in b_raw if float(b[1]) > 0 ][:self.orderbook_manager.depth]
-        asks = [ [float(a[0]), float(a[1])] for a in a_raw if float(a[1]) > 0 ][:self.orderbook_manager.depth]
-        return {
-            "exchangename": "bybitfuture",
-            "symbol": symbol,
-            "bids": bids,
-            "asks": asks,
-            "timestamp": ts,
-            "sequence": seq,
-            "type": "snapshot"
-        }
-
-    async def _reconnect(self):
-        """재연결 처리"""
         try:
-            self.current_retry += 1
-            if self.current_retry > self.max_reconnect_attempts:
-                self.logger.error("최대 재연결 시도 횟수 초과")
-                return
-                
-            self.logger.info(f"[{self.exchangename}] 재연결 시도 #{self.current_retry}")
-            
-            # 기존 연결 정리
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except Exception as e:
-                    self.logger.error(f"[{self.exchangename}] 연결 종료 중 오류: {e}")
-                self.ws = None
-                
-            # 연결 상태 업데이트
-            self.is_connected = False
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "disconnect")
-                
-            # 재연결 전 대기
-            await asyncio.sleep(self.reconnect_delay)
-            
+            ts = data.get("ts", int(time.time()*1000))
+            seq = data.get("seq", 0)
+            bids = [[float(b[0]), float(b[1])] for b in data.get("b", [])]
+            asks = [[float(a[0]), float(a[1])] for a in data.get("a", [])]
+            return {
+                "exchangename": "bybitfuture",
+                "symbol": symbol.replace("USDT", ""),
+                "bids": bids,
+                "asks": asks,
+                "timestamp": ts,
+                "sequence": seq,
+                "type": "snapshot"
+            }
         except Exception as e:
-            self.logger.error(f"[{self.exchangename}] 재연결 처리 중 오류: {e}")
+            self.log_error(f"{symbol} 스냅샷 파싱 실패: {e}")
+            return {}
 
-    async def _handle_message(self, message: str):
-        """메시지 처리"""
-        try:
-            self._last_message_time = time.time()
-            
-            # 메트릭 업데이트
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "message")
-            
-            # 메시지 파싱 및 처리
-            parsed = await self.parse_message(message)
-            if parsed:
-                await self.handle_parsed_message(parsed)
-                
-        except Exception as e:
-            self.logger.error(f"[{self.exchangename}] 메시지 처리 중 오류: {e}")
+    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
+        while not self.stop_event.is_set():
+            try:
+                symbols = symbols_by_exchange.get(self.exchangename.lower(), [])
+                if not symbols:
+                    self.log_error("구독할 심볼 없음")
+                    return
 
-    async def start(self, symbols_by_exchange: Dict[str, List[str]]):
-        try:
-            symbols = symbols_by_exchange.get("bybitfuture", [])
-            if not symbols:
-                self.logger.warning("구독할 심볼이 없음")
-                return
-                
-            while not self.stop_event.is_set():
-                try:
-                    if not await self.connect():
-                        self.logger.error("연결 실패")
-                        await asyncio.sleep(5)
-                        continue
-                    
-                    # 연결 성공 시 콜백 호출
-                    if self.connection_status_callback:
-                        self.connection_status_callback(self.exchangename, "connect")
-                    
-                    # 구독 시도
+                # 공통 로깅을 위한 부모 클래스 start 호출
+                await super().start(symbols_by_exchange)
+
+                # 연결
+                await self.connect()
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "connect")
+
+                # 구독
+                await self.subscribe(symbols)
+
+                # 메시지 처리 루프
+                while not self.stop_event.is_set():
                     try:
-                        async with asyncio.timeout(300):
-                            await self.subscribe(symbols)
-                    except asyncio.TimeoutError:
-                        self.logger.error("구독 타임아웃")
-                        await self._reconnect()
-                        continue
-                    
-                    # 메시지 수신 루프
-                    while not self.stop_event.is_set():
-                        try:
-                            async with asyncio.timeout(self.message_timeout):
-                                message = await self.ws.recv()
-                                await self._handle_message(message)
-                        except asyncio.TimeoutError:
-                            if not await self._check_connection():
-                                break
-                        except Exception as e:
-                            self.logger.error(f"[{self.exchangename}] 메시지 처리 중 오류: {e}")
-                            break
+                        message = await asyncio.wait_for(
+                            self.ws.recv(),
+                            timeout=self.message_timeout
+                        )
+                        self.stats.last_message_time = time.time()
+                        self.stats.message_count += 1
+                        
+                        parsed = await self.parse_message(message)
+                        if parsed:
+                            await self.handle_parsed_message(parsed)
+                            if self.connection_status_callback:
+                                self.connection_status_callback(self.exchangename, "message")
                             
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    self.logger.error(f"[{self.exchangename}] 연결 오류: {e}")
-                    await self._reconnect()
-                    
-        except asyncio.CancelledError:
-            self.logger.info("작업 취소됨")
-        finally:
-            await self.stop()
+                    except asyncio.TimeoutError:
+                        continue
+                    except Exception as e:
+                        self.log_error(f"메시지 처리 실패: {str(e)}")
+                        break
 
-    async def _check_connection(self) -> bool:
-        """연결 상태 확인 및 필요시 ping 전송"""
-        try:
-            if not self.ws:
-                return False
+            except Exception as e:
+                self.current_retry += 1
+                self.log_error(f"연결 실패: {str(e)}, retry={self.current_retry}")
                 
-            await self.ws.ping()
-            return True
-            
-        except Exception as e:
-            logger.error(f"[BybitFuture] 연결 확인 중 오류: {e}")
-            return False
+                if self.current_retry > 5:
+                    self.log_error("최대 재시도 횟수 초과")
+                    break
+                    
+                await asyncio.sleep(self.retry_delay)
+                continue
+                
+            finally:
+                if self.ws:
+                    await self.ws.close()
+                self.is_connected = False
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "disconnect")
 
     async def stop(self) -> None:
-        """종료 처리"""
-        try:
-            self.logger.info("종료 처리 시작")
-            self.stop_event.set()
-            
-            if self.ws:
-                try:
-                    await self.ws.close()
-                    self.logger.info("WebSocket 연결 종료")
-                except Exception as e:
-                    self.logger.warning(f"연결 종료 오류: {e}")
-                self.ws = None
-                
-            if self.session:
-                await self.session.close()
-                self.session = None
-                
-            self.orderbook_manager.clear_all()
-            self.is_connected = False
-            
-            # 연결 상태 업데이트
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "disconnect")
-                
-            self.logger.info("종료 처리 완료")
-            
-        except Exception as e:
-            self.logger.error(f"종료 처리 중 오류: {e}")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "stop")
+        self.stop_event.set()
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception as e:
+                self.log_error(f"웹소켓 종료 실패: {e}")
+
+        self.is_connected = False
+        self.orderbook_manager.clear_all()
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "disconnect")

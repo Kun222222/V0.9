@@ -192,7 +192,12 @@ class WebsocketMetricsManager:
 
     def _handle_message_event(self, exchange: str, current_time: float):
         """메시지 이벤트 처리"""
+        # 메시지 카운트 증가
+        if exchange not in self.metrics["message_counts"]:
+            self.metrics["message_counts"][exchange] = 0
         self.metrics["message_counts"][exchange] += 1
+        
+        # 마지막 메시지 시간 업데이트
         self.metrics["last_message_times"][exchange] = current_time
         
         # 최근 메시지 타임스탬프 업데이트

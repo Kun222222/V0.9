@@ -485,3 +485,111 @@ class WebsocketManager:
                 self.update_connection_status(exchange, "disconnect")  # 1분 이상 메시지 없으면 연결 끊김으로 처리
             if metrics['latency_ms'] > 1000:  # 1초 이상
                 logger.warning(f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} 높은 레이턴시: {metrics['latency_ms']:.2f}ms")
+
+    # ============================
+    # 공통 로깅 메서드
+    # ============================
+    def log_error(self, exchange: str, msg: str, exc_info: bool = True):
+        """에러 로깅 공통 메서드"""
+        try:
+            self.metrics_manager.update_metric(
+                exchange=exchange,
+                event_type="error"
+            )
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.error(
+                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} {msg}",
+                exc_info=exc_info
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 에러 로깅 중 오류 발생: {str(e)}")
+
+    def log_connect_attempt(self, exchange: str):
+        """연결 시도 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['CONNECTING']} "
+                f"웹소켓 연결 시도"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 연결 시도 로깅 중 오류 발생: {str(e)}")
+
+    def log_connect_success(self, exchange: str):
+        """연결 성공 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['CONNECTED']} "
+                f"웹소켓 연결 성공"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 연결 성공 로깅 중 오류 발생: {str(e)}")
+
+    def log_disconnect(self, exchange: str):
+        """연결 종료 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['DISCONNECTED']} "
+                f"웹소켓 연결 종료"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 연결 종료 로깅 중 오류 발생: {str(e)}")
+
+    def log_start(self, exchange: str, symbols: List[str]):
+        """웹소켓 시작 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['CONNECTING']} "
+                f"웹소켓 시작 | symbols={len(symbols)}개: {symbols}"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 시작 로깅 중 오류 발생: {str(e)}")
+
+    def log_stop(self, exchange: str):
+        """웹소켓 정지 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['DISCONNECTED']} "
+                f"웹소켓 정지 요청"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 정지 로깅 중 오류 발생: {str(e)}")
+
+    def log_message_performance(self, exchange: str, avg_time: float, max_time: float, sample_count: int):
+        """메시지 처리 성능 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] 메시지 처리 성능 | "
+                f"평균={avg_time:.2f}ms, "
+                f"최대={max_time:.2f}ms, "
+                f"샘플수={sample_count:,}개"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 성능 로깅 중 오류 발생: {str(e)}")
+
+    def log_subscribe(self, exchange: str, symbols: List[str]):
+        """구독 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] 구독 시작 | "
+                f"symbols={len(symbols)}개: {symbols}"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 구독 로깅 중 오류 발생: {str(e)}")
+
+    def log_subscribe_success(self, exchange: str, count: int):
+        """구독 성공 로깅 공통 메서드"""
+        try:
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            logger.info(
+                f"{LOG_SYSTEM} [{exchange_kr}] 구독 완료 | "
+                f"총 {count}개 심볼"
+            )
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 구독 완료 로깅 중 오류 발생: {str(e)}")

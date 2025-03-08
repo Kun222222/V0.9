@@ -84,8 +84,6 @@ class BybitSpotWebsocket(BaseWebsocket):
         # Ping/Pong 설정 추가
         self.ping_interval = 20
         self.ping_timeout = 10
-
-        self.logger = logger
         
         # raw 로거 초기화
         self.raw_logger = get_raw_logger("bybit_spot")
@@ -93,17 +91,12 @@ class BybitSpotWebsocket(BaseWebsocket):
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)
         self.orderbook_manager.set_output_queue(queue)  # 오더북 매니저 큐 설정
-        # 부모 클래스에서 이미 로깅하므로 여기서는 생략
 
     async def connect(self) -> None:
         while True:  # 무한 재시도 루프
             try:
-                logger.info(
-                    f"[BybitSpot] 웹소켓 연결 시도 | "
-                    f"시도={self.current_retry + 1}회차, "
-                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
-                    f"url={self.ws_url}"
-                )
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "connect_attempt")
                 
                 # 초기 연결 시에만 0.5초 타임아웃 설정
                 timeout = 0.5 if self.initial_connection else 30
@@ -123,40 +116,23 @@ class BybitSpotWebsocket(BaseWebsocket):
                 self.stats.connection_start_time = time.time()
                 self.initial_connection = False  # 초기 연결 완료 표시
                 
-                logger.info(
-                    f"[BybitSpot] 웹소켓 연결 성공 | "
-                    f"시도={self.current_retry + 1}회차, "
-                    f"url={self.ws_url}, "
-                    f"ping_interval={self.ping_interval}초"
-                )
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "connect")
                 break  # 연결 성공시 루프 종료
                 
             except asyncio.TimeoutError:
                 self.current_retry += 1
-                logger.warning(
-                    f"[BybitSpot] 웹소켓 연결 타임아웃 | "
-                    f"시도={self.current_retry}회차, "
-                    f"timeout={timeout}초, "
-                    f"초기연결={'예' if self.initial_connection else '아니오'}"
-                )
+                self.log_error(f"웹소켓 연결 타임아웃 | 시도={self.current_retry}회차, timeout={timeout}초, 초기연결={'예' if self.initial_connection else '아니오'}")
                 await asyncio.sleep(self.retry_delay)
                 continue
                 
             except Exception as e:
                 self.current_retry += 1
-                logger.error(
-                    f"[BybitSpot] 웹소켓 연결 실패 | "
-                    f"시도={self.current_retry}회차, "
-                    f"초기연결={'예' if self.initial_connection else '아니오'}, "
-                    f"error={str(e)}"
-                )
+                self.log_error(f"웹소켓 연결 실패 | 시도={self.current_retry}회차, 초기연결={'예' if self.initial_connection else '아니오'}, error={str(e)}")
                 await asyncio.sleep(self.retry_delay)
                 continue
 
     async def subscribe(self, symbols: List[str]) -> None:
-        """
-        바이비트 웹소켓 구독 - 심볼을 10개씩 나누어 구독
-        """
         try:
             # 심볼을 10개씩 나누어 구독
             BATCH_SIZE = 10
@@ -174,26 +150,26 @@ class BybitSpotWebsocket(BaseWebsocket):
                     "op": "subscribe",
                     "args": args
                 }
-                logger.info(f"[BybitSpot] subscribing batch {i//BATCH_SIZE + 1}: symbols={batch_symbols}, depth={self.depth_level}, msg={msg}")
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "subscribe")
                 await self.ws.send(json.dumps(msg))
                 
                 # 각 배치 사이에 짧은 딜레이
                 await asyncio.sleep(0.1)
             
-            logger.info(f"[BybitSpot] Successfully subscribed to {len(symbols)} symbols in {(len(symbols)-1)//BATCH_SIZE + 1} batches")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "subscribe_complete")
             
         except Exception as e:
-            self.log_error(f"[BybitSpot] subscribe error: {str(e)}")
+            self.log_error(f"subscribe error: {str(e)}")
             raise
 
     async def parse_message(self, message: str) -> Optional[dict]:
-        """
-        바이낸스와 동일하게 raw json -> dict 변환
-        """
         try:
             data = json.loads(message)
             if data.get("op") == "subscribe":
-                logger.debug(f"[BybitSpot] subscribe response: {data}")
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "subscribe_response")
                 return None
 
             if "topic" in data and "data" in data:
@@ -206,13 +182,10 @@ class BybitSpotWebsocket(BaseWebsocket):
                 return data
             return None
         except Exception as e:
-            self.log_error(f"[BybitSpot] parse_message error: {e}")
+            self.log_error(f"parse_message error: {e}")
             return None
 
     async def handle_parsed_message(self, parsed: dict) -> None:
-        """
-        파싱된 메시지를 실제 orderbook_manager에 전달
-        """
         try:
             evt = parse_bybit_depth_update(parsed)
             if not evt:
@@ -221,26 +194,20 @@ class BybitSpotWebsocket(BaseWebsocket):
             symbol = evt["symbol"]
             res = await self.orderbook_manager.update(symbol, evt)
             if not res.is_valid:
-                logger.error(
-                    f"[BybitSpot] {symbol} orderbook update fail: {res.error_messages}"
-                )
+                self.log_error(f"{symbol} orderbook update fail: {res.error_messages}")
         except Exception as e:
-            self.log_error(f"[BybitSpot] handle_parsed_message error: {e}")
+            self.log_error(f"handle_parsed_message error: {e}")
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
-        """
-        웹소켓 시작 및 초기화
-        1. 연결
-        2. 스냅샷 요청 (병렬)
-        3. 구독 시작
-        4. 메시지 처리 루프
-        """
         while not self.stop_event.is_set():
             try:
                 symbols = symbols_by_exchange.get(self.exchangename.lower(), [])
                 if not symbols:
-                    logger.warning(f"[BybitSpot] No symbols to subscribe for {self.exchangename}")
+                    self.log_error("No symbols to subscribe")
                     return
+
+                # 공통 로깅을 위한 부모 클래스 start 호출
+                await super().start(symbols_by_exchange)
 
                 # 1. 연결
                 await self.connect()
@@ -259,18 +226,17 @@ class BybitSpotWebsocket(BaseWebsocket):
                 
                 for sym, result in zip(symbols, results):
                     if isinstance(result, Exception):
-                        logger.error(f"[BybitSpot] Failed to initialize {sym}: {str(result)}")
+                        self.log_error(f"Failed to initialize {sym}: {str(result)}")
                         continue
                     if result:  # True인 경우만 구독 대상에 포함
                         valid_symbols.append(sym)
                 
                 if not valid_symbols:
-                    logger.error("[BybitSpot] No valid symbols to subscribe")
+                    self.log_error("No valid symbols to subscribe")
                     return
                     
                 # 3. 구독 시작
                 await self.subscribe(valid_symbols)
-                logger.info(f"[BybitSpot] Successfully subscribed to {len(valid_symbols)} symbols")
 
                 # 4. 메시지 처리 루프
                 while not self.stop_event.is_set():
@@ -282,22 +248,21 @@ class BybitSpotWebsocket(BaseWebsocket):
                         parsed = await self.parse_message(message)
                         if parsed:
                             await self.handle_parsed_message(parsed)
+                            if self.connection_status_callback:
+                                self.connection_status_callback(self.exchangename, "message")
                             
                     except asyncio.TimeoutError:
-                        logger.debug("[BybitSpot] recv timeout - checking connection health")
                         continue
                     except Exception as e:
-                        logger.error(f"[BybitSpot] message loop error: {str(e)}")
+                        self.log_error(f"message loop error: {str(e)}")
                         break
 
             except Exception as e:
                 self.current_retry += 1
-                logger.error(
-                    f"[BybitSpot] connection error: {str(e)}, retry={self.current_retry}"
-                )
+                self.log_error(f"connection error: {str(e)}, retry={self.current_retry}")
                 
                 if self.current_retry > 5:
-                    logger.error("[BybitSpot] max retries exceeded -> stop")
+                    self.log_error("max retries exceeded -> stop")
                     break
                     
                 await asyncio.sleep(self.retry_delay)
@@ -310,44 +275,41 @@ class BybitSpotWebsocket(BaseWebsocket):
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "disconnect")
 
-        logger.info("[BybitSpot] websocket stopped")
-
     async def _initialize_symbol(self, symbol: str) -> bool:
-        """
-        단일 심볼에 대한 스냅샷 초기화
-        """
         try:
-            # unified_logger.info(f"[BybitSpot] requesting snapshot for {symbol}...")
             snapshot = await self.orderbook_manager.fetch_snapshot(symbol)
             
             if not snapshot:
-                logger.error(f"[BybitSpot] {symbol} snapshot request fail")
+                self.log_error(f"{symbol} snapshot request fail")
                 return False
                 
             init_res = await self.orderbook_manager.initialize_orderbook(symbol, snapshot)
             if not init_res.is_valid:
-                logger.error(f"[BybitSpot] {symbol} snapshot init fail: {init_res.error_messages}")
+                self.log_error(f"{symbol} snapshot init fail: {init_res.error_messages}")
                 return False
                 
-            logger.info(f"[BybitSpot] {symbol} orderbook initialized with snapshot seq={snapshot.get('sequence')}")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "snapshot_initialized")
             return True
             
         except Exception as e:
-            logger.error(f"[BybitSpot] {symbol} initialization error: {str(e)}")
+            self.log_error(f"{symbol} initialization error: {str(e)}")
             return False
 
     async def stop(self):
-        logger.info("[BybitSpot] stop() called")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "stop")
         self.stop_event.set()
         if self.ws:
             try:
                 await self.ws.close()
             except Exception as e:
-                logger.warning(f"[BybitSpot] websocket close error: {e}")
+                self.log_error(f"websocket close error: {e}")
 
         self.is_connected = False
         self.orderbook_manager.clear_all()
-        logger.info("[BybitSpot] stopped & cleared.")
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "disconnect")
 
     def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
         """
@@ -360,4 +322,4 @@ class BybitSpotWebsocket(BaseWebsocket):
         try:
             self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
         except Exception as e:
-            logger.error(f"[{self.exchangename}] Raw 로깅 실패: {str(e)}")
+            self.log_error(f"Raw 로깅 실패: {str(e)}")
