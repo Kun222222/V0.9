@@ -1,83 +1,38 @@
-# file: orderbook/websocket/bybit_spot_websocket.py
+# file: orderbook/websocket/bybit_f_ws_v2.py
 
 import asyncio
 import json
 import time
+import aiohttp
+from fastapi import websockets
 from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
-from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob_v2 import BybitSpotOrderBookManagerV2
+from crosskimp.ob_collector.orderbook.orderbook.bybit_f_ob_v2 import BybitFutureOrderBookManagerV2
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
-def parse_bybit_depth_update(data: dict) -> Optional[dict]:
+class BybitFutureWebSocketV2(BaseWebsocket):
     """
-    Bybit에서 온 depth 메시지를 파싱 (바이낸스와 유사한 형태로 리턴)
-    """
-    try:
-        topic = data.get("topic", "")
-        if "orderbook" not in topic:
-            return None
-
-        parts = topic.split(".")
-        if len(parts) < 3:
-            # unified_logger.debug(f"[BybitSpot] parse_bybit_depth_update: invalid topic format={topic}")
-            return None
-
-        sym_str = parts[-1]  # 예: "BTCUSDT"
-        symbol = sym_str.replace("USDT", "")  # 예: "BTC"
-        msg_type = data.get("type", "delta").lower()  # "snapshot" or "delta"
-        ob_data = data.get("data", {})
-
-        seq = ob_data.get("u", 0)
-        ts = ob_data.get("ts", int(time.time() * 1000))
-
-        bids = []
-        for b in ob_data.get("b", []):
-            px, qty = float(b[0]), float(b[1])
-            # qty가 0이면 제거 로직
-            bids.append([px, qty if qty > 0 else 0.0])
-
-        asks = []
-        for a in ob_data.get("a", []):
-            px, qty = float(a[0]), float(a[1])
-            asks.append([px, qty if qty > 0 else 0.0])
-
-        # unified_logger.debug(
-        #     f"[BybitSpot] parse_bybit_depth_update: symbol={symbol}, seq={seq}, "
-        #     f"bids_len={len(bids)}, asks_len={len(asks)}, msg_type={msg_type}"
-        # )
-
-        return {
-            "exchangename": "bybit",
-            "symbol": symbol,
-            "bids": bids,
-            "asks": asks,
-            "timestamp": ts,
-            "sequence": seq,
-            "type": msg_type
-        }
-    except Exception as e:
-        logger.error(f"[BybitSpot] parse_bybit_depth_update error: {e}", exc_info=True)
-        return None
-
-class BybitSpotWebSocket(BaseWebsocket):
-    """
-    Bybit 현물 WebSocket
+    Bybit 선물(Linear) WebSocket V2
+    - wss://stream.bybit.com/v5/public/linear
+    - 공식 문서 기반 구현
+    - 핑퐁 메커니즘 (20초)
+    - 스냅샷/델타 처리
     """
     def __init__(self, settings: dict):
-        super().__init__(settings, "bybit")
-        self.ws_url = "wss://stream.bybit.com/v5/public/spot"
+        super().__init__(settings, "bybitfuture2")
+        self.ws_url = "wss://stream.bybit.com/v5/public/linear"
         self.depth_level = settings.get("connection", {}).get("websocket", {}).get("depth_level", 50)
-        self.orderbook_manager = BybitSpotOrderBookManagerV2(self.depth_level)
+        self.orderbook_manager = BybitFutureOrderBookManagerV2(self.depth_level)
         
         # Bybit specific settings
         self.ping_interval = 20  # 20초마다 ping
         self.ping_timeout = 10
-        self.max_symbols_per_subscription = 10  # Spot의 경우 한 번에 최대 10개 심볼만 구독 가능
+        self.max_symbols_per_subscription = 10  # 한 번에 최대 10개 심볼만 구독 가능
         
         # 연결 상태 관리
         self.is_connected = False
@@ -87,10 +42,10 @@ class BybitSpotWebSocket(BaseWebsocket):
         self.normal_retry_delay = 1.0   # 일반적인 재연결 시 1초 간격
 
         # raw 로거 초기화
-        self.raw_logger = get_raw_logger("bybit_spot")
+        self.raw_logger = get_raw_logger("bybit_future")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
-        super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)
+        super().set_output_queue(queue)  # 부모 클래스의 메서드 호출
         self.orderbook_manager.set_output_queue(queue)  # 오더북 매니저 큐 설정
 
     async def connect(self) -> None:
@@ -210,7 +165,9 @@ class BybitSpotWebSocket(BaseWebsocket):
                     parts = topic.split(".")
                     if len(parts) >= 3:
                         symbol = parts[-1].replace("USDT", "")
-                        self.log_raw_message("depthUpdate", message, symbol)
+                        # raw 데이터 로깅 추가
+                        msg_type = data.get("type", "delta")
+                        self.log_raw_message(msg_type, message, symbol)
                         return data
             return None
             
@@ -258,6 +215,50 @@ class BybitSpotWebSocket(BaseWebsocket):
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
 
+    async def _send_ping(self) -> None:
+        """Bybit 공식 핑 메시지 전송"""
+        try:
+            if self.ws and self.is_connected:
+                ping_message = {
+                    "req_id": str(int(time.time() * 1000)),  # 현재 시간을 req_id로 사용
+                    "op": "ping"
+                }
+                await self.ws.send(json.dumps(ping_message))
+                self.last_ping_time = time.time()
+                logger.debug(f"[Bybit] PING 전송: {ping_message}")
+        except Exception as e:
+            self.log_error(f"PING 전송 실패: {str(e)}")
+
+    async def _handle_pong(self, message: str) -> bool:
+        """Bybit 공식 퐁 메시지 처리"""
+        try:
+            data = json.loads(message)
+            if data.get("op") == "pong":
+                self.last_pong_time = time.time()
+                latency = (self.last_pong_time - self.last_ping_time) * 1000
+                logger.debug(f"[Bybit] PONG 수신 | 레이턴시: {latency:.2f}ms")
+                return True
+            return False
+        except Exception as e:
+            self.log_error(f"PONG 처리 실패: {str(e)}")
+            return False
+
+    async def start_ping(self):
+        """핑 전송 태스크 시작"""
+        while not self.stop_event.is_set():
+            try:
+                await self._send_ping()
+                await asyncio.sleep(self.ping_interval)
+                
+                # 퐁 타임아웃 체크
+                if time.time() - self.last_pong_time > self.ping_timeout:
+                    logger.error(f"[Bybit] PONG 응답 타임아웃 ({self.ping_timeout}초)")
+                    await self.reconnect()
+                    
+            except Exception as e:
+                self.log_error(f"PING 태스크 오류: {str(e)}")
+                await asyncio.sleep(1)
+
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         while not self.stop_event.is_set():
             try:
@@ -269,16 +270,23 @@ class BybitSpotWebSocket(BaseWebsocket):
                 # 1. 연결
                 await self.connect()
                 
-                # 2. 구독 시작
+                # 2. 핑 태스크 시작
+                self.ping_task = asyncio.create_task(self.start_ping())
+                
+                # 3. 구독 시작
                 await self.subscribe(symbols)
 
-                # 3. 메시지 처리 루프
+                # 4. 메시지 처리 루프
                 while not self.stop_event.is_set():
                     try:
                         message = await asyncio.wait_for(self.ws.recv(), timeout=30)
                         self.stats.last_message_time = time.time()
                         self.stats.message_count += 1
                         
+                        # PONG 메시지 체크
+                        if await self._handle_pong(message):
+                            continue
+
                         parsed = await self.parse_message(message)
                         if parsed:
                             await self.handle_parsed_message(parsed)
@@ -301,6 +309,12 @@ class BybitSpotWebSocket(BaseWebsocket):
                 continue
                 
             finally:
+                if self.ping_task:
+                    self.ping_task.cancel()
+                    try:
+                        await self.ping_task
+                    except asyncio.CancelledError:
+                        pass
                 if self.ws:
                     await self.ws.close()
                 self.is_connected = False
@@ -325,6 +339,8 @@ class BybitSpotWebSocket(BaseWebsocket):
             symbol: 심볼명
         """
         try:
+            # unified_logger에 로깅
+            logger.debug(f"[BybitFuture] {symbol} {msg_type} 메시지 수신")
             self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
         except Exception as e:
             self.log_error(f"Raw 로깅 실패: {str(e)}")

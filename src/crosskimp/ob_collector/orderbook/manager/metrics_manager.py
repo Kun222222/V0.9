@@ -6,7 +6,12 @@ from datetime import datetime
 from collections import defaultdict
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, EXCHANGE_LOGGER_MAP
-from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, STATUS_EMOJIS
+from crosskimp.ob_collector.utils.config.constants import (
+    EXCHANGE_NAMES_KR, STATUS_EMOJIS, WEBSOCKET_STATES, LOG_SYSTEM,
+    METRICS_RATE_CALCULATION_INTERVAL, METRICS_DELAY_THRESHOLD_MS,
+    METRICS_ALERT_COOLDOWN, METRICS_MAX_HISTORY, METRICS_MAX_EVENTS,
+    METRICS_HEALTH_THRESHOLD
+)
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -52,23 +57,15 @@ class WebsocketMetricsManager:
             "state_transitions": defaultdict(list)  # 상태 전이 기록
         }
         
-        # 상태 전이 정의
-        self.STATES = {
-            'CONNECTING': 0,
-            'CONNECTED': 1,
-            'DISCONNECTING': 2,
-            'DISCONNECTED': 3
-        }
-        
         # 설정값
-        self.rate_calculation_interval = 1.0  # 처리율 계산 주기 (초)
-        self.delay_threshold_ms = 1000        # 지연 감지 임계값 (ms)
-        self.alert_cooldown = 300             # 알림 쿨다운 (초)
-        self.max_history = 3600               # 메트릭 보관 기간 (초)
-        self.max_events = 100                 # 최대 이벤트 저장 수
+        self.rate_calculation_interval = METRICS_RATE_CALCULATION_INTERVAL  # 처리율 계산 주기 (초)
+        self.delay_threshold_ms = METRICS_DELAY_THRESHOLD_MS                # 지연 감지 임계값 (ms)
+        self.alert_cooldown = METRICS_ALERT_COOLDOWN                        # 알림 쿨다운 (초)
+        self.max_history = METRICS_MAX_HISTORY                              # 메트릭 보관 기간 (초)
+        self.max_events = METRICS_MAX_EVENTS                                # 최대 이벤트 저장 수
         self.ping_interval = 30.0      # 핑 전송 간격 (초)
         self.pong_timeout = 5.0        # 퐁 타임아웃 (초)
-        self.health_threshold = 70     # 상태 점수 임계값
+        self.health_threshold = METRICS_HEALTH_THRESHOLD  # 상태 점수 임계값
         
         # 알림 상태
         self.last_delay_alert = {}
@@ -102,7 +99,7 @@ class WebsocketMetricsManager:
         self.metrics["last_connection_time"][exchange] = 0
         
         # 새로운 상태 추적 메트릭 초기화
-        self.metrics["connection_state"][exchange] = self.STATES['DISCONNECTED']
+        self.metrics["connection_state"][exchange] = WEBSOCKET_STATES['DISCONNECTED']
         self.metrics["last_ping_sent"][exchange] = 0
         self.metrics["last_pong_received"][exchange] = 0
         self.metrics["connection_health"][exchange] = 0
@@ -142,8 +139,8 @@ class WebsocketMetricsManager:
     def _handle_connect_event(self, exchange: str, current_time: float):
         """연결 이벤트 처리"""
         prev_state = self.metrics["connection_state"][exchange]
-        if prev_state != self.STATES['CONNECTED']:
-            self.metrics["connection_state"][exchange] = self.STATES['CONNECTED']
+        if prev_state != WEBSOCKET_STATES['CONNECTED']:
+            self.metrics["connection_state"][exchange] = WEBSOCKET_STATES['CONNECTED']
             self.metrics["connection_attempts"][exchange] += 1
             self.metrics["connection_successes"][exchange] += 1
             self.metrics["last_connection_time"][exchange] = current_time
@@ -162,8 +159,8 @@ class WebsocketMetricsManager:
     def _handle_disconnect_event(self, exchange: str, current_time: float):
         """연결 해제 이벤트 처리"""
         prev_state = self.metrics["connection_state"][exchange]
-        if prev_state == self.STATES['CONNECTED']:
-            self.metrics["connection_state"][exchange] = self.STATES['DISCONNECTED']
+        if prev_state == WEBSOCKET_STATES['CONNECTED']:
+            self.metrics["connection_state"][exchange] = WEBSOCKET_STATES['DISCONNECTED']
             
             # 연결 지속 시간 계산 및 기록
             last_connect_time = self.metrics["last_connection_time"][exchange]
@@ -212,7 +209,7 @@ class WebsocketMetricsManager:
         self.metrics["message_rates"][exchange] = len(recent_msgs)
         
         # 메시지 수신 시 연결 상태 확인
-        if self.metrics["connection_state"][exchange] != self.STATES['CONNECTED']:
+        if self.metrics["connection_state"][exchange] != WEBSOCKET_STATES['CONNECTED']:
             self._handle_connect_event(exchange, current_time)
             
         # 연결 상태 점수 업데이트
@@ -237,7 +234,7 @@ class WebsocketMetricsManager:
 
     def _update_connection_health(self, exchange: str, current_time: float):
         """연결 상태 점수 업데이트"""
-        if self.metrics["connection_state"][exchange] != self.STATES['CONNECTED']:
+        if self.metrics["connection_state"][exchange] != WEBSOCKET_STATES['CONNECTED']:
             self.metrics["connection_health"][exchange] = 0
             return
             
@@ -249,168 +246,169 @@ class WebsocketMetricsManager:
             health_score -= 30
         
         # 메시지 수신 상태 체크
-        last_msg = self.metrics["last_message_times"][exchange]
-        if current_time - last_msg > 5.0:  # 5초 이상 메시지 없음
-            health_score -= 20
+        last_message = self.metrics["last_message_times"][exchange]
+        if current_time - last_message > self.ping_interval * 2:
+            health_score -= 30
         
-        # 에러 발생 상태 체크
-        recent_errors = sum(1 for t in self.metrics["connection_patterns"][exchange][-5:]
-                          if t["type"] == "error")
-        health_score -= recent_errors * 10
+        # 에러 발생 빈도 체크
+        error_count = self.metrics["error_counts"][exchange]
+        if error_count > 0:
+            recent_errors = error_count / max(1, (current_time - self.metrics["start_times"][exchange]) / 3600)
+            if recent_errors > 10:  # 시간당 10개 이상의 에러
+                health_score -= 20
         
-        # 최종 점수 업데이트
-        self.metrics["connection_health"][exchange] = max(0, min(100, health_score))
+        # 핑 레이턴시 체크
+        ping_latencies = self.metrics["ping_latencies"][exchange]
+        if ping_latencies:
+            avg_latency = sum(ping_latencies[-10:]) / min(10, len(ping_latencies))
+            if avg_latency > self.delay_threshold_ms:
+                health_score -= 20
         
-        # 상태 점수가 임계값 미만이면 연결 해제 처리
-        if health_score < self.health_threshold and self.metrics["connection_state"][exchange] == self.STATES['CONNECTED']:
-            self._handle_disconnect_event(exchange, current_time)
+        self.metrics["connection_health"][exchange] = max(0, health_score)
 
     def _record_state_transition(self, exchange: str, new_state: str, timestamp: float):
         """상태 전이 기록"""
-        self.metrics["state_transitions"][exchange].append({
-            "from": self.STATES[self._get_state_name(self.metrics["connection_state"][exchange])],
-            "to": self.STATES[new_state],
+        transitions = self.metrics["state_transitions"][exchange]
+        transitions.append({
+            "from": self._get_state_name(self.metrics["connection_state"][exchange]),
+            "to": new_state,
             "time": timestamp
         })
         
-        # 최대 100개까지만 유지
-        if len(self.metrics["state_transitions"][exchange]) > 100:
-            self.metrics["state_transitions"][exchange].pop(0)
+        # 최대 이벤트 수 제한
+        if len(transitions) > self.max_events:
+            transitions.pop(0)
 
     def _get_state_name(self, state_value: int) -> str:
         """상태 값에 대한 이름 반환"""
-        return next(name for name, value in self.STATES.items() if value == state_value)
+        return next((k for k, v in WEBSOCKET_STATES.items() if v == state_value), "UNKNOWN")
 
     def get_connection_state(self, exchange: str) -> Dict:
-        """현재 연결 상태 정보 조회"""
-        current_time = time.time()
-        state = self.metrics["connection_state"].get(exchange, self.STATES['DISCONNECTED'])
+        """거래소 연결 상태 정보 반환"""
+        if exchange not in self.metrics["connection_state"]:
+            self.initialize_exchange(exchange)
+            
+        state_value = self.metrics["connection_state"][exchange]
+        state_name = self._get_state_name(state_value)
         health = self.metrics["connection_health"].get(exchange, 0)
         
         return {
-            "state": self._get_state_name(state),
+            "state": state_name,
             "health": health,
-            "last_transition": self.metrics["state_transitions"][exchange][-1] if self.metrics["state_transitions"][exchange] else None,
-            "uptime": current_time - self.metrics["last_connection_time"].get(exchange, current_time) if state == self.STATES['CONNECTED'] else 0,
-            "ping_latency": sum(self.metrics["ping_latencies"][exchange][-5:]) / 5 if self.metrics["ping_latencies"][exchange] else 0
+            "healthy": health >= self.health_threshold,
+            "emoji": STATUS_EMOJIS.get(state_name, "⚪")
         }
 
     def analyze_reconnect_patterns(self, exchange: str) -> str:
         """재연결 패턴 분석"""
-        patterns = self.metrics["connection_patterns"][exchange][-10:]  # 최근 10개 이벤트만
-        intervals = self.metrics["reconnect_intervals"][exchange][-5:]  # 최근 5개 간격만
-        
+        if exchange not in self.metrics["connection_patterns"]:
+            return "데이터 없음"
+            
+        patterns = self.metrics["connection_patterns"][exchange]
         if not patterns:
-            return "패턴 없음"
+            return "데이터 없음"
             
-        result = []
+        # 연결 지속 시간 분석
+        durations = self.metrics["connection_durations"][exchange]
+        avg_duration = sum(durations) / max(1, len(durations)) if durations else 0
         
-        # 평균 연결 유지 시간
-        durations = [p.get("duration", 0) for p in patterns if p["type"] == "disconnect"]
-        if durations:
-            avg_duration = sum(durations) / len(durations)
-            result.append(f"평균 유지={avg_duration:.1f}초")
-            
-        # 평균 재연결 간격
-        if intervals:
-            avg_interval = sum(intervals) / len(intervals)
-            result.append(f"재연결 간격={avg_interval:.1f}초")
-            
-        # 연결 성공률
-        success_rate = (self.metrics["connection_successes"][exchange] / 
-                       self.metrics["connection_attempts"][exchange] * 100)
-        result.append(f"성공률={success_rate:.1f}%")
+        # 재연결 간격 분석
+        intervals = self.metrics["reconnect_intervals"][exchange]
+        avg_interval = sum(intervals) / max(1, len(intervals)) if intervals else 0
         
-        return " | ".join(result)
+        # 연결 성공률 계산
+        attempts = self.metrics["connection_attempts"][exchange]
+        successes = self.metrics["connection_successes"][exchange]
+        success_rate = (successes / max(1, attempts)) * 100
+        
+        # 결과 포맷팅
+        result = (
+            f"연결 시도: {attempts}회, 성공률: {success_rate:.1f}%\n"
+            f"평균 연결 지속 시간: {avg_duration:.1f}초\n"
+            f"평균 재연결 간격: {avg_interval:.1f}초"
+        )
+        
+        return result
 
     def get_connection_stats(self, exchange: str) -> Dict:
-        """연결 통계 조회"""
+        """거래소 연결 통계 반환"""
+        if exchange not in self.metrics["connection_state"]:
+            self.initialize_exchange(exchange)
+            
         return {
             "attempts": self.metrics["connection_attempts"].get(exchange, 0),
             "successes": self.metrics["connection_successes"].get(exchange, 0),
             "failures": self.metrics["connection_failures"].get(exchange, 0),
-            "avg_duration": (sum(self.metrics["connection_durations"][exchange]) / 
-                           len(self.metrics["connection_durations"][exchange])
-                           if self.metrics["connection_durations"][exchange] else 0),
-            "reconnect_count": self.metrics["reconnect_counts"].get(exchange, 0),
-            "avg_reconnect_interval": (sum(self.metrics["reconnect_intervals"][exchange]) / 
-                                     len(self.metrics["reconnect_intervals"][exchange])
-                                     if self.metrics["reconnect_intervals"][exchange] else 0),
-            "recent_patterns": self.metrics["connection_patterns"][exchange][-5:]  # 최근 5개 이벤트
+            "reconnects": self.metrics["reconnect_counts"].get(exchange, 0),
+            "avg_duration": sum(self.metrics["connection_durations"][exchange]) / max(1, len(self.metrics["connection_durations"][exchange])) if exchange in self.metrics["connection_durations"] else 0,
+            "state": self._get_state_name(self.metrics["connection_state"][exchange]),
+            "health": self.metrics["connection_health"].get(exchange, 0)
         }
 
     def get_metrics(self) -> Dict:
-        """현재 메트릭 상태 조회"""
+        """모든 메트릭 데이터 반환"""
         result = {}
         current_time = time.time()
         
-        for exchange in self.metrics["connection_state"].keys():
-            stats = self.get_connection_stats(exchange)
-            state = self.metrics["connection_state"][exchange]
-            
-            # 연결 상태 확인 (CONNECTED 상태이고 health score가 임계값 이상인 경우만 연결된 것으로 간주)
-            is_connected = (state == self.STATES['CONNECTED'] and 
-                          self.metrics["connection_health"][exchange] >= self.health_threshold)
-            
+        for exchange in self.metrics["message_counts"].keys():
+            # 기본 메트릭
             result[exchange] = {
-                "connected": is_connected,
+                "connected": self.metrics["connection_state"][exchange] == WEBSOCKET_STATES['CONNECTED'],
+                "connection_state": self._get_state_name(self.metrics["connection_state"][exchange]),
+                "connection_health": self.metrics["connection_health"].get(exchange, 0),
                 "message_count": self.metrics["message_counts"].get(exchange, 0),
-                "messages_per_second": self.metrics["message_rates"].get(exchange, 0),
                 "error_count": self.metrics["error_counts"].get(exchange, 0),
                 "reconnect_count": self.metrics["reconnect_counts"].get(exchange, 0),
                 "last_message_time": self.metrics["last_message_times"].get(exchange, 0),
-                "start_time": self.metrics["start_times"].get(exchange, current_time),
-                "latency_ms": self._calculate_latency(exchange),
+                "uptime": current_time - self.metrics["start_times"].get(exchange, current_time),
+                "messages_per_second": self.metrics["message_rates"].get(exchange, 0),
                 "orderbook_count": self.metrics["orderbook_counts"].get(exchange, 0),
-                "orderbook_per_second": self.metrics["orderbook_rates"].get(exchange, 0),
-                "avg_processing_time": self._calculate_avg_processing_time(exchange),
+                "orderbook_rate": self.metrics["orderbook_rates"].get(exchange, 0),
                 "bytes_received": self.metrics["bytes_received"].get(exchange, 0),
                 "bytes_sent": self.metrics["bytes_sent"].get(exchange, 0),
-                "state": self._get_state_name(state),
-                "health": self.metrics["connection_health"].get(exchange, 0),
-                
-                # 추가된 연결 통계
-                "connection_attempts": stats["attempts"],
-                "connection_successes": stats["successes"],
-                "connection_failures": stats["failures"],
-                "avg_connection_duration": stats["avg_duration"],
-                "avg_reconnect_interval": stats["avg_reconnect_interval"],
-                "connection_success_rate": (stats["successes"] / stats["attempts"] * 100 
-                                          if stats["attempts"] > 0 else 0)
+                "latency_ms": self._calculate_latency(exchange),
+                "avg_processing_time": self._calculate_avg_processing_time(exchange),
+                "connection_stats": self.get_connection_stats(exchange)
             }
-        
+            
         return result
 
     def _calculate_latency(self, exchange: str) -> float:
-        """평균 레이턴시 계산"""
-        latencies = self.metrics["latencies"].get(exchange, [])
+        """평균 핑 레이턴시 계산"""
+        latencies = self.metrics["ping_latencies"].get(exchange, [])
         if not latencies:
             return 0.0
-        return sum(latencies[-10:]) / len(latencies[-10:])
+        return sum(latencies[-10:]) / min(10, len(latencies))
 
     def _calculate_avg_processing_time(self, exchange: str) -> float:
         """평균 처리 시간 계산"""
         times = self.metrics["processing_times"].get(exchange, [])
         if not times:
             return 0.0
-        return sum(times) / len(times)
+        return sum(times[-100:]) / min(100, len(times))
 
     def cleanup_old_metrics(self) -> None:
-        """오래된 메트릭 정리"""
+        """오래된 메트릭 데이터 정리"""
         current_time = time.time()
-        cutoff_time = current_time - self.max_history
         
-        for exchange in self.metrics["latencies"]:
-            self.metrics["latencies"][exchange] = [
-                lat for lat in self.metrics["latencies"][exchange]
-                if lat > cutoff_time
+        # 이벤트 기록 정리
+        for exchange in self.metrics["state_transitions"]:
+            transitions = self.metrics["state_transitions"][exchange]
+            self.metrics["state_transitions"][exchange] = [
+                t for t in transitions
+                if current_time - t["time"] < self.max_history
             ]
             
-            # 처리 시간 기록 정리
-            self.metrics["processing_times"][exchange] = self.metrics["processing_times"][exchange][-100:]
+        # 연결 패턴 정리
+        for exchange in self.metrics["connection_patterns"]:
+            patterns = self.metrics["connection_patterns"][exchange]
+            self.metrics["connection_patterns"][exchange] = [
+                p for p in patterns
+                if current_time - p["time"] < self.max_history
+            ]
             
-            # 최근 메시지 정리
-            self.metrics["recent_messages"][exchange] = [
-                t for t in self.metrics["recent_messages"][exchange]
-                if t > current_time - 1.0
-            ] 
+        # 핑 레이턴시 정리
+        for exchange in self.metrics["ping_latencies"]:
+            # 최대 100개만 유지
+            if len(self.metrics["ping_latencies"][exchange]) > 100:
+                self.metrics["ping_latencies"][exchange] = self.metrics["ping_latencies"][exchange][-100:] 

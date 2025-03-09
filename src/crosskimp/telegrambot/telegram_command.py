@@ -15,7 +15,7 @@ from telegram.ext import (
     CallbackContext,
 )
 
-from cross_kimp_arbitrage.bot.bot_constants import (
+from crosskimp.telegrambot.bot_constants import (
     COMMAND_BOT_TOKEN,
     ADMIN_USER_IDS,
     BotCommands,

@@ -33,10 +33,11 @@ from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotW
 from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebSocket
-from crosskimp.ob_collector.orderbook.websocket.bybit_s_v2_ws import BybitSpotWebSocketV2
+from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws_v2 import BybitSpotWebSocketV2
+from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws_v2 import BybitFutureWebSocketV2
 from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 
-from crosskimp.telegrambot.notification.telegram_bot import send_telegram_message
+from crosskimp.telegrambot.telegram_notification import send_telegram_message
 
 # ============================
 # 상수 정의
@@ -47,6 +48,7 @@ EXCHANGE_CLASS_MAP = {
     "bybit": BybitSpotWebSocket,
     "bybit2": BybitSpotWebSocketV2,
     "bybitfuture": BybitFutureWebsocket,
+    "bybitfuture2": BybitFutureWebSocketV2,
     "upbit": UpbitWebsocket,
     "bithumb": BithumbSpotWebsocket
 }
@@ -195,6 +197,9 @@ class WebsocketManager:
 
     async def process_queue(self):
         """메시지 큐 처리"""
+        # 큐 로거 초기화 (모듈 레벨 변수가 아닌 로컬 변수로 사용)
+        queue_logger = get_queue_logger()
+        
         while not self.stop_event.is_set():
             try:
                 start_time = time.time()
@@ -442,6 +447,12 @@ class WebsocketManager:
                 # logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 초기화 준비")
                 await self.start_exchange_websocket(exchange, syms)
                 logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
+            
+            # 바이빗 선물 v2도 실행
+            if "bybitfuture" in filtered_data:
+                logger.info(f"[바이빗 선물 v2] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 시작")
+                await self.start_exchange_websocket("bybitfuture2", filtered_data["bybitfuture"])
+                logger.info(f"[바이빗 선물 v2] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
                 
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 웹소켓 시작 실패: {e}", exc_info=True)

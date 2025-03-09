@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
-from crosskimp.ob_collector.orderbook.orderbook.bybit_s_v2_ob import BybitSpotOrderBookManagerV2
+from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob_v2 import BybitSpotOrderBookManagerV2
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

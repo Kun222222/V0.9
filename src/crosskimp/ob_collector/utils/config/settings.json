@@ -215,20 +215,10 @@
   "notifications": {
     "telegram": {
       "enabled": true,
-      "token": "7040175644:AAH1rgk_SaS_k8O5usFv98pVbn1317OdS-U",
-      "chat_id": "1213855908",
       "alert_types": [
         "error",
         "trade",
         "profit"
-      ]
-    },
-    "discord": {
-      "enabled": false,
-      "webhook_url": "",
-      "alert_types": [
-        "error",
-        "trade"
       ]
     }
   },

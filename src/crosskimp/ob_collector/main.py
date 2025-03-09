@@ -12,25 +12,14 @@ from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM, WEBSOCKET_
 from crosskimp.ob_collector.server.backend.monitor_server import MonitoringServer
 from crosskimp.ob_collector.orderbook.websocket.base_ws_manager import WebsocketManager
 
-from crosskimp.telegrambot.notification.telegram_bot import send_telegram_message, MessageType, send_system_status, send_market_status, send_error
+from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_system_status, send_market_status, send_error
+from crosskimp.telegrambot.bot_constants import MessageType, TELEGRAM_START_MESSAGE, TELEGRAM_STOP_MESSAGE
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
 # 환경 변수에서 프론트엔드 URL 가져오기
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-
-# 시작 메시지 상수 정의
-TELEGRAM_START_MESSAGE = {
-    "component": "OrderBook Collector",
-    "status": "시스템 초기화 시작"
-}
-
-# 종료 메시지 상수 정의
-TELEGRAM_STOP_MESSAGE = {
-    "component": "OrderBook Collector",
-    "reason": "사용자 요청으로 인한 종료"
-}
 
 async def websocket_callback(exchange_name: str, data: dict):
     """웹소켓 메시지 수신 콜백"""

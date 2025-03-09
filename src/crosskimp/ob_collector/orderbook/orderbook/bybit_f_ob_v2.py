@@ -1,21 +1,19 @@
+# file: core/websocket/exchanges/bybit_future_orderbook_manager.py
+
+import asyncio
 import time
 import json
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
+
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger, get_raw_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 queue_logger = get_queue_logger()
-raw_logger = get_raw_logger("bybit")  # raw 데이터 로거 추가
+raw_logger = get_raw_logger("bybit_future")
 
-class BybitOrderBookV2(OrderBookV2):
-    """
-    Bybit 전용 오더북 클래스
-    - 시퀀스 기반 검증
-    - 3초 스냅샷 처리
-    - 델타 업데이트 처리
-    """
+class BybitFutureOrderBookV2(OrderBookV2):
     def __init__(self, exchangename: str, symbol: str, depth: int = 50):
         super().__init__(exchangename, symbol, depth)
         self.last_snapshot_time = 0
@@ -24,12 +22,6 @@ class BybitOrderBookV2(OrderBookV2):
         self.asks_dict = {}  # price -> quantity
 
     def should_process_update(self, sequence: Optional[int], timestamp: Optional[int]) -> bool:
-        """
-        업데이트 처리 여부 결정
-        - sequence가 1이면 무조건 처리 (서비스 재시작)
-        - 3초 이상 경과하면 스냅샷으로 처리
-        - sequence가 이전보다 작거나 같으면 무시
-        """
         current_time = time.time()
         
         # 서비스 재시작 케이스
@@ -38,7 +30,7 @@ class BybitOrderBookV2(OrderBookV2):
             return True
             
         # 3초 이상 경과
-        if timestamp and (timestamp - self.last_snapshot_time) >= 3000:  # 3초 = 3000ms
+        if timestamp and (timestamp - self.last_snapshot_time) >= 3000:
             logger.debug(f"[Bybit] {self.symbol} 3초 경과 - 스냅샷으로 처리")
             return True
             
@@ -52,18 +44,6 @@ class BybitOrderBookV2(OrderBookV2):
                 return False
                 
         return True
-
-    async def send_to_queue(self) -> None:
-        """큐로 데이터 전송"""
-        if self.output_queue:
-            try:
-                data = self.to_dict()
-                await self.output_queue.put((self.exchangename, data))
-            except Exception as e:
-                logger.error(
-                    f"[Bybit] {self.symbol} 큐 전송 실패: {str(e)}", 
-                    exc_info=True
-                )
 
     def update_orderbook(self, bids: List[List[float]], asks: List[List[float]], 
                         timestamp: Optional[int] = None, sequence: Optional[int] = None,
@@ -109,18 +89,21 @@ class BybitOrderBookV2(OrderBookV2):
                 exc_info=True
             )
 
-class BybitSpotOrderBookManagerV2(BaseOrderBookManagerV2):
+class BybitFutureOrderBookManagerV2(BaseOrderBookManagerV2):
     def __init__(self, depth: int = 50):
         super().__init__(depth)
-        self.exchangename = "bybit"
-        self.orderbooks: Dict[str, BybitOrderBookV2] = {}  # BybitOrderBookV2 사용
+        self.exchangename = "bybitfuture2"
+        self.orderbooks: Dict[str, BybitFutureOrderBookV2] = {}
         
     async def update(self, symbol: str, data: dict) -> ValidationResult:
-        global queue_logger
         try:
+            # 로거 초기화 (전역 변수 대신 로컬 변수로 사용)
+            from crosskimp.ob_collector.utils.logging.logger import get_queue_logger
+            queue_logger = get_queue_logger()
+            
             # 오더북이 없으면 생성
             if symbol not in self.orderbooks:
-                self.orderbooks[symbol] = BybitOrderBookV2(
+                self.orderbooks[symbol] = BybitFutureOrderBookV2(
                     exchangename=self.exchangename,
                     symbol=symbol,
                     depth=self.depth
@@ -132,10 +115,10 @@ class BybitSpotOrderBookManagerV2(BaseOrderBookManagerV2):
             ob_data = data.get("data", {})
             
             # 시퀀스 및 타임스탬프
-            sequence = ob_data.get("u")
+            sequence = ob_data.get("seq")
             timestamp = data.get("ts", int(time.time() * 1000))
             
-            # Raw 데이터 로깅 (raw_bybit 로거 사용)
+            # Raw 데이터 로깅 (raw_bybit_future 로거 사용)
             raw_logger.info(
                 f"{symbol}|{msg_type}|{sequence}|{timestamp}|{json.dumps(ob_data)}"
             )
@@ -194,7 +177,7 @@ class BybitSpotOrderBookManagerV2(BaseOrderBookManagerV2):
                 
                 try:
                     queue_logger.info(
-                        f"bybit_v2|{symbol}|"
+                        f"bybitfuture_v2|{symbol}|"
                         f"매수호가={best_bid}|"
                         f"매도호가={best_ask}|"
                         f"스프레드={spread:.4f}%|"
@@ -204,7 +187,7 @@ class BybitSpotOrderBookManagerV2(BaseOrderBookManagerV2):
                         f"원본데이터={json.dumps(queue_data)}"
                     )
                 except Exception as e:
-                    logger.error(f"[Bybit] {symbol} 큐 로깅 실패: {e}")
+                    logger.error(f"[BybitFuture] {symbol} 큐 로깅 실패: {e}")
                     # 로거 재초기화 시도
                     from crosskimp.ob_collector.utils.logging.logger import get_queue_logger
                     queue_logger = get_queue_logger()
