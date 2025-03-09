@@ -9,13 +9,13 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutureOrderBookManager, parse_binance_future_depth_update
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
-class BinanceFutureWebsocket(BaseWebsocket):
+class BinanceFutureWebsocket(BaseWebsocketConnector):
     """
     바이낸스 선물 웹소켓
     - 바이낸스 현물과 유사한 흐름 + testnet 지원

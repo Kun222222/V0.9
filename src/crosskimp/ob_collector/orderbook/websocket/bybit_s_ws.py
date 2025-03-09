@@ -7,7 +7,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob_v2 import BybitSpotOrderBookManagerV2
 
 # 로거 인스턴스 가져오기
@@ -64,7 +64,7 @@ def parse_bybit_depth_update(data: dict) -> Optional[dict]:
         logger.error(f"[BybitSpot] parse_bybit_depth_update error: {e}", exc_info=True)
         return None
 
-class BybitSpotWebSocket(BaseWebsocket):
+class BybitSpotWebSocket(BaseWebsocketConnector):
     """
     Bybit 현물 WebSocket
     """

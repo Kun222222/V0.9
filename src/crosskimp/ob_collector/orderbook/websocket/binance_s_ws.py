@@ -8,7 +8,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotOrderBookManager
 
 # 로거 인스턴스 가져오기
@@ -48,7 +48,7 @@ def parse_binance_depth_update(msg_data: dict) -> Optional[dict]:
         "type": "delta"
     }
 
-class BinanceSpotWebsocket(BaseWebsocket):
+class BinanceSpotWebsocket(BaseWebsocketConnector):
     """
     바이낸스 현물 웹소켓
     - depth=500으로 사용하려면: settings["depth"] = 500

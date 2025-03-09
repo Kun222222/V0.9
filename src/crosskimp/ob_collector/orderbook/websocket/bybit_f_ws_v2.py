@@ -9,13 +9,13 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bybit_f_ob_v2 import BybitFutureOrderBookManagerV2
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
-class BybitFutureWebSocketV2(BaseWebsocket):
+class BybitFutureWebSocketV2(BaseWebsocketConnector):
     """
     Bybit 선물(Linear) WebSocket V2
     - wss://stream.bybit.com/v5/public/linear
@@ -109,44 +109,13 @@ class BybitFutureWebSocketV2(BaseWebsocket):
                 continue
 
     async def subscribe(self, symbols: List[str]) -> None:
-        try:
-            total_batches = (len(symbols) + self.max_symbols_per_subscription - 1) // self.max_symbols_per_subscription
-            logger.info(f"[Bybit] 구독 시작 | 총 {len(symbols)}개 심볼, {total_batches}개 배치로 나눔")
-            
-            # 심볼을 10개씩 나누어 구독
-            for i in range(0, len(symbols), self.max_symbols_per_subscription):
-                batch_symbols = symbols[i:i + self.max_symbols_per_subscription]
-                batch_num = (i // self.max_symbols_per_subscription) + 1
-                
-                # 현재 배치의 args 리스트 생성
-                args = []
-                for sym in batch_symbols:
-                    market = f"{sym}USDT"
-                    args.append(f"orderbook.{self.depth_level}.{market}")
-
-                # 구독 메시지 전송
-                msg = {
-                    "op": "subscribe",
-                    "args": args
-                }
-                
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "subscribe")
-                    
-                await self.ws.send(json.dumps(msg))
-                logger.info(f"[Bybit] 구독 요청 전송 | 배치 {batch_num}/{total_batches}, symbols={batch_symbols}")
-                
-                # 각 배치 사이에 짧은 딜레이
-                await asyncio.sleep(0.1)
-            
-            logger.info(f"[Bybit] 전체 구독 요청 완료 | 총 {len(symbols)}개 심볼")
-            
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "subscribe_complete")
-            
-        except Exception as e:
-            self.log_error(f"구독 요청 실패: {str(e)}")
-            raise
+        """
+        심볼 구독 (자식 클래스에서 구현)
+        
+        Args:
+            symbols: 구독할 심볼 목록
+        """
+        raise NotImplementedError("자식 클래스에서 subscribe 메서드를 구현해야 합니다.")
 
     async def parse_message(self, message: str) -> Optional[dict]:
         try:

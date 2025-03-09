@@ -7,12 +7,12 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.upbit_s_ob import UpbitOrderBookManager
 
 logger = get_unified_logger()
 
-class UpbitWebsocket(BaseWebsocket):
+class UpbitWebsocket(BaseWebsocketConnector):
     """
     Upbit WebSocket 클라이언트
     - URL: wss://api.upbit.com/websocket/v1

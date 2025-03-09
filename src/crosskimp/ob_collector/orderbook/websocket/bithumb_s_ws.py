@@ -7,38 +7,54 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_ws import BaseWebsocket
+from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
+from crosskimp.ob_collector.utils.config.constants import Exchange, WEBSOCKET_URLS, WEBSOCKET_CONFIG
+
+# 빗썸 웹소켓 관련 상수
+EXCHANGE_NAME = Exchange.BITHUMB.value  # 거래소 이름
+BITHUMB_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_NAME]  # 빗썸 설정
 
 def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
     """
     빗썸 웹소켓의 orderbookdepth 메시지를 공통 포맷으로 변환 (바이낸스 현물의 parse_binance_depth_update와 유사)
+    
+    Args:
+        msg_data: 빗썸 웹소켓에서 수신한 원본 메시지
+        
+    Returns:
+        dict: 공통 포맷으로 변환된 오더북 데이터 또는 None (변환 실패 시)
     """
-    if msg_data.get("type") != "orderbookdepth":
+    # 메시지 타입 확인
+    if msg_data.get("type") != BITHUMB_CONFIG["message_type_depth"]:
         return None
+    
+    # 컨텐츠 및 주문 목록 추출
     content = msg_data.get("content", {})
     order_list = content.get("list", [])
     if not order_list:
         return None
 
+    # 심볼 추출 및 변환
     raw_symbol = order_list[0].get("symbol", "")
-    symbol = raw_symbol.replace("_KRW", "").upper()
+    symbol = raw_symbol.replace(BITHUMB_CONFIG["symbol_suffix"], "").upper()
 
+    # 타임스탬프 추출
     dt_str = content.get("datetime", str(int(time.time() * 1000)))
     try:
         dt_val = int(dt_str)
     except ValueError:
         dt_val = int(time.time() * 1000)
 
-    # 파싱: 바이낸스와 유사하게 숫자형 변환 및 0 필터링
-    bids = []
-    asks = []
+    # 호가 데이터 파싱: 숫자형 변환 및 0 필터링
+    bids = []  # 매수 호가
+    asks = []  # 매도 호가
     for order in order_list:
         otype = order.get("orderType", "").lower()
         try:
             price = float(order["price"])
             qty = float(order["quantity"])
-            if price <= 0 or qty <= 0:
+            if price <= 0 or qty <= 0:  # 유효하지 않은 가격/수량 필터링
                 continue
             if otype == "bid":
                 bids.append([price, qty])
@@ -47,11 +63,13 @@ def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
         except Exception:
             continue
 
-    bids.sort(key=lambda x: x[0], reverse=True)
-    asks.sort(key=lambda x: x[0])
+    # 호가 정렬
+    bids.sort(key=lambda x: x[0], reverse=True)  # 매수 호가는 내림차순
+    asks.sort(key=lambda x: x[0])                # 매도 호가는 오름차순
 
+    # 공통 포맷으로 변환하여 반환
     return {
-        "exchangename": "bithumb",
+        "exchangename": EXCHANGE_NAME,
         "symbol": symbol,
         "bids": bids,
         "asks": asks,
@@ -60,38 +78,45 @@ def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
         "type": "delta"
     }
 
-class BithumbSpotWebsocket(BaseWebsocket):
+class BithumbSpotWebsocket(BaseWebsocketConnector):
     """
     빗썸 현물 웹소켓 클라이언트 (바이낸스 현물과 동일한 데이터 흐름)
     - 연결, 구독, 스냅샷 요청, 델타 메시지 수신 및 처리
     """
     def __init__(self, settings: dict):
-        super().__init__(settings, "bithumb")
-        self.ws_url = "wss://pubwss.bithumb.com/pub/ws"
-        self.depth = settings.get("depth", 500)  # 내부 depth를 500으로 설정
+        super().__init__(settings, EXCHANGE_NAME)
+        self.ws_url = WEBSOCKET_URLS[EXCHANGE_NAME]  # 웹소켓 URL
+        self.depth = settings.get("depth", BITHUMB_CONFIG["default_depth"])  # 내부 depth 설정
         self.manager = BithumbSpotOrderBookManager(depth=self.depth)
         self.subscribed_symbols: List[str] = []
         self.ws = None
         
         # raw 로거 초기화
-        self.raw_logger = get_raw_logger("bithumb_spot")
+        self.raw_logger = get_raw_logger(EXCHANGE_NAME)
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)
         self.manager.output_queue = queue  # 오더북 매니저 큐 설정
 
     async def connect(self):
+        """
+        빗썸 웹소켓 서버에 연결
+        
+        설정된 URL로 웹소켓 연결을 수립하고, 연결 상태를 업데이트합니다.
+        연결 실패 시 예외를 발생시킵니다.
+        """
         try:
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect_attempt")
                 
+            # 웹소켓 연결 수립
             self.ws = await connect(
                 self.ws_url,
-                ping_interval=20,  # 20초마다 ping
-                ping_timeout=10,   # 10초 내에 pong이 오지 않으면 연결 종료
-                close_timeout=30,
-                max_size=None,
-                compression=None
+                ping_interval=BITHUMB_CONFIG["ping_interval"],
+                ping_timeout=BITHUMB_CONFIG["ping_timeout"],
+                close_timeout=BITHUMB_CONFIG["close_timeout"],
+                max_size=BITHUMB_CONFIG["max_size"],
+                compression=BITHUMB_CONFIG["compression"]
             )
             self.is_connected = True
             self.stats.connection_start_time = time.time()
@@ -104,6 +129,16 @@ class BithumbSpotWebsocket(BaseWebsocket):
             raise
 
     async def subscribe(self, symbols: List[str]):
+        """
+        지정된 심볼 목록을 구독
+        
+        1. 각 심볼별로 REST API를 통해 스냅샷 요청
+        2. 스냅샷을 오더북 매니저에 적용
+        3. 웹소켓을 통해 실시간 업데이트 구독
+        
+        Args:
+            symbols: 구독할 심볼 목록
+        """
         if not symbols:
             self.log_error("구독할 심볼이 없음")
             return
@@ -112,8 +147,10 @@ class BithumbSpotWebsocket(BaseWebsocket):
         for sym in symbols:
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "snapshot_request")
+            # REST API를 통해 스냅샷 요청
             snap = await self.manager.fetch_snapshot(sym)
             if snap:
+                # 스냅샷을 오더북 매니저에 적용
                 init_res = await self.manager.initialize_orderbook(sym, snap)
                 if not init_res.is_valid:
                     self.log_error(f"{sym} 스냅샷 적용 실패: {init_res.error_messages}")
@@ -126,71 +163,113 @@ class BithumbSpotWebsocket(BaseWebsocket):
 
         # 구독 메시지 전송
         if self.subscribed_symbols:
-            symbol_list = [f"{s.upper()}_KRW" for s in self.subscribed_symbols]
+            # 빗썸 형식으로 심볼 변환 (예: BTC -> BTC_KRW)
+            symbol_list = [f"{s.upper()}{BITHUMB_CONFIG['symbol_suffix']}" for s in self.subscribed_symbols]
+            # 구독 메시지 구성
             sub_msg = {
-                "type": "orderbookdepth",
+                "type": BITHUMB_CONFIG["message_type_depth"],
                 "symbols": symbol_list,
-                "tickTypes": ["1M"]
+                "tickTypes": BITHUMB_CONFIG["tick_types"]
             }
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "subscribe")
+            # 웹소켓을 통해 구독 메시지 전송
             await self.ws.send(json.dumps(sub_msg))
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "subscribe_complete")
 
-    async def _parse_message(self, data: dict) -> Optional[dict]:
-        """빗썸 특화 파싱 로직"""
-        # 구독 응답 처리
-        if "status" in data and "resmsg" in data:
-            if data["status"] == "0000":
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "subscribe_response")
-            else:
-                self.log_error(f"구독 실패: {data['resmsg']}")
+    async def parse_message(self, message: str) -> Optional[dict]:
+        """
+        빗썸 특화 파싱 로직
+        
+        Args:
+            message: 웹소켓에서 수신한 원본 메시지 문자열
+            
+        Returns:
+            Optional[dict]: 파싱된 메시지 데이터 또는 None (파싱 실패 시)
+        """
+        try:
+            # 문자열 메시지를 JSON으로 파싱
+            data = json.loads(message)
+            
+            # 구독 응답 처리
+            if "status" in data and "resmsg" in data:
+                if data["status"] == "0000":  # 성공 상태 코드
+                    if self.connection_status_callback:
+                        self.connection_status_callback(self.exchangename, "subscribe_response")
+                else:  # 실패 상태 코드
+                    self.log_error(f"구독 실패: {data['resmsg']}")
+                return None
+
+            # Delta 메시지 처리 (오더북 업데이트)
+            if data.get("type") == BITHUMB_CONFIG["message_type_depth"]:
+                return data
+
+            return None
+        except json.JSONDecodeError as e:
+            self.log_error(f"JSON 파싱 오류: {e}, 메시지: {message[:100]}...")
+            return None
+        except Exception as e:
+            self.log_error(f"메시지 파싱 중 예외 발생: {e}", exc_info=True)
             return None
 
-        # Delta 메시지 처리
-        if data.get("type") == "orderbookdepth":
-            return data
-
-        return None
-
     def _extract_symbol(self, parsed: dict) -> str:
-        """빗썸 특화 심볼 추출"""
+        """
+        빗썸 특화 심볼 추출
+        
+        Args:
+            parsed: 파싱된 메시지 데이터
+            
+        Returns:
+            str: 추출된 심볼명 (KRW 접미사 제거 및 대문자 변환)
+        """
         content = parsed.get("content", {})
         order_list = content.get("list", [])
         if order_list:
             raw_symbol = order_list[0].get("symbol", "")
-            return raw_symbol.replace("_KRW", "").upper()
+            return raw_symbol.replace(BITHUMB_CONFIG["symbol_suffix"], "").upper()
         return "UNKNOWN"
 
     async def handle_parsed_message(self, parsed: dict) -> None:
+        """
+        파싱된 메시지 처리
+        
+        Args:
+            parsed: 파싱된 메시지 데이터
+        """
         try:
+            # 메시지를 공통 포맷으로 변환
             evt = parse_bithumb_depth_update(parsed)
             if evt:
                 symbol = evt["symbol"]
+                # 오더북 매니저를 통해 업데이트 수행
                 res = await self.manager.update(symbol, evt)
                 if not res.is_valid:
                     self.log_error(f"{symbol} 업데이트 실패: {res.error_messages}")
         except Exception as e:
             self.log_error(f"handle_parsed_message 예외: {e}", exc_info=True)
 
-    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
-        syms = symbols_by_exchange.get(self.exchangename.lower(), [])
-        if not syms:
-            self.log_error("구독할 심볼이 없음")
-            return
-
-        # 공통 로깅을 위한 부모 클래스 start 호출
-        await super().start(symbols_by_exchange)
-
+    async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
+        """
+        메시지 처리 루프 실행 (부모 클래스의 메서드 오버라이드)
+        
+        Args:
+            symbols: 구독한 심볼 목록
+            tasks: 실행 중인 백그라운드 태스크 목록
+        """
+        # 메인 연결 및 메시지 처리 루프
         while not self.stop_event.is_set():
             try:
-                await self.connect()
+                if not self.is_connected:
+                    await self.connect()
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "connect")
+                
+                # 연결 직후 last_message_time 초기화
+                self.stats.last_message_time = time.time()
 
-                await self.subscribe(syms)
+                # 심볼 구독 (부모 클래스의 start에서 이미 호출되었지만, 재연결 시 다시 호출 필요)
+                await self.subscribe(symbols)
 
                 last_message_time = time.time()
                 while not self.stop_event.is_set():
@@ -204,12 +283,18 @@ class BithumbSpotWebsocket(BaseWebsocket):
                         last_message_time = current_time
                         
                         # 메시지 지연이 30초 이상이면 연결 재설정
-                        if message_delay > 30:
+                        if message_delay > BITHUMB_CONFIG["message_timeout"]:
                             self.log_error(f"높은 메시지 지연 감지: {message_delay:.1f}초 -> 연결 재설정")
                             break
 
+                        # 중요: BaseWebsocketConnector의 health_check에서 사용하는 값 업데이트
                         self.stats.last_message_time = current_time
                         self.stats.message_count += 1
+                        self.stats.total_messages += 1  # 총 메시지 수도 업데이트
+
+                        # 디버깅을 위해 메시지 내용 로깅
+                        if self.stats.message_count <= BITHUMB_CONFIG["log_sample_count"]:  # 처음 몇 개의 메시지만 로깅
+                            self.logger.debug(f"수신된 메시지 샘플 (#{self.stats.message_count}): {message[:BITHUMB_CONFIG['log_message_preview_length']]}...")
 
                         parsed = await self.parse_message(message)
                         if parsed:
@@ -219,7 +304,7 @@ class BithumbSpotWebsocket(BaseWebsocket):
 
                     except asyncio.TimeoutError:
                         current_time = time.time()
-                        if current_time - last_message_time > 30:
+                        if current_time - last_message_time > BITHUMB_CONFIG["message_timeout"]:
                             self.log_error(f"메시지 수신 타임아웃: {current_time - last_message_time:.1f}초 -> 연결 재설정")
                             break
                         continue
@@ -228,18 +313,12 @@ class BithumbSpotWebsocket(BaseWebsocket):
                         break
 
             except Exception as conn_e:
-                delay = self.reconnect_strategy.next_delay()
-                self.log_error(f"연결 실패: {conn_e}, {delay}s 후 재연결", exc_info=False)
-                await asyncio.sleep(delay)
-            finally:
-                if self.ws:
-                    try:
-                        await self.ws.close()
-                    except:
-                        pass
-                self.is_connected = False
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "disconnect")
+                self.log_error(f"연결 오류: {conn_e}, retry={self.current_retry}", exc_info=True)
+                
+                # 재연결 지연
+                retry_delay = self.reconnect_strategy.next_delay()
+                self.logger.info(f"[{self.exchangename}] {retry_delay:.1f}초 후 재연결 시도...")
+                await asyncio.sleep(retry_delay)
 
     async def stop(self) -> None:
         if self.connection_status_callback:

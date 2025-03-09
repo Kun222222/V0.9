@@ -228,10 +228,21 @@ WEBSOCKET_CONFIG = {
         "update_speed_ms": 100
     },
     Exchange.BITHUMB.value: {
-        "depth_levels": 15,
-        "ping_interval": 30,
-        "ping_timeout": 10,
-        "update_speed_ms": 100
+        "depth_levels": 15,          # 오더북 깊이 레벨 (표시할 호가 수)
+        "ping_interval": 20,         # 핑 전송 간격 (초)
+        "ping_timeout": 10,          # 핑 응답 대기 시간 (초)
+        "update_speed_ms": 100,      # 업데이트 속도 (밀리초)
+        # 빗썸 특화 설정
+        "message_type_depth": "orderbookdepth",  # 오더북 메시지 타입
+        "symbol_suffix": "_KRW",     # 심볼 접미사
+        "default_depth": 500,        # 기본 오더북 깊이
+        "tick_types": ["1M"],        # 틱 타입 (1분)
+        "message_timeout": 30,       # 메시지 타임아웃 (초)
+        "close_timeout": 30,         # 연결 종료 타임아웃 (초)
+        "max_size": None,            # 최대 메시지 크기 제한 없음
+        "compression": None,         # 압축 사용 안함
+        "log_sample_count": 3,       # 로깅할 메시지 샘플 수
+        "log_message_preview_length": 200  # 로깅할 메시지 미리보기 길이
     },
     Exchange.BINANCE.value: {
         "depth_levels": 20,
