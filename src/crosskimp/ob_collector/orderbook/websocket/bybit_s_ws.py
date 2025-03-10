@@ -84,6 +84,8 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
         self.ping_task = None
         self.health_check_task = None
 
+        # 로거 초기화 부분 제거 - 부모 클래스의 로깅 설정 사용
+        """
         # 로거 초기화
         self.raw_logger = get_raw_logger("bybit")
         
@@ -119,7 +121,10 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
             
         except Exception as e:
             logger.error(f"[Bybit] 로그 파일 설정 실패: {str(e)}", exc_info=True)
-            self.log_file_path = None
+        """
+        
+        # 오더북 관리자 초기화
+        self.ob_manager = BybitSpotOrderBookManager(self.depth_level)
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)
@@ -242,6 +247,18 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                     if len(parts) >= 3:
                         symbol = parts[-1].replace("USDT", "")
                         msg_type = data.get("type", "delta")
+                        
+                        # 원본 메시지 로깅 강화
+                        self.log_raw_message("orderbook", message, symbol)
+                        
+                        # 로깅 성공 메시지 (처음 5개만)
+                        if not hasattr(self, '_raw_log_count'):
+                            self._raw_log_count = 0
+                        self._raw_log_count += 1
+                        
+                        if self._raw_log_count <= 5:
+                            logger.debug(f"[Bybit] 원본 데이터 로깅 성공 #{self._raw_log_count}: {symbol}")
+                        
                         if msg_type == "snapshot":
                             logger.info(f"[Bybit] 스냅샷 메시지 수신: {symbol}, type={msg_type}")
                         return data
@@ -265,18 +282,14 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
             
             try:
                 parsed_data = parse_bybit_depth_update(parsed)
-                if parsed_data:
-                    parsed_json = json.dumps(parsed_data)
-                    self.log_raw_message("parsedData", parsed_json, symbol)
-                    
-                    if not hasattr(self, '_parsed_log_count'):
-                        self._parsed_log_count = 0
+                if parsed_data and not hasattr(self, '_parsed_log_count'):
+                    self._parsed_log_count = 0
                     self._parsed_log_count += 1
                     
                     if self._parsed_log_count <= 5:
-                        logger.debug(f"[Bybit] 파싱된 데이터 로깅 #{self._parsed_log_count}: {symbol}")
+                        logger.debug(f"[Bybit] 데이터 파싱 성공 #{self._parsed_log_count}: {symbol}")
             except Exception as e:
-                logger.error(f"[Bybit] 파싱된 데이터 로깅 실패: {str(e)}", exc_info=True)
+                logger.error(f"[Bybit] 데이터 파싱 실패: {str(e)}", exc_info=True)
             
             start_time = time.time()
             await self.ob_manager.update(symbol, parsed)
@@ -483,53 +496,8 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
 
     async def stop(self) -> None:
         """
-        웹소켓 연결 종료 및 리소스 정리
+        웹소켓 연결 종료
         """
-        logger.info(f"[Bybit] 웹소켓 종료 시작")
-        
-        try:
-            await self._cancel_task(self.ping_task, "PING 태스크")
-            await self._cancel_task(self.health_check_task, "헬스 체크 태스크")
-            await super().stop()
-            logger.info(f"[Bybit] 웹소켓 종료 완료")
-            
-        except Exception as e:
-            self.log_error(f"웹소켓 종료 오류: {str(e)}")
-
-    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
-        """
-        파싱된 데이터만 로깅하는 메서드
-        """
-        if msg_type != "parsedData":
-            return
-            
-        self._log_count = getattr(self, '_log_count', 0) + 1
-        
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"{timestamp} - {msg_type}|{symbol}|{message}"
-        
-        if hasattr(self, 'log_file_path') and self.log_file_path:
-            try:
-                with open(self.log_file_path, "a", encoding="utf-8") as f:
-                    f.write(log_entry + "\n")
-                
-                if self._log_count <= 5:
-                    logger.debug(f"[Bybit] 파싱된 데이터 로깅 성공 #{self._log_count}: {symbol}")
-                
-                if self.stats:
-                    if not hasattr(self.stats, 'raw_logged_messages'):
-                        self.stats.raw_logged_messages = 0
-                    self.stats.raw_logged_messages += 1
-                    
-                    if self.stats.raw_logged_messages % 1000 == 0:
-                        logger.info(f"[Bybit] 로깅 통계 | 총 {self.stats.raw_logged_messages:,}개 메시지")
-                
-                return
-            except Exception as e:
-                logger.error(f"[Bybit] 파일 로깅 실패: {str(e)}")
-        
-        try:
-            if self.raw_logger:
-                self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
-        except Exception as e:
-            logger.error(f"[Bybit] 로거 로깅 실패: {str(e)}")
+        self.logger.info("바이빗 웹소켓 연결 종료 중...")
+        await super().stop()
+        self.logger.info("바이빗 웹소켓 연결 종료 완료")

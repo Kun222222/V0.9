@@ -6,7 +6,7 @@ import time
 from websockets import connect
 from typing import Dict, List, Optional
 
-from crosskimp.ob_collector.utils.logging.logger import get_raw_logger, get_unified_logger
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
 from crosskimp.ob_collector.utils.config.constants import Exchange, WEBSOCKET_URLS, WEBSOCKET_CONFIG
@@ -98,8 +98,8 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
         self.reconnect_count = 0
         self.last_reconnect_time = 0
         
-        # raw 로거 초기화
-        self.raw_logger = get_raw_logger(EXCHANGE_NAME)
+        # raw 로거 초기화 제거
+        # self.raw_logger = get_raw_logger(EXCHANGE_NAME)  # 중앙화된 로깅 사용을 위해 제거
         self.logger = logger
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
@@ -415,38 +415,9 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                 await asyncio.sleep(delay)
 
     async def stop(self) -> None:
-        """웹소켓 연결 종료"""
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "stop")
-        
-        # 중지 이벤트 설정
-        self.stop_event.set()
-        
-        # 웹소켓 연결 종료
-        if self.ws:
-            try:
-                await self.ws.close()
-            except Exception as e:
-                self.log_error(f"웹소켓 종료 실패: {e}")
-        
-        # 연결 상태 업데이트
-        self.is_connected = False
-        
-        # 연결 종료 콜백 호출
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "disconnect")
-        
-        self.logger.info(f"[{self.exchangename}] 웹소켓 종료 완료")
-
-    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
         """
-        Raw 메시지 로깅
-        Args:
-            msg_type: 메시지 타입 (snapshot/depthUpdate)
-            message: raw 메시지
-            symbol: 심볼명
+        웹소켓 연결 종료
         """
-        try:
-            self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
-        except Exception as e:
-            self.log_error(f"Raw 로깅 실패: {str(e)}")
+        self.logger.info("빗썸 웹소켓 연결 종료 중...")
+        await super().stop()
+        self.logger.info("빗썸 웹소켓 연결 종료 완료")

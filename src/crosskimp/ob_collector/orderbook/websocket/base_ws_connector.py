@@ -3,13 +3,15 @@
 import asyncio
 import time
 import json
+import os
+import logging
 from typing import Dict, List, Any, Optional, Callable
 from asyncio import Event
 from dataclasses import dataclass
 from datetime import datetime
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG
+from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
 
 @dataclass
 class WebSocketStats:
@@ -91,6 +93,19 @@ class BaseWebsocketConnector:
         self.exchangename = exchangename
         self.settings = settings
 
+        # 거래소 한글 이름 매핑
+        self.exchange_korean_names = {
+            Exchange.BINANCE.value: "바이낸스",
+            Exchange.BYBIT.value: "바이빗",
+            Exchange.UPBIT.value: "업비트",
+            Exchange.BITHUMB.value: "빗썸",
+            Exchange.BINANCE_FUTURE.value: "바이낸스선물",
+            Exchange.BYBIT_FUTURE.value: "바이빗선물",
+            Exchange.BYBIT_V2.value: "바이빗V2",
+            Exchange.BYBIT_FUTURE_V2.value: "바이빗선물V2"
+        }
+        self.exchange_korean_name = self.exchange_korean_names.get(exchangename, exchangename)
+
         self.ws = None
         self.is_connected = False
         self.connecting = False  # 연결 중 상태 플래그 추가
@@ -128,6 +143,38 @@ class BaseWebsocketConnector:
         self.message_processing_times = []
         self.last_performance_log = time.time()
         self.performance_log_interval = 300  # 5분
+        
+        # 로깅 설정
+        logging_config = settings.get("logging", {})
+        self.log_raw_data = logging_config.get("log_raw_data", True)
+        self.raw_logger = None
+        
+        # 로깅 파일 경로 설정
+        if self.log_raw_data:
+            try:
+                # 로그 디렉토리 설정
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+                log_dir = os.path.join(base_dir, "logs", "raw_data", exchangename)
+                os.makedirs(log_dir, exist_ok=True)
+                
+                # 로그 파일 경로 설정 - 날짜와 시간 포함
+                current_datetime = time.strftime("%Y%m%d_%H%M%S")
+                self.log_file_path = os.path.join(log_dir, f"{exchangename}_raw_{current_datetime}.log")
+                
+                # 로거 설정
+                self.raw_logger = logging.getLogger(f"raw_data.{exchangename}")
+                if not self.raw_logger.handlers:
+                    file_handler = logging.FileHandler(self.log_file_path, encoding="utf-8")
+                    formatter = logging.Formatter('%(asctime)s - %(message)s')
+                    file_handler.setFormatter(formatter)
+                    self.raw_logger.addHandler(file_handler)
+                    self.raw_logger.setLevel(logging.INFO)
+                    self.raw_logger.propagate = False
+                
+                logger.info(f"[{self.exchange_korean_name}] Raw 데이터 로깅 설정 완료: {self.log_file_path}")
+            except Exception as e:
+                logger.error(f"[{self.exchange_korean_name}] Raw 데이터 로깅 설정 실패: {str(e)}", exc_info=True)
+                self.log_raw_data = False
 
     def get_connection_status(self) -> ConnectionStatus:
         """현재 연결 상태 정보 반환"""
@@ -500,3 +547,54 @@ class BaseWebsocketConnector:
         # 기본 구현은 아무 작업도 하지 않음
         # 자식 클래스에서 오버라이드하여 실제 메시지 처리 루프를 구현해야 함
         pass
+
+    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
+        """
+        Raw 메시지 로깅을 위한 공통 메서드
+        
+        Args:
+            msg_type: 메시지 타입 (snapshot/depthUpdate 등)
+            message: raw 메시지
+            symbol: 심볼명
+        """
+        if not self.log_raw_data:
+            return
+            
+        try:
+            # 로그 카운트 추적
+            self._log_count = getattr(self, '_log_count', 0) + 1
+            
+            # 로그 메시지 포맷
+            log_entry = f"{msg_type}|{symbol}|{message}"
+            
+            # 파일에 직접 로깅
+            if hasattr(self, 'log_file_path') and self.log_file_path:
+                try:
+                    # 밀리초까지 포함된 타임스탬프 생성
+                    timestamp = time.strftime('%Y-%m-%d %H:%M:%S.') + f'{int(time.time() * 1000) % 1000:03d}'
+                    with open(self.log_file_path, "a", encoding="utf-8") as f:
+                        f.write(f"{timestamp} - {log_entry}\n")
+                    
+                    # 초기 로깅 성공 메시지 (처음 5개만)
+                    if self._log_count <= 5:
+                        logger.debug(f"[{self.exchange_korean_name}] 로깅 성공 #{self._log_count}: {symbol}")
+                    
+                    # 통계 업데이트
+                    if self.stats:
+                        if not hasattr(self.stats, 'raw_logged_messages'):
+                            self.stats.raw_logged_messages = 0
+                        self.stats.raw_logged_messages += 1
+                        
+                        # 주기적 통계 로깅
+                        if self.stats.raw_logged_messages % 1000 == 0:
+                            logger.info(f"[{self.exchange_korean_name}] 로깅 통계 | 총 {self.stats.raw_logged_messages:,}개 메시지")
+                    
+                    return
+                except Exception as e:
+                    logger.error(f"[{self.exchange_korean_name}] 파일 로깅 실패: {str(e)}")
+            
+            # 로거 객체를 통한 로깅 (파일 로깅 실패 시 대체 방법)
+            if self.raw_logger:
+                self.raw_logger.info(log_entry)
+        except Exception as e:
+            self.log_error(f"Raw 로깅 실패: {str(e)}")

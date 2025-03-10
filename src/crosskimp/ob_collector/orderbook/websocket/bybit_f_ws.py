@@ -5,7 +5,7 @@ import aiohttp
 from websockets import connect
 from typing import Dict, List, Optional, Any
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bybit_f_ob import BybitFutureOrderBookManager
 
@@ -54,9 +54,6 @@ class BybitFutureWebsocket(BaseWebsocketConnector):
         self.snapshot_received = set()  # 스냅샷을 받은 심볼 목록
         self.snapshot_pending = set()   # 스냅샷 요청 대기 중인 심볼 목록
         self.session: Optional[aiohttp.ClientSession] = None
-        
-        # raw 로거 초기화
-        self.raw_logger = get_raw_logger("bybit_future")
 
     async def _do_connect(self):
         """실제 연결 로직 (BaseWebsocketConnector 템플릿 메서드 구현)"""
@@ -387,79 +384,28 @@ class BybitFutureWebsocket(BaseWebsocketConnector):
 
     async def stop(self) -> None:
         """
-        웹소켓 연결 및 모든 태스크 종료
+        웹소켓 연결 종료
         """
+        self.logger.info("바이빗 선물 웹소켓 연결 종료 중...")
         await super().stop()
-        self.orderbook_manager.clear_all()
-        if self.session:
-            await self.session.close()
-            self.session = None
-        logger.info(f"[Bybit] 웹소켓 종료 완료")
+        self.logger.info("바이빗 선물 웹소켓 연결 종료 완료")
 
     async def reconnect(self) -> None:
         """
-        웹소켓 연결 재설정
+        웹소켓 재연결
         """
-        logger.info(f"[Bybit] 재연결 시작")
         try:
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except Exception as e:
-                    logger.warning(f"[Bybit] 웹소켓 종료 중 오류 (무시됨): {str(e)}")
-            await self._cancel_task(self.ping_task, "PING 태스크")
-            await self._cancel_task(self.health_check_task, "헬스 체크 태스크")
-            self.is_connected = False
-            self.stats.connected = False
-            self.stats.reconnect_count += 1
-            await super().reconnect()
+            await self.disconnect()
+            await asyncio.sleep(1)  # 재연결 전 잠시 대기
+            await self._do_connect()
+            if self.is_connected:
+                await self._after_connect()
+                logger.info(f"[Bybit] 재연결 성공")
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "reconnected")
+            else:
+                logger.error(f"[Bybit] 재연결 실패")
         except Exception as e:
-            self.log_error(f"재연결 실패: {str(e)}")
-            delay = self.reconnect_strategy.next_delay()
-            logger.info(f"[Bybit] 재연결 대기 중 ({delay:.1f}초) | 시도={self.reconnect_strategy.attempt}회차")
-            await asyncio.sleep(delay)
+            self.log_error(f"재연결 오류: {str(e)}")
 
-    def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
-        """
-        Raw 메시지 로깅
-        """
-        try:
-            self.raw_logger.info(f"{msg_type}|{symbol}|{message}")
-        except Exception as e:
-            self.log_error(f"Raw 로깅 실패: {str(e)}")
-        try:
-            if isinstance(message, dict):
-                data = message
-            else:
-                data = json.loads(message)
-            if "topic" in data and "data" in data:
-                topic = data.get("topic", "")
-                if "orderbook" in topic:
-                    ob_data = data.get("data", {})
-                    msg_type_parsed = data.get("type", "delta").lower()
-                    seq = ob_data.get("u", 0)
-                    ts = ob_data.get("ts", int(time.time() * 1000))
-                    bids = [[float(b[0]), float(b[1])] for b in ob_data.get("b", [])]
-                    asks = [[float(a[0]), float(a[1])] for a in ob_data.get("a", [])]
-                    parsed_data = {
-                        "exchangename": "bybitfuture",
-                        "symbol": symbol,
-                        "bids": bids,
-                        "asks": asks,
-                        "timestamp": ts,
-                        "sequence": seq,
-                        "type": msg_type_parsed
-                    }
-                    parsed_json = json.dumps(parsed_data)
-                    self.raw_logger.info(f"parsedData|{symbol}|{parsed_json}")
-                    if not hasattr(self, '_parsed_log_count'):
-                        self._parsed_log_count = 0
-                    self._parsed_log_count += 1
-                    if self._parsed_log_count <= 5:
-                        logger.debug(f"[BybitFuture] 파싱된 데이터 로깅 #{self._parsed_log_count}: {symbol}")
-            if hasattr(self.stats, 'raw_logged_messages'):
-                self.stats.raw_logged_messages += 1
-            else:
-                self.stats.raw_logged_messages = 1
-        except Exception as e:
-            logger.error(f"[BybitFuture] 파싱된 데이터 로깅 실패: {str(e)}", exc_info=True)
+    # log_raw_message 메서드 제거 - 부모 클래스의 메서드 사용

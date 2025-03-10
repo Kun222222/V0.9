@@ -212,8 +212,8 @@ class UpbitWebsocket(BaseWebsocketConnector):
             # 파싱 성공 카운트 증가
             self.message_stats["valid_parsed"] += 1
             
-            # 표준화된 오더북 데이터 반환
-            return {
+            # 로깅 추가
+            parsed_data = {
                 "exchangename": "upbit",
                 "symbol": symbol.upper(),
                 "bids": bids,
@@ -222,6 +222,12 @@ class UpbitWebsocket(BaseWebsocketConnector):
                 "sequence": ts,
                 "type": "delta"  # 업비트는 항상 전체 오더북 제공
             }
+            
+            # 원본 메시지만 로깅 (parsedData 로깅 제거)
+            self.log_raw_message("orderbook", message, symbol.upper())
+            
+            # 표준화된 오더북 데이터 반환
+            return parsed_data
         except json.JSONDecodeError:
             self.log_error(f"JSON 파싱 실패: {message[:100]}...")
             return None
@@ -267,38 +273,17 @@ class UpbitWebsocket(BaseWebsocketConnector):
 
     def _log_parsed_data(self, symbol: str, parsed: dict) -> None:
         """
-        파싱된 데이터 로깅
+        파싱된 데이터 로깅 - 더 이상 사용하지 않음
+        
+        이 메서드는 더 이상 사용되지 않습니다.
+        원본 데이터 로깅은 parse_message 메서드에서 직접 수행합니다.
         
         Args:
-            symbol: 심볼 이름
-            parsed: 파싱된 오더북 데이터
+            symbol: 심볼명
+            parsed: 파싱된 데이터
         """
-        if not self.log_raw_data:
-            return
-            
-        try:
-            # 로그 형식: depthUpdate|SYMBOL|JSON_DATA
-            # 다른 거래소와 동일한 형식으로 로깅
-            log_data = {
-                "topic": f"orderbook.{symbol}",
-                "ts": parsed["timestamp"],
-                "type": "delta",
-                "data": {
-                    "s": symbol,
-                    "b": [[str(item["price"]), str(item["size"])] for item in parsed["bids"][:5]],  # 상위 5개만 로깅
-                    "a": [[str(item["price"]), str(item["size"])] for item in parsed["asks"][:5]],  # 상위 5개만 로깅
-                    "u": parsed["sequence"],  # 시퀀스 번호
-                    "seq": parsed["sequence"]  # 시퀀스 번호 (중복)
-                },
-                "cts": int(time.time() * 1000)  # 클라이언트 타임스탬프
-            }
-            
-            # 로그 형식: depthUpdate|SYMBOL|JSON_DATA
-            log_message = f"depthUpdate|{symbol}|{json.dumps(log_data)}"
-            raw_logger.info(log_message)
-            
-        except Exception as e:
-            self.logger.error(f"[{self.exchangename}] 데이터 로깅 실패: {str(e)}")
+        # 이 메서드는 더 이상 사용하지 않음
+        pass
 
     async def handle_parsed_message(self, parsed: dict) -> None:
         """
@@ -310,8 +295,8 @@ class UpbitWebsocket(BaseWebsocketConnector):
         try:
             symbol = parsed["symbol"]
             
-            # 파싱된 데이터 로깅
-            self._log_parsed_data(symbol, parsed)
+            # 파싱된 데이터 로깅 - 더 이상 필요하지 않음
+            # self._log_parsed_data(symbol, parsed)  # 원본 데이터는 parse_message에서 이미 로깅됨
             
             # 업비트는 매 메시지가 전체 오더북이므로, 항상 스냅샷으로 처리
             result = await self.orderbook_manager.initialize_orderbook(symbol, parsed)
@@ -485,18 +470,13 @@ class UpbitWebsocket(BaseWebsocketConnector):
         """
         웹소켓 연결 종료
         """
-        # 중지 시작 상태 콜백
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "stop")
-            
-        # 중지 이벤트 설정
-        self.stop_event.set()
-        
-        # 연결 종료
-        await self._cleanup_connection()
+        self.logger.info("업비트 웹소켓 연결 종료 중...")
+        await super().stop()
         
         # 오더북 데이터 정리
         self.orderbook_manager.clear_all()
+        
+        self.logger.info("업비트 웹소켓 연결 종료 완료")
         
         # 통계 로깅
         self.logger.info(
