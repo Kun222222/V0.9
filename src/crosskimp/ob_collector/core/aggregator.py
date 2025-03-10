@@ -104,7 +104,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
     """
     try:
         logger.info(
-            f"[{EXCHANGE_NAMES_KR['upbit']}] 심볼/거래량 조회 시작 | "
+            f"{EXCHANGE_NAMES_KR['upbit']} 심볼/거래량 조회 시작 | "
             f"최소거래량={min_volume:,.0f} KRW"
         )
         
@@ -112,7 +112,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             # 1. KRW 마켓 심볼 조회
             data = await make_request(session, UPBIT_URLS["market"])
             if not data:
-                logger.error(f"[{EXCHANGE_NAMES_KR['upbit']}] 마켓 정보 조회 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR['upbit']} 마켓 정보 조회 실패")
                 return []
                 
             symbols = [
@@ -121,7 +121,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 if item["market"].startswith("KRW-")
             ]
             
-            logger.info(f"[{EXCHANGE_NAMES_KR['upbit']}] KRW 마켓 심볼 조회 완료: {len(symbols)}개")
+            logger.info(f"{EXCHANGE_NAMES_KR['upbit']} KRW 마켓 심볼 조회 완료: {len(symbols)}개")
             
             # 2. 거래량 조회 (청크 단위로 분할)
             volume_dict: Dict[str, float] = {}
@@ -130,7 +130,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             for i, chunk in enumerate(chunks, 1):
                 markets = ",".join(f"KRW-{symbol}" for symbol in chunk)
                 logger.info(
-                    f"[{EXCHANGE_NAMES_KR['upbit']}] 거래량 조회 진행 중 | "
+                    f"{EXCHANGE_NAMES_KR['upbit']} 거래량 조회 진행 중 | "
                     f"청크={i}/{len(chunks)}, 심볼={len(chunk)}개"
                 )
                 
@@ -142,7 +142,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 
                 if not data:
                     logger.warning(
-                        f"[{EXCHANGE_NAMES_KR['upbit']}] 거래량 조회 실패 | "
+                        f"{EXCHANGE_NAMES_KR['upbit']} 거래량 조회 실패 | "
                         f"청크={i}/{len(chunks)}, markets={markets}"
                     )
                     continue
@@ -165,17 +165,17 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             ]
             
             logger.info(
-                f"[{EXCHANGE_NAMES_KR['upbit']}] 필터링 결과 | "
+                f"{EXCHANGE_NAMES_KR['upbit']} 필터링 결과 | "
                 f"전체={len(symbols)}개, "
                 f"거래량 {min_volume:,.0f} KRW 이상={len(filtered_symbols)}개"
             )
-            logger.info(f"[{EXCHANGE_NAMES_KR['upbit']}] 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.info(f"{EXCHANGE_NAMES_KR['upbit']} 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
     except Exception as e:
         logger.error(
-            f"[{EXCHANGE_NAMES_KR['upbit']}] 심볼/거래량 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR['upbit']} 심볼/거래량 조회 실패: {str(e)}",
             exc_info=True
         )
         return []
@@ -195,7 +195,7 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
     """
     try:
         logger.info(
-            f"[{EXCHANGE_NAMES_KR['bithumb']}] 심볼/거래량 조회 시작 | "
+            f"{EXCHANGE_NAMES_KR['bithumb']} 심볼/거래량 조회 시작 | "
             f"최소거래량={min_volume:,.0f} KRW"
         )
         
@@ -203,7 +203,7 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
             data = await make_request(session, BITHUMB_URLS["ticker"])
             if not data or data.get("status") != "0000":
                 logger.error(
-                    f"[{EXCHANGE_NAMES_KR['bithumb']}] API 응답 오류 | "
+                    f"{EXCHANGE_NAMES_KR['bithumb']} API 응답 오류 | "
                     f"status={data.get('status') if data else 'No data'}"
                 )
                 return []
@@ -224,22 +224,22 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
                     # )
                 except (KeyError, ValueError) as e:
                     logger.warning(
-                        f"[Bithumb] 거래량 파싱 실패 | "
+                        f"{EXCHANGE_NAMES_KR['bithumb']} 거래량 파싱 실패 | "
                         f"symbol={symbol}, error={str(e)}"
                     )
             
             logger.info(
-                f"[{EXCHANGE_NAMES_KR['bithumb']}] 필터링 결과 | "
+                f"{EXCHANGE_NAMES_KR['bithumb']} 필터링 결과 | "
                 f"전체={len(symbols)}개, "
                 f"거래량 {min_volume:,.0f} KRW 이상={len(filtered_symbols)}개"
             )
-            logger.info(f"[{EXCHANGE_NAMES_KR['bithumb']}] 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.info(f"{EXCHANGE_NAMES_KR['bithumb']} 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
     except Exception as e:
         logger.error(
-            f"[{EXCHANGE_NAMES_KR['bithumb']}] 심볼/거래량 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR['bithumb']} 심볼/거래량 조회 실패: {str(e)}",
             exc_info=True
         )
         return []
@@ -258,13 +258,13 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        logger.info(f"[{EXCHANGE_NAMES_KR['binance']}] 심볼 조회 시작")
+        logger.info(f"{EXCHANGE_NAMES_KR['binance']} 심볼 조회 시작")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot/Margin 심볼
             data = await make_request(session, BINANCE_URLS["spot"])
             if not data:
-                logger.error(f"[{EXCHANGE_NAMES_KR['binance']}] Spot API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR['binance']} Spot API 응답 실패")
                 return []
                 
             spot_symbols = {
@@ -282,14 +282,14 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             }
             
             logger.info(
-                f"[{EXCHANGE_NAMES_KR['binance']}] Spot/Margin 심볼 조회 완료 | "
+                f"{EXCHANGE_NAMES_KR['binance']} Spot/Margin 심볼 조회 완료 | "
                 f"spot={len(spot_symbols)}개, margin={len(margin_symbols)}개"
             )
             
             # 2. Future 심볼
             data = await make_request(session, BINANCE_URLS["future"])
             if not data:
-                logger.error(f"[{EXCHANGE_NAMES_KR['binance']}] Future API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR['binance']} Future API 응답 실패")
                 return []
                 
             future_symbols = {
@@ -299,7 +299,7 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             }
             
             logger.info(
-                f"[{EXCHANGE_NAMES_KR['binance']}] Future 심볼 조회 완료 | "
+                f"{EXCHANGE_NAMES_KR['binance']} Future 심볼 조회 완료 | "
                 f"future={len(future_symbols)}개"
             )
             
@@ -307,19 +307,19 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             common_symbols = spot_symbols & margin_symbols & future_symbols
             
             logger.info(
-                f"[{EXCHANGE_NAMES_KR['binance']}] 심볼 통계 | "
+                f"{EXCHANGE_NAMES_KR['binance']} 심볼 통계 | "
                 f"Spot({len(spot_symbols)}), "
                 f"Margin({len(margin_symbols)}), "
                 f"Future({len(future_symbols)}), "
                 f"공통={len(common_symbols)}"
             )
-            logger.info(f"[{EXCHANGE_NAMES_KR['binance']}] 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"{EXCHANGE_NAMES_KR['binance']} 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
         logger.error(
-            f"[{EXCHANGE_NAMES_KR['binance']}] 심볼 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR['binance']} 심볼 조회 실패: {str(e)}",
             exc_info=True
         )
         return []
@@ -338,13 +338,13 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        logger.info(f"[{EXCHANGE_NAMES_KR['bybit']}] 심볼 조회 시작")
+        logger.info(f"{EXCHANGE_NAMES_KR['bybit']} 심볼 조회 시작")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot 심볼
             data = await make_request(session, BYBIT_URLS["spot"])
             if not data or data.get("retCode") != 0:
-                logger.error(f"[{EXCHANGE_NAMES_KR['bybit']}] Spot API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR['bybit']} Spot API 응답 실패")
                 return []
                 
             spot_symbols = {
@@ -356,7 +356,7 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             # 2. Future 심볼
             data = await make_request(session, BYBIT_URLS["future"])
             if not data or data.get("retCode") != 0:
-                logger.error(f"[{EXCHANGE_NAMES_KR['bybit']}] Future API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR['bybit']} Future API 응답 실패")
                 return []
                 
             future_symbols = {
@@ -369,16 +369,16 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             common_symbols = spot_symbols & future_symbols
             
             logger.info(
-                f"[{EXCHANGE_NAMES_KR['bybit']}] 심볼 통계: "
+                f"{EXCHANGE_NAMES_KR['bybit']} 심볼 통계: "
                 f"Spot({len(spot_symbols)}), Future/Linear({len(future_symbols)})"
             )
-            logger.info(f"[{EXCHANGE_NAMES_KR['bybit']}] 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"{EXCHANGE_NAMES_KR['bybit']} 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
         logger.error(
-            f"[{EXCHANGE_NAMES_KR['bybit']}] 심볼 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR['bybit']} 심볼 조회 실패: {str(e)}",
             exc_info=True
         )
         return []
@@ -545,7 +545,7 @@ class Aggregator:
                 removed = set(before_symbols) - set(filtered_data[exchange])
                 if removed:
                     logger.info(
-                        f"[{EXCHANGE_NAMES_KR[exchange]}] 제외된 심볼: {sorted(list(removed))}"
+                        f"{EXCHANGE_NAMES_KR[exchange]} 제외된 심볼: {sorted(list(removed))}"
                     )
             
             # # 4. 최종 결과 저장 및 로깅
@@ -554,7 +554,7 @@ class Aggregator:
             logger.info(f"{LOG_SYSTEM} === 거래소별 최종 구독 심볼 ===")
             for exchange, symbols in filtered_data.items():
                 name = EXCHANGE_NAMES_KR.get(exchange, exchange)
-                logger.info(f"[{name}] 구독 심볼: {len(symbols)}개 → {sorted(symbols)}")
+                logger.info(f"{name} 구독 심볼: {len(symbols)}개 → {sorted(symbols)}")
             
             return filtered_data
 

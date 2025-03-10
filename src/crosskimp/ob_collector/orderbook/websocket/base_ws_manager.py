@@ -111,7 +111,7 @@ class WebsocketManager:
                     exchange=exchange,
                     event_type="connect"
                 )
-                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['CONNECTED']} 웹소켓 연결됨")
+                logger.info(f"{EXCHANGE_NAMES_KR.get(exchange, exchange)} {STATUS_EMOJIS['CONNECTED']} 웹소켓 연결됨")
                 # 연결 상태 변경 시에만 전체 상태 표시
                 self._display_all_connection_status()
             
@@ -120,7 +120,7 @@ class WebsocketManager:
                     exchange=exchange,
                     event_type="disconnect"
                 )
-                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['DISCONNECTED']} 웹소켓 연결 해제됨")
+                logger.info(f"{EXCHANGE_NAMES_KR.get(exchange, exchange)} {STATUS_EMOJIS['DISCONNECTED']} 웹소켓 연결 해제됨")
                 # 연결 상태 변경 시에만 전체 상태 표시
                 self._display_all_connection_status()
             
@@ -306,7 +306,7 @@ class WebsocketManager:
                         self.metrics_manager.update_metric(exchange, "disconnect")
                         
                     logger.info(
-                        f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 연결 상태 체크 | "
+                        f"{EXCHANGE_NAMES_KR.get(exchange, exchange)} 연결 상태 체크 | "
                         f"연결={'예' if metrics['connected'] else '아니오'}, "
                         f"지연={delay:.1f}초, "
                         f"총 메시지={format(metrics['message_count'], ',')}개, "
@@ -427,14 +427,14 @@ class WebsocketManager:
             ws_class = EXCHANGE_CLASS_MAP.get(exchange_name_lower)
             
             if not ws_class:
-                logger.error(f"[{exchange_kr}] {STATUS_EMOJIS['ERROR']} 지원하지 않는 거래소")
+                logger.error(f"{exchange_kr} {STATUS_EMOJIS['ERROR']} 지원하지 않는 거래소")
                 return
 
             if not symbols:
-                logger.warning(f"[{exchange_kr}] {STATUS_EMOJIS['ERROR']} 구독할 심볼이 없음")
+                logger.warning(f"{exchange_kr} {STATUS_EMOJIS['ERROR']} 구독할 심볼이 없음")
                 return
 
-            logger.info(f"[{exchange_kr}] 웹소켓 초기화 시작 | symbols={len(symbols)}개: {symbols}")
+            logger.info(f"{exchange_kr} 웹소켓 초기화 시작 | symbols={len(symbols)}개: {symbols}")
 
             # 기존 인스턴스가 있다면 정리
             if exchange_name_lower in self.websockets:
@@ -471,7 +471,7 @@ class WebsocketManager:
             
             for exchange, syms in filtered_data.items():
                 await self.start_exchange_websocket(exchange, syms)
-                logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
+                logger.info(f"{EXCHANGE_NAMES_KR.get(exchange, exchange)} {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
             
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 웹소켓 시작 실패: {e}", exc_info=True)
@@ -534,7 +534,7 @@ class WebsocketManager:
             elif not is_initial_state and current_time - metrics['last_message_time'] > 60:
                 self.update_connection_status(exchange, "disconnect")  # 1분 이상 메시지 없으면 연결 끊김으로 처리
             if metrics['latency_ms'] > 1000:  # 1초 이상
-                logger.warning(f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} 높은 레이턴시: {metrics['latency_ms']:.2f}ms")
+                logger.warning(f"{LOG_SYSTEM} {exchange_kr} {STATUS_EMOJIS['ERROR']} 높은 레이턴시: {metrics['latency_ms']:.2f}ms")
 
     # ============================
     # 공통 로깅 메서드
@@ -548,7 +548,7 @@ class WebsocketManager:
             )
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.error(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['ERROR']} {msg}",
+                f"{LOG_SYSTEM} {exchange_kr} {STATUS_EMOJIS['ERROR']} {msg}",
                 exc_info=exc_info
             )
         except Exception as e:
@@ -559,7 +559,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['CONNECTING']} "
+                f"{LOG_SYSTEM} {exchange_kr} {STATUS_EMOJIS['CONNECTING']} "
                 f"웹소켓 연결 시도"
             )
         except Exception as e:
@@ -570,7 +570,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['CONNECTED']} "
+                f"{LOG_SYSTEM} {exchange_kr} {STATUS_EMOJIS['CONNECTED']} "
                 f"웹소켓 연결 성공"
             )
         except Exception as e:
@@ -581,7 +581,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['DISCONNECTED']} "
+                f"{LOG_SYSTEM} {exchange_kr} {STATUS_EMOJIS['DISCONNECTED']} "
                 f"웹소켓 연결 종료"
             )
         except Exception as e:
@@ -592,7 +592,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['CONNECTING']} "
+                f"{LOG_SYSTEM} {exchange_kr} {STATUS_EMOJIS['CONNECTING']} "
                 f"웹소켓 시작 | symbols={len(symbols)}개: {symbols}"
             )
         except Exception as e:
@@ -603,7 +603,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] {STATUS_EMOJIS['DISCONNECTED']} "
+                f"{LOG_SYSTEM} {exchange_kr} {STATUS_EMOJIS['DISCONNECTED']} "
                 f"웹소켓 정지 요청"
             )
         except Exception as e:
@@ -614,7 +614,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] 메시지 처리 성능 | "
+                f"{LOG_SYSTEM} {exchange_kr} 메시지 처리 성능 | "
                 f"평균={avg_time:.2f}ms, "
                 f"최대={max_time:.2f}ms, "
                 f"샘플수={sample_count:,}개"
@@ -627,7 +627,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] 구독 시작 | "
+                f"{LOG_SYSTEM} {exchange_kr} 구독 시작 | "
                 f"symbols={len(symbols)}개: {symbols}"
             )
         except Exception as e:
@@ -638,7 +638,7 @@ class WebsocketManager:
         try:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             logger.info(
-                f"{LOG_SYSTEM} [{exchange_kr}] 구독 완료 | "
+                f"{LOG_SYSTEM} {exchange_kr} 구독 완료 | "
                 f"총 {count}개 심볼"
             )
         except Exception as e:

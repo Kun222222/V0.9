@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotOrderBookManager
+from crosskimp.ob_collector.utils.config.constants import Exchange, WebSocketState, STATUS_EMOJIS, EXCHANGE_NAMES_KR
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -98,19 +99,19 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
             
         # 재연결 시 이미 구독된 심볼들에 대해 스냅샷 다시 요청
         if self.subscribed_symbols:
-            self.logger.info(f"[{self.exchangename}] 재연결 후 스냅샷 다시 요청 (심볼: {len(self.subscribed_symbols)}개)")
+            self.logger.info(f"{EXCHANGE_NAMES_KR[self.exchangename]} 재연결 후 스냅샷 다시 요청 (심볼: {len(self.subscribed_symbols)}개)")
             for sym in self.subscribed_symbols:
                 snapshot = await self.manager.fetch_snapshot(sym)
                 if snapshot:
                     init_res = await self.manager.initialize_orderbook(sym, snapshot)
                     if init_res.is_valid:
-                        self.logger.info(f"[{self.exchangename}] {sym} 재연결 후 스냅샷 초기화 성공")
+                        self.logger.info(f"{EXCHANGE_NAMES_KR[self.exchangename]} {sym} 재연결 후 스냅샷 초기화 성공")
                         if self.connection_status_callback:
                             self.connection_status_callback(self.exchangename, "snapshot")
                     else:
-                        self.log_error(f"{sym} 재연결 후 스냅샷 초기화 실패: {init_res.error_messages}")
+                        self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {sym} 재연결 후 스냅샷 초기화 실패: {init_res.error_messages}")
                 else:
-                    self.log_error(f"{sym} 재연결 후 스냅샷 요청 실패")
+                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {sym} 재연결 후 스냅샷 요청 실패")
 
     async def _prepare_start(self, symbols: List[str]) -> None:
         """
@@ -163,7 +164,7 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
         """
         exchange_symbols = symbols_by_exchange.get("binance", [])
         if not exchange_symbols:
-            self.log_error("구독할 심볼이 없습니다.")
+            self.log_error(f"{STATUS_EMOJIS['ERROR']} {EXCHANGE_NAMES_KR[self.exchangename]} 구독할 심볼이 없습니다.")
             return
 
         # 부모 클래스의 start 메소드 호출 (템플릿 메소드 패턴)
@@ -188,6 +189,7 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
             await self.ws.send(json.dumps(msg))
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "subscribe")
+            self.logger.info(f"{EXCHANGE_NAMES_KR[self.exchangename]} {len(chunk)}개 심볼 구독 요청 전송")
             await asyncio.sleep(1)
 
         # 스냅샷
@@ -198,12 +200,13 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
                 if init_res.is_valid:
                     # 구독 성공한 심볼 추적을 위해 집합에 추가
                     self.subscribed_symbols.add(sym)
+                    self.logger.info(f"{EXCHANGE_NAMES_KR[self.exchangename]} {sym} 스냅샷 초기화 성공 {STATUS_EMOJIS['CONNECTED']}")
                     if self.connection_status_callback:
                         self.connection_status_callback(self.exchangename, "snapshot")
                 else:
-                    self.log_error(f"{sym} snap init fail: {init_res.error_messages}")
+                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {sym} 스냅샷 초기화 실패: {init_res.error_messages} {STATUS_EMOJIS['ERROR']}")
             else:
-                self.log_error(f"{sym} snapshot fail")
+                self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {sym} 스냅샷 요청 실패 {STATUS_EMOJIS['ERROR']}")
 
     async def parse_message(self, message: str) -> Optional[dict]:
         try:
@@ -215,11 +218,11 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
             if data.get("e") == "depthUpdate":
                 symbol = data["s"].replace("USDT","").upper()
                 # Raw 메시지 그대로 로깅 (raw 로그 파일에만 기록)
-                self.log_raw_message("depthUpdate", message, symbol)
+                self.log_raw_message("{EXCHANGE_NAMES_KR[self.exchangename]} 호가 업데이트", message, symbol)
                 return data
             return None
         except Exception as e:
-            self.log_error(f"parse_message error: {e}")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 파싱 오류: {e} {STATUS_EMOJIS['ERROR']}")
             return None
 
     async def handle_parsed_message(self, parsed: dict) -> None:
@@ -229,14 +232,14 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
                 symbol = evt["symbol"]
                 res = await self.manager.update(symbol, evt)
                 if not res.is_valid:
-                    self.log_error(f"{symbol} update fail: {res.error_messages}")
+                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {symbol} 업데이트 실패: {res.error_messages} {STATUS_EMOJIS['ERROR']}")
         except Exception as e:
-            self.log_error(f"handle_parsed_message error: {e}")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 처리 오류: {e} {STATUS_EMOJIS['ERROR']}")
 
     async def stop(self) -> None:
         """
         웹소켓 연결 종료
         """
-        self.logger.info("바이낸스 웹소켓 연결 종료 중...")
+        self.logger.info(f"{EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 종료 중... {STATUS_EMOJIS['DISCONNECTING']}")
         await super().stop()
-        self.logger.info("바이낸스 웹소켓 연결 종료 완료")
+        self.logger.info(f"{EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 종료 완료 {STATUS_EMOJIS['DISCONNECTED']}")

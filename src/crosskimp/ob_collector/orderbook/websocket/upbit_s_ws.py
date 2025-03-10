@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.upbit_s_ob import UpbitOrderBookManager
+from crosskimp.ob_collector.utils.config.constants import Exchange, LOG_SYSTEM, EXCHANGE_NAMES_KR
 
 # 상수 정의
 UPBIT_WS_URL = "wss://api.upbit.com/websocket/v1"
@@ -47,7 +48,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
         Args:
             settings: 설정 딕셔너리
         """
-        super().__init__(settings, "upbit")
+        super().__init__(settings, Exchange.UPBIT.value)
         self.ws_url = UPBIT_WS_URL
         
         # 오더북 설정
@@ -102,17 +103,17 @@ class UpbitWebsocket(BaseWebsocketConnector):
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect")
                 
-            self.logger.info(f"[{self.exchangename}] 웹소켓 연결 성공")
+            self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 성공")
             return True
             
         except asyncio.TimeoutError:
-            self.log_error(f"웹소켓 연결 타임아웃")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 타임아웃")
             return False
         except ConnectionRefusedError:
-            self.log_error(f"웹소켓 연결 거부됨")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 거부됨")
             return False
         except Exception as e:
-            self.log_error(f"웹소켓 연결 실패: {str(e)}", exc_info=True)
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 실패: {str(e)}", exc_info=True)
             return False
 
     async def subscribe(self, symbols: List[str]) -> None:
@@ -130,7 +131,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
             # 연결 상태 확인
             if not self.ws or not self.is_connected:
                 error_msg = "웹소켓이 연결되지 않음"
-                self.log_error(error_msg)
+                self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {error_msg}")
                 raise ConnectionError(error_msg)
             
             # 심볼 형식 변환 (KRW-{symbol})
@@ -157,11 +158,11 @@ class UpbitWebsocket(BaseWebsocketConnector):
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "subscribe_complete")
                 
-            self.logger.info(f"[{self.exchangename}] 오더북 구독 완료: {len(symbols)}개 심볼")
+            self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 오더북 구독 완료: {len(symbols)}개 심볼")
             
         except Exception as e:
             error_msg = f"구독 처리 중 오류 발생: {str(e)}"
-            self.log_error(error_msg)
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {error_msg}")
             raise
 
     async def parse_message(self, message: str) -> Optional[dict]:
@@ -194,7 +195,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
             # 심볼 추출
             symbol = data.get("code", "").replace("KRW-","")
             if not symbol:
-                self.logger.error(f"[{self.exchangename}] 심볼 정보 누락")
+                self.logger.error(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 심볼 정보 누락")
                 return None
 
             # 타임스탬프 추출
@@ -213,7 +214,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
             
             # 로깅 추가
             parsed_data = {
-                "exchangename": "upbit",
+                "exchangename": Exchange.UPBIT.value,
                 "symbol": symbol.upper(),
                 "bids": bids,
                 "asks": asks,
@@ -228,10 +229,10 @@ class UpbitWebsocket(BaseWebsocketConnector):
             # 표준화된 오더북 데이터 반환
             return parsed_data
         except json.JSONDecodeError:
-            self.log_error(f"JSON 파싱 실패: {message[:100]}...")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} JSON 파싱 실패: {message[:100]}...")
             return None
         except Exception as e:
-            self.log_error(f"메시지 파싱 실패: {str(e)}, raw={message[:200]}...", exc_info=True)
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 파싱 실패: {str(e)}, raw={message[:200]}...", exc_info=True)
             self.message_stats["processing_errors"] += 1
             return None
 
@@ -264,9 +265,9 @@ class UpbitWebsocket(BaseWebsocketConnector):
 
         # 빈 데이터 로깅
         if not bids:
-            self.logger.error(f"[{self.exchangename}] {symbol} bids가 비어 있습니다: {units}")
+            self.logger.error(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} {symbol} bids가 비어 있습니다: {units}")
         if not asks:
-            self.logger.error(f"[{self.exchangename}] {symbol} asks가 비어 있습니다: {units}")
+            self.logger.error(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} {symbol} asks가 비어 있습니다: {units}")
             
         return bids, asks
 
@@ -311,12 +312,12 @@ class UpbitWebsocket(BaseWebsocketConnector):
                 if self.output_queue:
                     await self.output_queue.put((self.exchangename, ob_dict))
             else:
-                self.log_error(f"{symbol} 오더북 업데이트 실패: {result.error}")
+                self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} {symbol} 오더북 업데이트 실패: {result.error}")
 
         except KeyError as e:
-            self.log_error(f"필수 필드 누락: {e}")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 필수 필드 누락: {e}")
         except Exception as e:
-            self.log_error(f"메시지 처리 중 오류: {e}")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 처리 중 오류: {e}")
 
     async def _send_ping(self) -> None:
         """
@@ -330,9 +331,9 @@ class UpbitWebsocket(BaseWebsocketConnector):
                 await self.ws.send("PING")
                 self.last_ping_time = time.time()
                 self.stats.last_ping_time = self.last_ping_time
-                self.logger.debug(f"[{self.exchangename}] PING 전송")
+                self.logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} PING 전송")
         except Exception as e:
-            self.log_error(f"PING 전송 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} PING 전송 실패: {str(e)}")
 
     async def _handle_pong(self, message: str) -> bool:
         """
@@ -353,11 +354,11 @@ class UpbitWebsocket(BaseWebsocketConnector):
                 if self.stats.last_ping_time > 0:
                     self.stats.latency_ms = (now - self.stats.last_ping_time) * 1000
                 
-                self.logger.debug(f"[{self.exchangename}] PONG 수신 (레이턴시: {self.stats.latency_ms:.2f}ms)")
+                self.logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} PONG 수신 (레이턴시: {self.stats.latency_ms:.2f}ms)")
                 return True
             return False
         except Exception as e:
-            self.log_error(f"PONG 처리 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} PONG 처리 실패: {str(e)}")
             return False
 
     async def _message_loop(self, symbols: List[str]) -> None:
@@ -399,11 +400,11 @@ class UpbitWebsocket(BaseWebsocketConnector):
             except asyncio.TimeoutError:
                 # PONG 응답 체크
                 if time.time() - self.stats.last_pong_time > self.ping_timeout:
-                    self.log_error("PONG 응답 타임아웃")
+                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} PONG 응답 타임아웃")
                     break
                 continue
             except Exception as e:
-                self.log_error(f"메시지 처리 실패: {str(e)}")
+                self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 처리 실패: {str(e)}")
                 break
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
@@ -421,7 +422,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
                 # 심볼 목록 가져오기
                 symbols = symbols_by_exchange.get(self.exchangename.lower(), [])
                 if not symbols:
-                    self.log_error("구독할 심볼 없음")
+                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 구독할 심볼 없음")
                     return
 
                 # 공통 로깅을 위한 부모 클래스 start 호출
@@ -431,7 +432,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
                 connected = await self.connect()
                 if not connected:
                     delay = self.reconnect_strategy.next_delay()
-                    self.log_error(f"연결 실패, {delay}초 후 재시도")
+                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 연결 실패, {delay}초 후 재시도")
                     await asyncio.sleep(delay)
                     continue
 
@@ -443,7 +444,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
 
             except Exception as e:
                 delay = self.reconnect_strategy.next_delay()
-                self.log_error(f"연결 실패: {str(e)}, {delay}초 후 재연결")
+                self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 연결 실패: {str(e)}, {delay}초 후 재연결")
                 await asyncio.sleep(delay)
                 continue
 
@@ -457,7 +458,7 @@ class UpbitWebsocket(BaseWebsocketConnector):
             try:
                 await self.ws.close()
             except Exception as e:
-                self.log_error(f"웹소켓 종료 실패: {e}")
+                self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 종료 실패: {e}")
 
         self.is_connected = False
         
@@ -469,17 +470,17 @@ class UpbitWebsocket(BaseWebsocketConnector):
         """
         웹소켓 연결 종료
         """
-        self.logger.info("업비트 웹소켓 연결 종료 중...")
+        self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 종료 중...")
         await super().stop()
         
         # 오더북 데이터 정리
         self.orderbook_manager.clear_all()
         
-        self.logger.info("업비트 웹소켓 연결 종료 완료")
+        self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 종료 완료")
         
         # 통계 로깅
         self.logger.info(
-            f"[{self.exchangename}] 웹소켓 종료 | "
+            f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 종료 | "
             f"총 메시지: {self.message_stats['total_received']}개, "
             f"유효 파싱: {self.message_stats['valid_parsed']}개, "
             f"핑퐁: {self.message_stats['ping_pong']}개, "

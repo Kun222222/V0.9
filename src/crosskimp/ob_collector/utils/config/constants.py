@@ -104,12 +104,12 @@ class Exchange(Enum):
 
 # 거래소 한글 이름
 EXCHANGE_NAMES_KR = {
-    Exchange.BINANCE.value: "바이낸스",
-    Exchange.BYBIT.value: "바이빗",
-    Exchange.UPBIT.value: "업비트",
-    Exchange.BITHUMB.value: "빗썸",
-    Exchange.BINANCE_FUTURE.value: "바이낸스 선물",
-    Exchange.BYBIT_FUTURE.value: "바이빗 선물",
+    Exchange.BINANCE.value: "[바이낸스]",
+    Exchange.BYBIT.value: "[바이빗]",
+    Exchange.UPBIT.value: "[업비트]",
+    Exchange.BITHUMB.value: "[빗썸]",
+    Exchange.BINANCE_FUTURE.value: "[바이낸스 선물]",
+    Exchange.BYBIT_FUTURE.value: "[바이빗 선물]",
 }
 
 # 거래소 그룹화
