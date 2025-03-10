@@ -65,12 +65,21 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
         self.raw_logger = get_raw_logger("binance_spot")
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
-        super().set_output_queue(queue)
-        self.manager.output_queue = queue
-        # self.logger.debug(f"[{self.exchangename}] output_queue set")
+        """출력 큐 설정"""
+        self.output_queue = queue
+        if hasattr(self, 'manager') and self.manager:
+            self.manager.set_output_queue(queue)
+            
+    def set_connection_status_callback(self, callback):
+        """연결 상태 콜백 설정 (오더북 매니저에도 전달)"""
+        self.connection_status_callback = callback
+        if hasattr(self, 'manager') and self.manager:
+            self.manager.connection_status_callback = callback
 
     async def _do_connect(self):
-        """실제 연결 로직"""
+        """
+        실제 연결 로직 (BaseWebsocketConnector 템플릿 메서드 구현)
+        """
         self.session = aiohttp.ClientSession()
         self.ws = await connect(
             self.ws_url,
@@ -78,8 +87,89 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
             ping_timeout=self.ping_timeout,    # 10초
             compression=None
         )
-        self.is_connected = True
-        self.stats.connection_start_time = time.time()
+        # is_connected와 connection_start_time은 부모 클래스의 connect 메소드에서 설정됨
+
+    async def _after_connect(self):
+        """
+        연결 후 처리 (BaseWebsocketConnector 템플릿 메서드 구현)
+        """
+        # 재연결 성공 알림
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "connect")
+            
+        # 재연결 시 이미 구독된 심볼들에 대해 스냅샷 다시 요청
+        if self.subscribed_symbols:
+            self.logger.info(f"[{self.exchangename}] 재연결 후 스냅샷 다시 요청 (심볼: {len(self.subscribed_symbols)}개)")
+            for sym in self.subscribed_symbols:
+                snapshot = await self.manager.fetch_snapshot(sym)
+                if snapshot:
+                    init_res = await self.manager.initialize_orderbook(sym, snapshot)
+                    if init_res.is_valid:
+                        self.logger.info(f"[{self.exchangename}] {sym} 재연결 후 스냅샷 초기화 성공")
+                        if self.connection_status_callback:
+                            self.connection_status_callback(self.exchangename, "snapshot")
+                    else:
+                        self.log_error(f"{sym} 재연결 후 스냅샷 초기화 실패: {init_res.error_messages}")
+                else:
+                    self.log_error(f"{sym} 재연결 후 스냅샷 요청 실패")
+
+    async def _prepare_start(self, symbols: List[str]) -> None:
+        """
+        시작 전 초기화 및 설정 (BaseWebsocketConnector 템플릿 메서드 구현)
+        
+        Args:
+            symbols: 구독할 심볼 목록
+        """
+        # 필요한 초기화 작업 수행
+        pass
+
+    async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
+        """
+        메시지 처리 루프 실행 (BaseWebsocketConnector 템플릿 메서드 구현)
+        
+        Args:
+            symbols: 구독한 심볼 목록
+            tasks: 실행 중인 백그라운드 태스크 목록
+        """
+        while not self.stop_event.is_set() and self.is_connected:
+            try:
+                msg = await asyncio.wait_for(
+                    self.ws.recv(), timeout=self.health_check_interval
+                )
+                self.stats.last_message_time = time.time()
+                self.stats.message_count += 1
+
+                parsed = await self.parse_message(msg)
+                if parsed and self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "message")
+                if parsed:
+                    await self.handle_parsed_message(parsed)
+                    
+            except asyncio.TimeoutError:
+                # 타임아웃은 정상적인 상황일 수 있음 (메시지가 없는 경우)
+                continue
+                
+            except Exception as e:
+                self.log_error(f"메시지 루프 오류: {str(e)}")
+                # 연결 오류 발생 시 루프 종료 (부모 클래스의 start 메소드에서 재연결 처리)
+                break
+
+    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
+        """
+        웹소켓 연결 시작 및 심볼 구독
+        부모 클래스의 템플릿 메소드 패턴을 활용
+        
+        Args:
+            symbols_by_exchange: 거래소별 구독할 심볼 목록
+        """
+        exchange_symbols = symbols_by_exchange.get("binance", [])
+        if not exchange_symbols:
+            self.log_error("구독할 심볼이 없습니다.")
+            return
+
+        # 부모 클래스의 start 메소드 호출 (템플릿 메소드 패턴)
+        # 이 메소드는 _prepare_start, connect, subscribe, start_background_tasks, _run_message_loop 순서로 호출
+        await super().start({"binance": exchange_symbols})
 
     async def subscribe(self, symbols: List[str]):
         if not symbols:
@@ -106,7 +196,12 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
             snapshot = await self.manager.fetch_snapshot(sym)
             if snapshot:
                 init_res = await self.manager.initialize_orderbook(sym, snapshot)
-                if not init_res.is_valid:
+                if init_res.is_valid:
+                    # 구독 성공한 심볼 추적을 위해 집합에 추가
+                    self.subscribed_symbols.add(sym)
+                    if self.connection_status_callback:
+                        self.connection_status_callback(self.exchangename, "snapshot")
+                else:
                     self.log_error(f"{sym} snap init fail: {init_res.error_messages}")
             else:
                 self.log_error(f"{sym} snapshot fail")
@@ -138,57 +233,6 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
                     self.log_error(f"{symbol} update fail: {res.error_messages}")
         except Exception as e:
             self.log_error(f"handle_parsed_message error: {e}")
-
-    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
-        exchange_symbols = symbols_by_exchange.get("binance", [])
-        if not exchange_symbols:
-            self.log_error("no symbols to start")
-            return
-
-        # 공통 로깅을 위한 부모 클래스 start 호출
-        await super().start(symbols_by_exchange)
-
-        while not self.stop_event.is_set():
-            try:
-                await self._do_connect()
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "connect")
-
-                await self.subscribe(exchange_symbols)
-
-                while not self.stop_event.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            self.ws.recv(), timeout=self.health_check_interval
-                        )
-                        self.stats.last_message_time = time.time()
-                        self.stats.message_count += 1
-
-                        parsed = await self.parse_message(msg)
-                        if parsed and self.connection_status_callback:
-                            self.connection_status_callback(self.exchangename, "message")
-                        if parsed:
-                            await self.handle_parsed_message(parsed)
-
-                    except asyncio.TimeoutError:
-                        continue
-                    except Exception as e:
-                        self.log_error(f"recv fail: {e}")
-                        break
-
-            except Exception as conn_e:
-                delay = self.reconnect_strategy.next_delay()
-                self.log_error(f"connect fail: {conn_e}, wait {delay}s", exc_info=False)
-                await asyncio.sleep(delay)
-            finally:
-                if self.ws:
-                    try:
-                        await self.ws.close()
-                    except:
-                        pass
-                self.is_connected = False
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "disconnect")
 
     async def stop(self) -> None:
         if self.connection_status_callback:

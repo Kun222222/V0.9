@@ -93,6 +93,7 @@ class BaseWebsocketConnector:
 
         self.ws = None
         self.is_connected = False
+        self.connecting = False  # 연결 중 상태 플래그 추가
         self.stop_event = Event()
         self.output_queue: Optional[asyncio.Queue] = None
         self.auto_reconnect = True  # 자동 재연결 활성화 여부
@@ -170,13 +171,22 @@ class BaseWebsocketConnector:
 
     async def connect(self):
         """
-        표준화된 연결 프로세스
+        웹소켓 연결 수행
         
-        연결 시도 → 성공/실패 처리 → 상태 업데이트의 기본 흐름을 구현합니다.
-        
-        Returns:
-            bool: 연결 성공 여부
+        이 메서드는 템플릿 메서드 패턴을 사용하여 연결 과정을 정의합니다.
+        실제 연결 로직은 자식 클래스의 _do_connect 메서드에서 구현합니다.
         """
+        # 이미 연결된 경우 바로 반환
+        if self.is_connected and self.ws:
+            return True
+            
+        # 연결 중인 경우 대기
+        if self.connecting:
+            self.logger.debug(f"[{self.exchangename}] 이미 연결 중")
+            return True
+            
+        self.connecting = True
+        
         try:
             # 1. 연결 전 상태 업데이트
             if self.connection_status_callback:
@@ -200,13 +210,44 @@ class BaseWebsocketConnector:
             self.logger.info(f"[{self.exchangename}] 웹소켓 연결 성공")
             return True
             
-        except asyncio.TimeoutError:
-            self.log_error(f"연결 타임아웃")
-            return await self._handle_connection_failure("timeout")
-            
+        except asyncio.TimeoutError as e:
+            # 바이빗 거래소의 경우 타임아웃 에러를 무시하고 재연결 시도
+            if self.exchangename in ["bybitspot", "bybitfuture"]:
+                self.logger.warning(f"[{self.exchangename}] 연결 타임아웃 발생 (무시됨)")
+                
+                # 연결 중 플래그 해제
+                self.connecting = False
+                
+                # 짧은 대기 후 재연결 시도
+                await asyncio.sleep(1)
+                return await self.connect()  # 재귀적으로 다시 연결 시도
+            else:
+                # 다른 거래소는 기존대로 타임아웃 에러 처리
+                self.logger.error(f"[{self.exchangename}] 연결 타임아웃: {str(e)}")
+                self.stats.error_count += 1
+                self.stats.last_error_time = time.time()
+                self.stats.last_error_message = f"연결 타임아웃: {str(e)}"
+                
+                # 연결 중 플래그 해제
+                self.connecting = False
+                
+                # 연결 실패 처리 및 재연결 시도
+                return await self._handle_connection_failure("timeout", e)
+                
         except Exception as e:
-            self.log_error(f"연결 실패: {str(e)}")
+            self.logger.error(f"[{self.exchangename}] 연결 오류: {str(e)}", exc_info=True)
+            self.stats.error_count += 1
+            self.stats.last_error_time = time.time()
+            self.stats.last_error_message = str(e)
+            
+            # 연결 중 플래그 해제
+            self.connecting = False
+            
+            # 연결 실패 처리 및 재연결 시도
             return await self._handle_connection_failure("error", e)
+            
+        finally:
+            self.connecting = False
 
     async def _do_connect(self):
         """

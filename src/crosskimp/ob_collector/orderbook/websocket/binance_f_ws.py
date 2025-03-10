@@ -121,9 +121,16 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         max_retries = 3
         retry_delay = 1
         
+        # 심볼 형식 처리
+        symbol_upper = symbol.upper()
+        if not symbol_upper.endswith("USDT"):
+            symbol_upper += "USDT"
+        
         for attempt in range(max_retries):
             try:
-                url = f"{self.snapshot_base}?symbol={symbol.upper()}USDT&limit={self.snapshot_depth}"
+                url = f"{self.snapshot_base}?symbol={symbol_upper}&limit={self.snapshot_depth}"
+                self.logger.info(f"스냅샷 요청 URL: {url}")
+                
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "snapshot_request")
                 
@@ -225,12 +232,15 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             self.log_error("구독할 심볼 없음.")
             return
 
-        # 공통 로깅을 위한 부모 클래스 start 호출
-        await super().start(symbols_by_exchange)
+        # 부모 클래스의 start 메소드를 호출하지 않고 직접 필요한 로직 구현
+        # await super().start(symbols_by_exchange)
+        
+        # 1. 초기화 및 설정
+        await self._prepare_start(exchange_symbols)
 
         while not self.stop_event.is_set():
             try:
-                # 단일 연결로 모든 심볼 구독
+                # 2. 단일 연결로 모든 심볼 구독 (이 과정에서 wsurl이 설정되고 connect가 호출됨)
                 await self.subscribe(exchange_symbols)
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "connect")

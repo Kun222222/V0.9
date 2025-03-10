@@ -240,3 +240,37 @@ class OrderBook:
         if len(self.bids) > self.depth or len(self.asks) > self.depth:
             errors.append("Depth limit exceeded")
         return ValidationResult(len(errors) == 0, errors)
+
+    def get_bids(self, limit: int = 10) -> List[List[float]]:
+        """
+        상위 N개의 매수 호가를 반환합니다.
+        
+        Args:
+            limit: 반환할 호가 수
+            
+        Returns:
+            List[List[float]]: [[가격, 수량], ...] 형태의 매수 호가 목록
+        """
+        try:
+            sorted_bids = sorted(self.bids.items(), key=lambda x: x[0], reverse=True)
+            return [[p, q] for p, q in sorted_bids[:limit]]
+        except Exception as e:
+            self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} get_bids fail: {e}")
+            return []
+            
+    def get_asks(self, limit: int = 10) -> List[List[float]]:
+        """
+        상위 N개의 매도 호가를 반환합니다.
+        
+        Args:
+            limit: 반환할 호가 수
+            
+        Returns:
+            List[List[float]]: [[가격, 수량], ...] 형태의 매도 호가 목록
+        """
+        try:
+            sorted_asks = sorted(self.asks.items(), key=lambda x: x[0])
+            return [[p, q] for p, q in sorted_asks[:limit]]
+        except Exception as e:
+            self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} get_asks fail: {e}")
+            return []

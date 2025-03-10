@@ -186,3 +186,93 @@ class BybitFutureOrderBookManager(BaseOrderBookManager):
             f"[{self.exchangename}] 전체 데이터 제거 완료 | "
             f"symbols={symbols}"
         )
+        
+    async def update(self, symbol: str, data: dict) -> ValidationResult:
+        """
+        델타 이벤트 처리
+        - 스냅샷 초기화 여부 확인
+        - 시퀀스 검증
+        - 오더북 업데이트
+        """
+        try:
+            # 스냅샷 메시지인 경우 초기화 처리
+            if data.get("type", "").lower() == "snapshot":
+                # 스냅샷 데이터 추출
+                ob_data = data.get("data", {})
+                
+                # 스냅샷 데이터 변환
+                snapshot = {
+                    "exchangename": self.exchangename,
+                    "symbol": symbol,
+                    "bids": [[float(b[0]), float(b[1])] for b in ob_data.get("b", [])],
+                    "asks": [[float(a[0]), float(a[1])] for a in ob_data.get("a", [])],
+                    "timestamp": ob_data.get("ts", int(time.time() * 1000)),
+                    "sequence": ob_data.get("u", 0),
+                    "type": "snapshot"
+                }
+                
+                return await self.initialize_orderbook(symbol, snapshot)
+            
+            # 초기화 여부 확인
+            if not self.is_initialized(symbol):
+                # 초기화되지 않은 경우 버퍼링
+                self.buffer_event(symbol, data)
+                return ValidationResult(False, [f"[{symbol}] 오더북이 초기화되지 않음"])
+            
+            # 시퀀스 검증
+            st = self.sequence_states.get(symbol, {})
+            last_seq = st.get("last_sequence", 0)
+            
+            # 데이터에서 시퀀스 추출
+            ob_data = data.get("data", {})
+            seq = ob_data.get("u", 0)
+            
+            # 시퀀스 검증
+            if seq <= last_seq:
+                self.logger.debug(
+                    f"[{self.exchangename}][{symbol}] 이전 시퀀스 이벤트 무시 | "
+                    f"current_seq={seq}, last_seq={last_seq}"
+                )
+                return ValidationResult(False, [f"[{symbol}] 이전 시퀀스: {seq} <= {last_seq}"])
+            
+            # 오더북 업데이트
+            if symbol not in self.orderbooks:
+                return ValidationResult(False, [f"[{symbol}] 오더북 객체 없음"])
+            
+            # 델타 데이터 변환
+            delta = {
+                "exchangename": self.exchangename,
+                "symbol": symbol,
+                "bids": [[float(b[0]), float(b[1])] for b in ob_data.get("b", [])],
+                "asks": [[float(a[0]), float(a[1])] for a in ob_data.get("a", [])],
+                "timestamp": ob_data.get("ts", int(time.time() * 1000)),
+                "sequence": seq,
+                "type": "delta"
+            }
+            
+            # 오더북 업데이트
+            result = await self.orderbooks[symbol].update(delta)
+            
+            # 업데이트 성공 시 시퀀스 갱신
+            if result.is_valid:
+                self.update_sequence(symbol, seq)
+                
+                # 큐에 전송
+                if self._output_queue:
+                    ob_dict = self.orderbooks[symbol].to_dict()
+                    await self._output_queue.put((self.exchangename, ob_dict))
+            else:
+                self.logger.warning(
+                    f"[{self.exchangename}][{symbol}] 오더북 업데이트 실패 | "
+                    f"error={result.error_messages}"
+                )
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(
+                f"[{self.exchangename}][{symbol}] 업데이트 중 예외 발생 | "
+                f"error={str(e)}",
+                exc_info=True
+            )
+            return ValidationResult(False, [f"[{symbol}] 업데이트 중 오류: {e}"])

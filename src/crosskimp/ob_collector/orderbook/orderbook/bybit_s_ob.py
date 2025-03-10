@@ -1,297 +1,262 @@
-# file: orderbook/bybit_spot_orderbook_manager.py
-
-import asyncio
 import time
+import json
 from typing import Dict, Optional, List
-from aiohttp import ClientSession, ClientTimeout
-
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_ob_manager import BaseOrderBookManager
-from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
-
-SNAPSHOT_SEMAPHORE = asyncio.Semaphore(5)
-
-GLOBAL_AIOHTTP_SESSION: Optional[ClientSession] = None
-GLOBAL_SESSION_LOCK = asyncio.Lock()
-
-async def get_global_aiohttp_session() -> ClientSession:
-    global GLOBAL_AIOHTTP_SESSION
-    async with GLOBAL_SESSION_LOCK:
-        if GLOBAL_AIOHTTP_SESSION is None or GLOBAL_AIOHTTP_SESSION.closed:
-            logger.info("[BybitSpot] Creating global aiohttp session")
-            GLOBAL_AIOHTTP_SESSION = ClientSession(timeout=ClientTimeout(total=None))
-        return GLOBAL_AIOHTTP_SESSION
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger, get_raw_logger
+from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
+import logging
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
+queue_logger = get_queue_logger()
+raw_logger = get_raw_logger("bybit")  # raw 데이터 로거 추가
 
-class BybitSpotOrderBookManager(BaseOrderBookManager):
+class BybitOrderBook(OrderBookV2):
     """
-    Bybit 현물 오더북 매니저
+    Bybit 전용 오더북 클래스
+    - 시퀀스 기반 검증
+    - 3초 스냅샷 처리
+    - 델타 업데이트 처리
     """
-    def __init__(self, depth: int = 500):
+    def __init__(self, exchangename: str, symbol: str, depth: int = 50):
+        super().__init__(exchangename, symbol, depth)
+        self.last_snapshot_time = 0
+        self.snapshot_interval = 3  # 3초마다 스냅샷 체크
+        self.bids_dict = {}  # price -> quantity
+        self.asks_dict = {}  # price -> quantity
+
+    def should_process_update(self, sequence: Optional[int], timestamp: Optional[int]) -> bool:
+        """
+        업데이트 처리 여부 결정
+        - sequence가 1이면 무조건 처리 (서비스 재시작)
+        - 3초 이상 경과하면 스냅샷으로 처리
+        - sequence가 이전보다 작거나 같으면 무시
+        """
+        current_time = time.time()
+        
+        # 서비스 재시작 케이스
+        if sequence == 1:
+            logger.info(f"[Bybit] {self.symbol} 서비스 재시작 감지 (u=1)")
+            return True
+            
+        # 3초 이상 경과
+        if timestamp and (timestamp - self.last_snapshot_time) >= 3000:  # 3초 = 3000ms
+            logger.debug(f"[Bybit] {self.symbol} 3초 경과 - 스냅샷으로 처리")
+            return True
+            
+        # 시퀀스 검증
+        if self.last_sequence is not None:
+            if sequence and sequence <= self.last_sequence:
+                logger.debug(
+                    f"[Bybit] {self.symbol} 이전 시퀀스 무시 | "
+                    f"current={sequence}, last={self.last_sequence}"
+                )
+                return False
+                
+        return True
+
+    async def send_to_queue(self) -> None:
+        """큐로 데이터 전송"""
+        if self.output_queue:
+            try:
+                data = self.to_dict()
+                await self.output_queue.put((self.exchangename, data))
+            except Exception as e:
+                logger.error(
+                    f"[Bybit] {self.symbol} 큐 전송 실패: {str(e)}", 
+                    exc_info=True
+                )
+
+    def update_orderbook(self, bids: List[List[float]], asks: List[List[float]], 
+                        timestamp: Optional[int] = None, sequence: Optional[int] = None,
+                        is_snapshot: bool = False) -> None:
+        try:
+            # 스냅샷인 경우 딕셔너리 초기화
+            if is_snapshot:
+                self.bids_dict.clear()
+                self.asks_dict.clear()
+                self.last_snapshot_time = timestamp
+                
+            # bids 업데이트
+            for price, qty in bids:
+                if qty > 0:
+                    self.bids_dict[price] = qty
+                else:
+                    self.bids_dict.pop(price, None)
+                    
+            # asks 업데이트
+            for price, qty in asks:
+                if qty > 0:
+                    self.asks_dict[price] = qty
+                else:
+                    self.asks_dict.pop(price, None)
+                    
+            # 정렬된 리스트 생성
+            sorted_bids = sorted(self.bids_dict.items(), key=lambda x: x[0], reverse=True)
+            sorted_asks = sorted(self.asks_dict.items(), key=lambda x: x[0])
+            
+            # depth 제한 및 리스트 변환
+            self.bids = [[price, qty] for price, qty in sorted_bids[:self.depth]]
+            self.asks = [[price, qty] for price, qty in sorted_asks[:self.depth]]
+            
+            # 메타데이터 업데이트
+            if timestamp:
+                self.last_update_time = timestamp
+            if sequence:
+                self.last_sequence = sequence
+                
+        except Exception as e:
+            logger.error(
+                f"[Bybit] {self.symbol} 오더북 업데이트 실패: {str(e)}", 
+                exc_info=True
+            )
+
+class BybitSpotOrderBookManager(BaseOrderBookManagerV2):
+    def __init__(self, depth: int = 50):
         super().__init__(depth)
         self.exchangename = "bybit"
-        # 바이낸스와 유사하게 snapshot_url 로 명명
-        self.snapshot_url = "https://api.bybit.com/v5/market/orderbook"
-        self.logger = logger
+        self.orderbooks: Dict[str, BybitOrderBook] = {}  # BybitOrderBook 사용
+        self.output_queue = None  # output_queue 속성 추가 및 초기화
+        self.logger = logging.getLogger("bybit_ob")
         
-        # 기존 초기화 코드
-        self.orderbooks: Dict[str, OrderBook] = {}
-        self.sequence_states: Dict[str, Dict] = {}
-        self.buffer_events: Dict[str, List[dict]] = {}
-        self.snapshot_retries: Dict[str, int] = {}
-        
-        # 로깅 제어를 위한 상태 추가
-        self.last_queue_log_time: Dict[str, float] = {}
-        self.queue_log_interval = 5.0  # 5초마다 로깅
-
-    async def fetch_snapshot(self, symbol: str) -> Optional[dict]:
-        await SNAPSHOT_SEMAPHORE.acquire()
+    async def update(self, symbol: str, data: dict) -> ValidationResult:
         try:
-            return await self._fetch_impl(symbol)
-        finally:
-            SNAPSHOT_SEMAPHORE.release()
-
-    async def _fetch_impl(self, symbol: str) -> Optional[dict]:
-        max_retries = 3
-        delay = 1.0
-        url = self.snapshot_url
-        params = {
-            "category": "spot",
-            "symbol": f"{symbol.upper()}USDT",
-            "limit": self.depth
-        }
-
-        for attempt in range(max_retries):
-            try:
-                session = await get_global_aiohttp_session()
-                logger.info(
-                    f"[BybitSpot] fetch_snapshot({symbol}) attempt={attempt+1}/{max_retries}, url={url}, params={params}"
-                )
-                async with session.get(url, params=params, timeout=10) as resp:
-                    logger.info(f"[BybitSpot] {symbol} snapshot response status={resp.status}")
-                    if resp.status == 200:
-                        data = await resp.json()
-                        logger.debug(f"[BybitSpot] {symbol} snapshot raw: {data}")
-                        if data.get("retCode") == 0:
-                            result = data.get("result", {})
-                            parsed = self.parse_snapshot(result, symbol)
-                            if parsed:
-                                logger.info(f"[BybitSpot] {symbol} snapshot parse success: seq={parsed.get('sequence')}")
-                                return parsed
-                            else:
-                                logger.error(f"[BybitSpot] {symbol} parse_snapshot returned None")
-                        else:
-                            logger.error(
-                                f"[BybitSpot] {symbol} snapshot fail retCode={data.get('retCode')}, retMsg={data.get('retMsg')}"
-                            )
-                    else:
-                        logger.error(f"[BybitSpot] {symbol} snapshot HTTP error status={resp.status}")
-            except asyncio.TimeoutError:
-                logger.error(f"[BybitSpot] {symbol} snapshot timeout (attempt={attempt+1})")
-            except Exception as e:
-                logger.error(f"[BybitSpot] {symbol} snapshot exception: {e}", exc_info=True)
-
-            if attempt < max_retries - 1:
-                await asyncio.sleep(delay)
-                delay *= 2
-
-        logger.error(f"[BybitSpot] {symbol} all snapshot attempts failed.")
-        return None
-
-    def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
-        try:
-            seq = data.get("seq", 0)
-            ts = data.get("ts", int(time.time()*1000))
-            b_raw = data.get("b", [])
-            a_raw = data.get("a", [])
-
-            bids = []
-            for b in b_raw:
-                px, qty = float(b[0]), float(b[1])
-                if px > 0 and qty > 0:
-                    bids.append([px, qty])
-
-            asks = []
-            for a in a_raw:
-                px, qty = float(a[0]), float(a[1])
-                if px > 0 and qty > 0:
-                    asks.append([px, qty])
-
-            logger.info(
-                f"[BybitSpot] parse_snapshot({symbol}) seq={seq}, ts={ts}, "
-                f"bids_len={len(bids)}, asks_len={len(asks)}"
-            )
-            return {
-                "exchangename": self.exchangename,
-                "symbol": symbol,
-                "bids": bids,
-                "asks": asks,
-                "timestamp": ts,
-                "sequence": seq,
-                "type": "snapshot"
-            }
-        except Exception as e:
-            logger.error(f"[BybitSpot] parse_snapshot error: {e}", exc_info=True)
-            return None
-
-    async def initialize_orderbook(self, symbol: str, snapshot: dict) -> ValidationResult:
-        """
-        스냅샷으로 오더북 초기화
-        """
-        try:
-            seq = snapshot.get("sequence")
-            if seq is None:
-                err_msg = f"[BybitSpot] {symbol} snapshot has no sequence"
-                logger.error(err_msg)
-                return ValidationResult(False, [err_msg])
-
-            self.sequence_states[symbol] = {
-                "initialized": True,
-                "last_seq": seq,
-                "first_delta_applied": False
-            }
-            logger.info(f"[BybitSpot] initialize_orderbook({symbol}), seq={seq}")
-
-            # 오더북 생성
+            # 로거 초기화 (전역 변수 대신 로컬 변수로 사용)
+            from crosskimp.ob_collector.utils.logging.logger import get_queue_logger
+            queue_logger = get_queue_logger()
+            
+            # 오더북이 없으면 생성
             if symbol not in self.orderbooks:
-                self.orderbooks[symbol] = OrderBook(
+                self.orderbooks[symbol] = BybitOrderBook(
                     exchangename=self.exchangename,
                     symbol=symbol,
-                    depth=self.depth,
-                    logger=self.logger
+                    depth=self.depth
                 )
-
+                logger.info(f"[Bybit] {symbol} 오더북 초기화")
+            
             ob = self.orderbooks[symbol]
-            snap_res = await ob.update(snapshot)
-            if not snap_res.is_valid:
-                logger.error(
-                    f"[BybitSpot] {symbol} snapshot apply fail: {snap_res.error_messages}"
-                )
-                return snap_res
-
-            logger.info(f"[BybitSpot] {symbol} orderbook initialized with snapshot seq={seq}")
-            await self._apply_buffered_events(symbol)
-            return snap_res
-
-        except Exception as e:
-            logger.error(f"[BybitSpot] initialize_orderbook({symbol}) error: {e}", exc_info=True)
-            return ValidationResult(False, [str(e)])
-
-    async def update(self, symbol: str, data: dict) -> ValidationResult:
-        """
-        델타 이벤트 추가 -> 버퍼에 쌓고, 만약 초기화된 상태면 바로 적용 시도
-        """
-        # 버퍼링(공통)
-        if symbol not in self.buffer_events:
-            self.buffer_events[symbol] = []
-        if len(self.buffer_events[symbol]) >= self.max_buffer_size:
-            removed = self.buffer_events[symbol].pop(0)
-            logger.warning(f"[BybitSpot] {symbol} buffer overflow, removed oldest event seq={removed.get('sequence')}")
-
-        self.buffer_events[symbol].append(data)
-        logger.debug(f"[BybitSpot] {symbol} new event buffered seq={data.get('sequence')}")
-
-        st = self.sequence_states.get(symbol, {})
-        if not st.get("initialized"):
-            logger.debug(f"[BybitSpot] {symbol} not initialized yet -> only buffering.")
-            return ValidationResult(True, [])
-
-        # 이미 초기화된 상태라면 버퍼 적용
-        await self._apply_buffered_events(symbol)
-        return ValidationResult(True, [])
-
-    async def _apply_buffered_events(self, symbol: str):
-        """
-        버퍼 내 이벤트를 오름차순으로 적용
-        적용 후 마지막 상태를 큐에 put
-        """
-        st = self.sequence_states.get(symbol)
-        if not st or not st["initialized"]:
-            logger.debug(f"[BybitSpot] _apply_buffered_events: {symbol} not inited -> return.")
-            return
-
-        last_seq = st["last_seq"]
-        events = self.buffer_events.get(symbol, [])
-        sorted_events = sorted(events, key=lambda x: x.get("sequence", 0))
-
-        ob = self.orderbooks[symbol]
-        applied_count = 0
-
-        for evt in sorted_events:
-            seq = evt.get("sequence", 0)
+            msg_type = data.get("type", "")
+            ob_data = data.get("data", {})
             
-            # 시퀀스 번호 체계가 다른 경우를 위한 처리
-            if last_seq > 1000000000 and seq < 1000000000:  # 스냅샷과 델타의 시퀀스 체계가 다른 경우
-                logger.info(f"[BybitSpot] {symbol} sequence system changed: last_seq={last_seq} -> new_seq={seq}")
-                last_seq = seq - 1  # 새로운 시퀀스 체계로 전환
-                st["last_seq"] = last_seq
+            # 시퀀스 및 타임스탬프
+            sequence = ob_data.get("u")
+            timestamp = data.get("ts", int(time.time() * 1000))
             
-            if seq <= last_seq:
-                logger.debug(f"[BybitSpot] _apply_buffered_events: skip old seq={seq}, last_seq={last_seq}")
-                continue
-
-            # gap 확인
-            if seq > last_seq + 1:
-                gap_size = seq - (last_seq + 1)
-                logger.warning(
-                    f"[BybitSpot] {symbol} seq gap detected: last_seq={last_seq}, new_seq={seq}, gap={gap_size}"
-                )
-
-            # 델타 적용
-            res = await ob.update(evt)
-            if not res.is_valid:
-                logger.error(
-                    f"[BybitSpot] {symbol} delta apply fail seq={seq}, err={res.error_messages}"
-                )
-                continue
-
-            if not st["first_delta_applied"]:
-                ob.enable_cross_detection()
-                st["first_delta_applied"] = True
-                logger.info(f"[BybitSpot] {symbol} first delta applied -> enable cross detection")
-
-            last_seq = seq
-            applied_count += 1
-
-        # 버퍼 소진
-        if applied_count > 0:
-            logger.debug(
-                f"[BybitSpot] {symbol} applied_count={applied_count} new_last_seq={last_seq}"
+            # Raw 데이터 로깅 (raw_bybit 로거 사용)
+            raw_logger.info(
+                f"{symbol}|{msg_type}|{sequence}|{timestamp}|{json.dumps(ob_data)}"
             )
-
-        self.buffer_events[symbol] = []
-        st["last_seq"] = last_seq
-
-        # 최종 오더북을 큐에 넣기
-        if applied_count > 0:
-            final_ob = ob.to_dict()
-            if self._output_queue:
+            
+            # 업데이트 처리 여부 확인
+            if not ob.should_process_update(sequence, timestamp):
+                return ValidationResult(True)  # 무시해도 에러는 아님
+            
+            # bids 업데이트
+            bids = []
+            for price_str, qty_str in ob_data.get("b", []):
+                price = float(price_str)
+                qty = float(qty_str)
+                if qty > 0:  # qty가 0이면 무시 (삭제)
+                    bids.append([price, qty])
+            
+            # asks 업데이트
+            asks = []
+            for price_str, qty_str in ob_data.get("a", []):
+                price = float(price_str)
+                qty = float(qty_str)
+                if qty > 0:  # qty가 0이면 무시 (삭제)
+                    asks.append([price, qty])
+            
+            # 정렬
+            bids.sort(key=lambda x: x[0], reverse=True)  # 가격 내림차순
+            asks.sort(key=lambda x: x[0])  # 가격 오름차순
+            
+            # depth 제한
+            bids = bids[:self.depth]
+            asks = asks[:self.depth]
+            
+            # 오더북 업데이트
+            is_snapshot = (msg_type == "snapshot")
+            ob.update_orderbook(
+                bids=bids,
+                asks=asks,
+                timestamp=timestamp,
+                sequence=sequence,
+                is_snapshot=is_snapshot  # 스냅샷 여부 전달
+            )
+            
+            # 스냅샷 메시지인 경우 큐로 직접 전달
+            if is_snapshot and self.output_queue:
+                snapshot_data = {
+                    "exchangename": self.exchangename,
+                    "symbol": symbol,
+                    "type": "snapshot",
+                    "timestamp": timestamp,
+                    "sequence": sequence,
+                    "bids": bids,
+                    "asks": asks
+                }
+                await self.output_queue.put((self.exchangename, snapshot_data))
+                logger.info(f"[Bybit] {symbol} 스냅샷 메시지 큐로 전달")
+            
+            # 큐 로깅
+            if ob.bids and ob.asks:
+                best_bid = ob.bids[0][0]
+                best_ask = ob.asks[0][0]
+                spread = ((best_ask - best_bid) / best_bid) * 100
+                
+                queue_data = {
+                    "exchangename": self.exchangename,
+                    "symbol": symbol,
+                    "bids": ob.bids[:10],
+                    "asks": ob.asks[:10],
+                    "timestamp": timestamp,
+                    "sequence": sequence
+                }
+                
                 try:
-                    await self._output_queue.put(("bybit", final_ob))
-                    
-                    # 로깅 주기 체크
-                    current_time = time.time()
-                    last_log_time = self.last_queue_log_time.get(symbol, 0)
-                    if current_time - last_log_time >= self.queue_log_interval:
-                        logger.debug(f"[BybitSpot] {symbol} final OB queued")
-                        self.last_queue_log_time[symbol] = current_time
-                        
+                    queue_logger.info(
+                        f"bybit|{symbol}|"
+                        f"매수호가={best_bid}|"
+                        f"매도호가={best_ask}|"
+                        f"스프레드={spread:.4f}%|"
+                        f"매수건수={len(ob.bids)}|"
+                        f"매도건수={len(ob.asks)}|"
+                        f"시퀀스={sequence}|"
+                        f"원본데이터={json.dumps(queue_data)}"
+                    )
                 except Exception as e:
-                    logger.error(f"[BybitSpot] queue fail: {e}", exc_info=True)
+                    logger.error(f"[Bybit] {symbol} 큐 로깅 실패: {e}")
+            
+            # 메트릭 기록
+            self.record_metric(
+                event_type="orderbook",
+                symbol=symbol
+            )
+            
+            # 큐로 전송 (직접 전송 방식으로 변경)
+            if self.output_queue and not is_snapshot:  # 스냅샷은 이미 위에서 전송했으므로 중복 방지
+                orderbook_data = {
+                    "exchangename": self.exchangename,
+                    "symbol": symbol,
+                    "type": "delta",
+                    "timestamp": timestamp,
+                    "sequence": sequence,
+                    "bids": ob.bids[:10],
+                    "asks": ob.asks[:10]
+                }
+                await self.output_queue.put((self.exchangename, orderbook_data))
+            
+            return ValidationResult(True)
+            
+        except Exception as e:
+            logger.error(f"[Bybit] {symbol} 오더북 업데이트 실패: {str(e)}", exc_info=True)
+            return ValidationResult(False, [f"업데이트 실패: {str(e)}"])
 
     def clear_symbol(self, symbol: str):
         self.orderbooks.pop(symbol, None)
-        self.buffer_events.pop(symbol, None)
-        self.sequence_states.pop(symbol, None)
-        self.snapshot_retries.pop(symbol, None)
-        logger.info(f"[BybitSpot] {symbol} data cleared")
+        logger.info(f"[Bybit] {symbol} 데이터 제거됨")
 
     def clear_all(self):
-        syms = list(self.orderbooks.keys())
+        symbols = list(self.orderbooks.keys())
         self.orderbooks.clear()
-        self.buffer_events.clear()
-        self.sequence_states.clear()
-        self.snapshot_retries.clear()
-        logger.info(f"[BybitSpot] all data cleared. syms={syms}")
+        logger.info(f"[Bybit] 전체 데이터 제거됨 | symbols={symbols}") 

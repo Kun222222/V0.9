@@ -32,9 +32,7 @@ from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutur
 from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
-from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebSocket
-from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws_v2 import BybitSpotWebSocketV2
-from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws_v2 import BybitFutureWebSocketV2
+from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
@@ -45,10 +43,8 @@ from crosskimp.telegrambot.telegram_notification import send_telegram_message
 EXCHANGE_CLASS_MAP = {
     "binance": BinanceSpotWebsocket,
     "binancefuture": BinanceFutureWebsocket,
-    "bybit": BybitSpotWebSocket,
-    "bybit2": BybitSpotWebSocketV2,
+    "bybit": BybitSpotWebsocket,
     "bybitfuture": BybitFutureWebsocket,
-    "bybitfuture2": BybitFutureWebSocketV2,
     "upbit": UpbitWebsocket,
     "bithumb": BithumbSpotWebsocket
 }
@@ -203,7 +199,15 @@ class WebsocketManager:
         while not self.stop_event.is_set():
             try:
                 start_time = time.time()
-                exchange, data = await self.output_queue.get()
+                queue_item = await self.output_queue.get()
+                
+                # 큐 아이템 형식 검증
+                if not isinstance(queue_item, tuple) or len(queue_item) != 2:
+                    logger.error(f"{LOG_SYSTEM} 큐 데이터 형식 오류: {queue_item}")
+                    self.output_queue.task_done()
+                    continue
+                    
+                exchange, data = queue_item
                 
                 # 메시지 처리 시간 측정
                 processing_time = (time.time() - start_time) * 1000  # ms 단위
@@ -220,9 +224,21 @@ class WebsocketManager:
 
                 self.output_queue.task_done()
                 
+            except ValueError as e:
+                # "too many values to unpack" 오류 처리
+                logger.error(f"{LOG_SYSTEM} 큐 데이터 언패킹 오류: {e}")
+                try:
+                    # 큐에서 가져온 항목을 로깅하여 디버깅
+                    item = await self.output_queue.get()
+                    logger.error(f"{LOG_SYSTEM} 문제가 있는 큐 항목: {item}")
+                    self.output_queue.task_done()
+                except Exception:
+                    pass
+                
             except Exception as e:
                 self.record_error("unknown", str(e))
-                logger.error(f"{LOG_SYSTEM} 큐 처리 실패: {str(e)}", exc_info=True)
+                logger.error(f"{LOG_SYSTEM} 큐 처리 실패: {e}", exc_info=True)
+                await asyncio.sleep(0.1)  # 오류 발생 시 짧은 대기 후 재시도
 
     def _determine_message_type(self, data: dict) -> str:
         """메시지 타입 판별"""
@@ -448,26 +464,38 @@ class WebsocketManager:
                 await self.start_exchange_websocket(exchange, syms)
                 logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
             
-            # 바이빗 선물 v2도 실행
-            if "bybitfuture" in filtered_data:
-                logger.info(f"[바이빗 선물 v2] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 시작")
-                await self.start_exchange_websocket("bybitfuture2", filtered_data["bybitfuture"])
-                logger.info(f"[바이빗 선물 v2] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
-                
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 웹소켓 시작 실패: {e}", exc_info=True)
 
     async def shutdown(self):
         self.stop_event.set()
         
-        tasks = [ws.shutdown() for ws in self.websockets.values()]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # 모든 웹소켓 종료
+        shutdown_tasks = []
+        for exchange, ws in self.websockets.items():
+            try:
+                if hasattr(ws, 'shutdown'):
+                    shutdown_tasks.append(ws.shutdown())
+                else:
+                    # shutdown 메서드가 없는 경우 stop 메서드 시도
+                    if hasattr(ws, 'stop'):
+                        shutdown_tasks.append(ws.stop())
+                    else:
+                        logger.warning(f"{LOG_SYSTEM} {exchange} 웹소켓에 shutdown/stop 메서드가 없습니다")
+            except Exception as e:
+                logger.error(f"{LOG_SYSTEM} {exchange} 웹소켓 종료 실패: {e}", exc_info=True)
+        
+        if shutdown_tasks:
+            await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+        
+        # 모든 태스크 취소
         for t in self.tasks.values():
             t.cancel()
             try:
                 await t
             except asyncio.CancelledError:
                 pass
+        
         self.websockets.clear()
         self.tasks.clear()
         logger.info(f"{LOG_SYSTEM} 모든 웹소켓 종료 완료")

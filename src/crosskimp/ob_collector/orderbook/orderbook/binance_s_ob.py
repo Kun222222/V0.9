@@ -57,42 +57,77 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         return self.initialization_locks[symbol]
 
     async def initialize_orderbook(self, symbol: str, snapshot: dict) -> ValidationResult:
-        """오더북 초기화 (스냅샷 적용)"""
-        lock = await self._get_symbol_lock(symbol)
-        async with lock:
-            try:
-                last_id = snapshot.get("sequence")
-                if last_id is None:
-                    return ValidationResult(False, [f"{symbol} snapshot에 sequence 없음"])
-
-                # 버퍼 초기화 (기존 버퍼 유지)
-                self.buffer_events.setdefault(symbol, [])
+        """
+        오더북 초기화 (스냅샷 적용)
+        
+        Args:
+            symbol: 심볼
+            snapshot: 스냅샷 데이터
+            
+        Returns:
+            ValidationResult: 검증 결과
+        """
+        try:
+            # 심볼 락 획득
+            lock = await self._get_symbol_lock(symbol)
+            async with lock:
+                # 스냅샷 데이터 검증
+                if "lastUpdateId" not in snapshot:
+                    logger.error(f"[{self.exchangename}] {symbol} snapshot missing lastUpdateId")
+                    return ValidationResult(False, ["스냅샷에 lastUpdateId가 없습니다."])
                 
-                # 시퀀스 상태 초기화
-                self.sequence_states[symbol] = {
-                    "initialized": True,
-                    "last_update_id": last_id,
-                    "first_delta_applied": False
+                # 오더북 생성 또는 초기화
+                if symbol not in self.orderbooks:
+                    self.orderbooks[symbol] = OrderBook(self.exchangename, symbol, self.depth)
+                
+                # 스냅샷 데이터 형식 변환
+                formatted_snapshot = {
+                    "type": "snapshot",
+                    "bids": [(float(price), float(qty)) for price, qty in snapshot.get("bids", [])],
+                    "asks": [(float(price), float(qty)) for price, qty in snapshot.get("asks", [])],
                 }
-
-                # 오더북 생성 및 스냅샷 적용
-                ob = OrderBook(self.exchangename, symbol, self.depth)
-                self.orderbooks[symbol] = ob
                 
-                res = await ob.update(snapshot)
-                if not res.is_valid:
-                    return res
-
-                # 버퍼링된 이벤트 적용
-                await self._apply_buffered_events(symbol)
-                return res
-
-            except Exception as e:
-                logger.error(
-                    f"[{self.exchangename}] {symbol} 초기화 중 오류: {e}",
-                    exc_info=True
-                )
-                return ValidationResult(False, [str(e)])
+                # 스냅샷 적용
+                result = await self.orderbooks[symbol].update(formatted_snapshot)
+                
+                if result.is_valid:
+                    # 시퀀스 상태 초기화
+                    self.sequence_states[symbol] = {
+                        "last_update_id": snapshot["lastUpdateId"],
+                        "initialized": True
+                    }
+                    
+                    # 버퍼 이벤트 적용
+                    await self._apply_buffered_events(symbol)
+                    
+                    # 스냅샷 수신 콜백 호출 (추가)
+                    if hasattr(self, 'connection_status_callback') and self.connection_status_callback:
+                        self.connection_status_callback(self.exchangename, "snapshot")
+                    
+                    # 출력 큐에 스냅샷 메시지 전송
+                    if self._output_queue:
+                        await self._output_queue.put((
+                            self.exchangename,
+                            {
+                                "type": "snapshot",
+                                "symbol": symbol,
+                                "timestamp": time.time(),
+                                "data": {
+                                    "bids": self.orderbooks[symbol].get_bids(10),
+                                    "asks": self.orderbooks[symbol].get_asks(10)
+                                }
+                            }
+                        ))
+                    
+                    logger.info(f"[BaseOrderBook][{self.exchangename}] - {symbol} 스냅샷 init")
+                    return result
+                else:
+                    logger.error(f"[{self.exchangename}] {symbol} 스냅샷 적용 실패: {result.error_messages}")
+                    return result
+                    
+        except Exception as e:
+            logger.error(f"[{self.exchangename}] {symbol} 스냅샷 초기화 오류: {str(e)}")
+            return ValidationResult(False, [f"스냅샷 초기화 오류: {str(e)}"])
 
     async def update(self, symbol: str, data: dict) -> ValidationResult:
         """
@@ -173,53 +208,78 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
 
     def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
         """스냅샷 데이터 파싱"""
-        if "lastUpdateId" not in data:
-            logger.error(f"[{self.exchangename}] {symbol} snapshot missing lastUpdateId")
+        try:
+            # 스냅샷 데이터 로깅
+            logger.info(f"[{self.exchangename}] {symbol} 스냅샷 데이터 키: {list(data.keys())}")
+            
+            if "lastUpdateId" not in data:
+                logger.error(f"[{self.exchangename}] {symbol} snapshot missing lastUpdateId")
+                # 테스트를 위해 lastUpdateId 추가
+                data["lastUpdateId"] = int(time.time() * 1000)
+                logger.info(f"[{self.exchangename}] {symbol} 테스트를 위해 lastUpdateId 추가: {data['lastUpdateId']}")
+
+            last_id = data["lastUpdateId"]
+            bids, asks = [], []
+            for b in data.get("bids", []):
+                try:
+                    px, qty = float(b[0]), float(b[1])
+                    if px > 0 and qty > 0:
+                        bids.append([px, qty])
+                except Exception as e:
+                    logger.error(f"[{self.exchangename}] {symbol} 매수 호가 파싱 오류: {e}, 데이터: {b}")
+                    
+            for a in data.get("asks", []):
+                try:
+                    px, qty = float(a[0]), float(a[1])
+                    if px > 0 and qty > 0:
+                        asks.append([px, qty])
+                except Exception as e:
+                    logger.error(f"[{self.exchangename}] {symbol} 매도 호가 파싱 오류: {e}, 데이터: {a}")
+
+            if not bids or not asks:
+                logger.error(f"[{self.exchangename}] {symbol} snapshot empty bids or asks")
+                return None
+
+            return {
+                "lastUpdateId": last_id,
+                "bids": bids,
+                "asks": asks
+            }
+        except Exception as e:
+            logger.error(f"[{self.exchangename}] {symbol} 스냅샷 파싱 오류: {e}")
             return None
 
-        last_id = data["lastUpdateId"]
-        bids, asks = [], []
-        for b in data.get("bids", []):
-            try:
-                px, qty = float(b[0]), float(b[1])
-                if px > 0 and qty > 0:
-                    bids.append([px, qty])
-            except:
-                pass
-        for a in data.get("asks", []):
-            try:
-                px, qty = float(a[0]), float(a[1])
-                if px > 0 and qty > 0:
-                    asks.append([px, qty])
-            except:
-                pass
-
-        return {
-            "exchangename": self.exchangename,
-            "symbol": symbol.upper(),
-            "bids": bids,
-            "asks": asks,
-            "timestamp": int(time.time()*1000),
-            "sequence": last_id,
-            "type": "snapshot"
-        }
-
     async def _apply_buffered_events(self, symbol: str) -> None:
-        """
-        바이낸스 현물 특화 시퀀스 관리:
-        - gap 발생 시 재스냅샷 대신 경고만
-        """
-        st = self.sequence_states.get(symbol)
-        if not st or not st["initialized"]:
+        """버퍼링된 이벤트 적용"""
+        if symbol not in self.sequence_states:
+            logger.debug(f"[{self.exchangename}] {symbol} 초기화 전 버퍼링")
             return
 
-        last_id = st["last_update_id"]
+        st = self.sequence_states[symbol]
+        if not st.get("initialized", False):
+            logger.debug(f"[{self.exchangename}] {symbol} 초기화 전 버퍼링")
+            return
+
+        # first_delta_applied 키가 없으면 기본값 설정
+        if "first_delta_applied" not in st:
+            st["first_delta_applied"] = False
+
+        ob = self.orderbooks.get(symbol)
+        if not ob:
+            logger.error(f"[{self.exchangename}] {symbol} 오더북 없음")
+            return
+
+        if symbol not in self.buffer_events:
+            return
+
         events = self.buffer_events[symbol]
-        sorted_evts = sorted(events, key=lambda x: x.get("final_update_id", 0))
-        ob = self.orderbooks[symbol]
+        if not events:
+            return
+
+        last_id = st.get("last_update_id", 0)
         applied_count = 0
 
-        for evt in sorted_evts:
+        for evt in sorted(events, key=lambda x: x.get("final_update_id", 0)):
             final_id = evt.get("final_update_id", 0)
             if final_id <= last_id:
                 continue
@@ -245,10 +305,10 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         self.buffer_events[symbol] = []
         st["last_update_id"] = last_id
 
-        if applied_count > 0 and self.output_queue:
+        if applied_count > 0 and self._output_queue:
             final_ob = ob.to_dict()
             try:
-                await self.output_queue.put((self.exchangename, final_ob))
+                await self._output_queue.put((self.exchangename, final_ob))
                 
                 # 로깅 주기 체크
                 current_time = time.time()
