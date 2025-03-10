@@ -64,26 +64,56 @@ async def initialize_system() -> Tuple[Dict, Aggregator, WebsocketManager, WsUsd
         await initialize_config()
         settings = get_settings()
         if not settings:
-            raise ValueError("설정을 불러올 수 없습니다.")
+            logger.error(f"{LOG_SYSTEM} 설정 로드 실패")
+            return
 
-        # 텔레그램 시작 메시지 전송
-        await send_telegram_message(settings, MessageType.STARTUP, TELEGRAM_START_MESSAGE)
+        # 텔레그램 시작 메시지 전송 (비동기 태스크로 실행)
+        logger.info(f"{LOG_SYSTEM} 텔레그램 시작 메시지 전송 시작")
+        # 비동기 태스크로 실행하여 초기화 과정을 블로킹하지 않도록 함
+        asyncio.create_task(send_telegram_message(settings, MessageType.STARTUP, TELEGRAM_START_MESSAGE))
+        logger.info(f"{LOG_SYSTEM} 텔레그램 시작 메시지 전송 태스크 생성 완료")
 
-        # Aggregator 및 WebsocketManager 초기화
-        aggregator = Aggregator(settings)
+        # 웹소켓 매니저 초기화
+        logger.info(f"{LOG_SYSTEM} 웹소켓 매니저 초기화 시작")
+        start_time = time.time()
         ws_manager = WebsocketManager(settings)
         ws_manager.register_callback(websocket_callback)
+        elapsed = time.time() - start_time
+        logger.info(f"{LOG_SYSTEM} 웹소켓 매니저 초기화 완료 (소요 시간: {elapsed:.3f}초)")
         
-        # USDT/KRW 모니터 초기화 (독립적으로 실행)
+        # Aggregator 초기화
+        logger.info(f"{LOG_SYSTEM} Aggregator 초기화 시작")
+        start_time = time.time()
+        aggregator = Aggregator(settings)
+        elapsed = time.time() - start_time
+        logger.info(f"{LOG_SYSTEM} Aggregator 초기화 완료 (소요 시간: {elapsed:.3f}초)")
+        
+        # USDT/KRW 모니터 초기화 - 비동기 태스크로 실행
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터 초기화 시작")
         usdt_monitor = WsUsdtKrwMonitor()
-        usdt_monitor.add_price_callback(ws_manager.update_usdt_rate)  # 가격 변경 콜백 등록
+        usdt_monitor.add_price_callback(ws_manager.update_usdt_rate)
+        ws_manager.usdt_monitor = usdt_monitor
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터 초기화 완료")
         
         # 설정 변경 옵저버 등록
         add_config_observer(on_settings_changed)
         
-        # 초기 심볼 필터링 및 웹소켓 연결
+        # 심볼 필터링
+        logger.info(f"{LOG_SYSTEM} 심볼 필터링 시작")
+        start_time = time.time()
         filtered_data = await aggregator.run_filtering()
+        elapsed = time.time() - start_time
+        logger.info(f"{LOG_SYSTEM} 심볼 필터링 완료 (소요 시간: {elapsed:.3f}초)")
+        
+        # 웹소켓 시작
+        logger.info(f"{LOG_SYSTEM} 웹소켓 연결 시작")
         await ws_manager.start_all_websockets(filtered_data)
+        
+        # USDT/KRW 모니터링 시작 (비동기 태스크로 실행)
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터링 시작")
+        usdt_monitor_task = asyncio.create_task(usdt_monitor.start())
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터링 태스크 시작됨")
+        
         logger.info(f"{LOG_SYSTEM} 초기 웹소켓 연결 완료")
         
         return settings, aggregator, ws_manager, usdt_monitor
@@ -137,30 +167,52 @@ async def async_main():
             logger.error(f"{LOG_SYSTEM} 설정 로드 실패")
             return
 
-        # 텔레그램 시작 메시지 전송
-        await send_telegram_message(settings, MessageType.STARTUP, TELEGRAM_START_MESSAGE)
+        # 텔레그램 시작 메시지 전송 (비동기 태스크로 실행)
+        logger.info(f"{LOG_SYSTEM} 텔레그램 시작 메시지 전송 시작")
+        # 비동기 태스크로 실행하여 초기화 과정을 블로킹하지 않도록 함
+        asyncio.create_task(send_telegram_message(settings, MessageType.STARTUP, TELEGRAM_START_MESSAGE))
+        logger.info(f"{LOG_SYSTEM} 텔레그램 시작 메시지 전송 태스크 생성 완료")
 
         # 웹소켓 매니저 초기화
+        logger.info(f"{LOG_SYSTEM} 웹소켓 매니저 초기화 시작")
+        start_time = time.time()
         ws_manager = WebsocketManager(settings)
         ws_manager.register_callback(websocket_callback)
+        elapsed = time.time() - start_time
+        logger.info(f"{LOG_SYSTEM} 웹소켓 매니저 초기화 완료 (소요 시간: {elapsed:.3f}초)")
         
-        # USDT/KRW 모니터 초기화
+        # Aggregator 초기화
+        logger.info(f"{LOG_SYSTEM} Aggregator 초기화 시작")
+        start_time = time.time()
+        aggregator = Aggregator(settings)
+        elapsed = time.time() - start_time
+        logger.info(f"{LOG_SYSTEM} Aggregator 초기화 완료 (소요 시간: {elapsed:.3f}초)")
+        
+        # USDT/KRW 모니터 초기화 - 비동기 태스크로 실행
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터 초기화 시작")
         usdt_monitor = WsUsdtKrwMonitor()
         usdt_monitor.add_price_callback(ws_manager.update_usdt_rate)
         ws_manager.usdt_monitor = usdt_monitor
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터 초기화 완료")
         
         # 설정 변경 옵저버 등록
         add_config_observer(on_settings_changed)
         
         # 심볼 필터링
-        aggregator = Aggregator(settings)
+        logger.info(f"{LOG_SYSTEM} 심볼 필터링 시작")
+        start_time = time.time()
         filtered_data = await aggregator.run_filtering()
+        elapsed = time.time() - start_time
+        logger.info(f"{LOG_SYSTEM} 심볼 필터링 완료 (소요 시간: {elapsed:.3f}초)")
         
         # 웹소켓 시작
+        logger.info(f"{LOG_SYSTEM} 웹소켓 연결 시작")
         await ws_manager.start_all_websockets(filtered_data)
         
-        # USDT/KRW 모니터링 시작
-        await usdt_monitor.start()
+        # USDT/KRW 모니터링 시작 (비동기 태스크로 실행)
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터링 시작")
+        usdt_monitor_task = asyncio.create_task(usdt_monitor.start())
+        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터링 태스크 시작됨")
         
         logger.info(f"{LOG_SYSTEM} 초기 웹소켓 연결 완료")
         

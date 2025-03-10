@@ -7,7 +7,7 @@ from websockets import connect
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.upbit_s_ob import UpbitOrderBookManager
 
@@ -19,7 +19,6 @@ PONG_RESPONSE = '{"status":"UP"}'  # 업비트 PONG 응답 형식
 
 # 로거 설정
 logger = get_unified_logger()
-raw_logger = get_raw_logger("upbit")
 
 @dataclass
 class UpbitOrderbookUnit:

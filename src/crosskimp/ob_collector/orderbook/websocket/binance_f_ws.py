@@ -1,5 +1,6 @@
 # file: orderbook/websocket/binance_future_websocket.py
 
+
 import asyncio
 import json
 import time
@@ -11,6 +12,29 @@ from typing import Dict, List, Optional
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutureOrderBookManager, parse_binance_future_depth_update
+from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+
+
+# 바이낸스 선물 웹소켓 상수 정의
+# 웹소켓 URL
+BINANCE_F_WS_BASE = "wss://fstream.binance.com/stream?streams="
+
+# REST API URL (스냅샷 요청용)
+BINANCE_F_REST_BASE = "https://fapi.binance.com/fapi/v1/depth"
+
+# 웹소켓 설정
+WEBSOCKET_UPDATE_SPEED = "100ms"  # 웹소켓 업데이트 속도 (100ms, 250ms, 500ms 중 선택)
+WEBSOCKET_PING_INTERVAL = 150  # 핑 간격 (초)
+WEBSOCKET_PING_TIMEOUT = 10  # 핑 타임아웃 (초)
+
+# 스냅샷 요청 설정
+SNAPSHOT_MAX_RETRIES = 3  # 스냅샷 요청 최대 재시도 횟수
+SNAPSHOT_RETRY_DELAY = 1  # 스냅샷 요청 재시도 초기 딜레이 (초)
+SNAPSHOT_REQUEST_TIMEOUT = 10  # 스냅샷 요청 타임아웃 (초)
+
+# DNS 캐시 설정
+DNS_CACHE_TTL = 300  # DNS 캐시 TTL (초)
+
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -18,21 +42,17 @@ logger = get_unified_logger()
 class BinanceFutureWebsocket(BaseWebsocketConnector):
     """
     바이낸스 선물 웹소켓
-    - 바이낸스 현물과 유사한 흐름 + testnet 지원
+    - 바이낸스 현물과 유사한 흐름
     - orderbook_manager를 통해 오더북 업데이트 & output_queue 전달
     """
 
-    def __init__(self, settings: dict, testnet: bool = False):
-        super().__init__(settings, "binancefuture")
-        self.testnet = testnet
-        if self.testnet:
-            self.ws_base = "wss://stream.binancefuture.com/stream?streams="
-            self.snapshot_base = "https://testnet.binancefuture.com/fapi/v1/depth"
-        else:
-            self.ws_base = "wss://fstream.binance.com/stream?streams="
-            self.snapshot_base = "https://fapi.binance.com/fapi/v1/depth"
+    def __init__(self, settings: dict):
+        super().__init__(settings, Exchange.BINANCE_FUTURE.value)
+        self.exchange_name_kr = EXCHANGE_NAMES_KR[Exchange.BINANCE_FUTURE.value]
+        self.ws_base = BINANCE_F_WS_BASE
+        self.snapshot_base = BINANCE_F_REST_BASE
 
-        self.update_speed = "100ms"
+        self.update_speed = WEBSOCKET_UPDATE_SPEED
         self.snapshot_depth = settings.get("depth", 100)
         self.orderbook_manager = BinanceFutureOrderBookManager(self.snapshot_depth)
 
@@ -43,8 +63,8 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         self.wsurl = ""
         self.is_connected = False
         # Ping/Pong 설정 추가
-        self.ping_interval = 150
-        self.ping_timeout = 10
+        self.ping_interval = WEBSOCKET_PING_INTERVAL
+        self.ping_timeout = WEBSOCKET_PING_TIMEOUT
         
         # raw 로거 초기화 제거
         # self.raw_logger = get_raw_logger("binance_future")  # 중앙화된 로깅 사용을 위해 제거
@@ -79,8 +99,9 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             self.stats.connection_start_time = time.time()
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect")
+            self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 성공")
         except Exception as e:
-            self.log_error(f"connect() 예외: {e}", exc_info=True)
+            self.log_error(f"{self.exchange_name_kr} connect() 예외: {e}", exc_info=True)
             raise
 
     async def subscribe(self, symbols: List[str]):
@@ -110,16 +131,16 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             if snapshot:
                 res = await self.orderbook_manager.initialize_orderbook(sym, snapshot)
                 if not res.is_valid:
-                    self.log_error(f"{sym} 스냅샷 적용 실패: {res.error_messages}")
+                    self.log_error(f"{self.exchange_name_kr} {sym} 스냅샷 적용 실패: {res.error_messages}")
             else:
-                self.log_error(f"{sym} 스냅샷 요청 실패")
+                self.log_error(f"{self.exchange_name_kr} {sym} 스냅샷 요청 실패")
 
     async def request_snapshot(self, symbol: str) -> Optional[dict]:
         """
         바이낸스 현물과 유사한 스냅샷 요청
         """
-        max_retries = 3
-        retry_delay = 1
+        max_retries = SNAPSHOT_MAX_RETRIES
+        retry_delay = SNAPSHOT_RETRY_DELAY
         
         # 심볼 형식 처리
         symbol_upper = symbol.upper()
@@ -129,33 +150,33 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         for attempt in range(max_retries):
             try:
                 url = f"{self.snapshot_base}?symbol={symbol_upper}&limit={self.snapshot_depth}"
-                self.logger.info(f"스냅샷 요청 URL: {url}")
+                self.logger.info(f"{self.exchange_name_kr} 스냅샷 요청 URL: {url}")
                 
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "snapshot_request")
                 
                 # TCP 커넥터에 DNS 캐시 설정 추가
                 connector = aiohttp.TCPConnector(
-                    ttl_dns_cache=300,  # DNS 캐시 5분
+                    ttl_dns_cache=DNS_CACHE_TTL,  # DNS 캐시 TTL
                     ssl=False  # SSL 검증 비활성화 (필요한 경우)
                 )
                 
                 async with aiohttp.ClientSession(connector=connector) as sess:
-                    async with sess.get(url, timeout=10) as resp:
+                    async with sess.get(url, timeout=SNAPSHOT_REQUEST_TIMEOUT) as resp:
                         if resp.status == 200:
                             raw_data = await resp.json()
                             return self.parse_snapshot(raw_data, symbol)
                         else:
-                            self.log_error(f"{symbol} 스냅샷 status={resp.status}")
+                            self.log_error(f"{self.exchange_name_kr} {symbol} 스냅샷 status={resp.status}")
                             
             except Exception as e:
-                self.log_error(f"스냅샷 요청 실패: {e}", exc_info=True)
+                self.log_error(f"{self.exchange_name_kr} 스냅샷 요청 실패: {e}", exc_info=True)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
                     continue
                 
-        self.log_error(f"{symbol} ME 스냅샷 요청 최대 재시도 횟수 초과")
+        self.log_error(f"{self.exchange_name_kr} {symbol} ME 스냅샷 요청 최대 재시도 횟수 초과")
         return None
 
     def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
@@ -164,7 +185,7 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         """
         try:
             if "lastUpdateId" not in data:
-                self.log_error(f"{symbol} 'lastUpdateId' 없음")
+                self.log_error(f"{self.exchange_name_kr} {symbol} 'lastUpdateId' 없음")
                 return None
 
             last_id = data["lastUpdateId"]
@@ -184,7 +205,7 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                 self.connection_status_callback(self.exchangename, "snapshot_parsed")
             return snapshot
         except Exception as e:
-            self.log_error(f"parse_snapshot() 예외: {e}", exc_info=True)
+            self.log_error(f"{self.exchange_name_kr} parse_snapshot() 예외: {e}", exc_info=True)
             return None
 
     async def parse_message(self, message: str) -> Optional[dict]:
@@ -203,14 +224,14 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             if data.get("e") == "depthUpdate":
                 symbol = data["s"].replace("USDT","").upper()
                 # Raw 메시지 그대로 로깅 (raw 로그 파일에만 기록)
-                self.log_raw_message("depthUpdate", message, symbol)
+                self.log_raw_message(f"{self.exchange_name_kr} depthUpdate", message, symbol)
                 return data
 
             return None
         except json.JSONDecodeError as je:
-            self.log_error(f"JSON 파싱실패: {je}, message={message[:200]}", exc_info=False)
+            self.log_error(f"{self.exchange_name_kr} JSON 파싱실패: {je}, message={message[:200]}", exc_info=False)
         except Exception as e:
-            self.log_error(f"parse_message() 예외: {e}", exc_info=True)
+            self.log_error(f"{self.exchange_name_kr} parse_message() 예외: {e}", exc_info=True)
         return None
 
     async def handle_parsed_message(self, parsed: dict) -> None:
@@ -222,14 +243,14 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             
             res = await self.orderbook_manager.update(symbol, evt)
             if not res.is_valid:
-                self.log_error(f"{symbol} 오더북 업데이트 실패: {res.error_messages}")
+                self.log_error(f"{self.exchange_name_kr} {symbol} 오더북 업데이트 실패: {res.error_messages}")
         except Exception as e:
-            self.log_error(f"handle_parsed_message() 예외: {e}", exc_info=True)
+            self.log_error(f"{self.exchange_name_kr} handle_parsed_message() 예외: {e}", exc_info=True)
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         exchange_symbols = symbols_by_exchange.get(self.exchangename.lower(), [])
         if not exchange_symbols:
-            self.log_error("구독할 심볼 없음.")
+            self.log_error(f"{self.exchange_name_kr} 구독할 심볼 없음.")
             return
 
         # 부모 클래스의 start 메소드를 호출하지 않고 직접 필요한 로직 구현
@@ -264,13 +285,13 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                         # 헬스체크 timeout
                         continue
                     except Exception as e:
-                        self.log_error(f"메시지 수신 실패 | error={str(e)}")
+                        self.log_error(f"{self.exchange_name_kr} 메시지 수신 실패 | error={str(e)}")
                         break
 
             except Exception as conn_e:
                 # 연결 실패 시 백오프
                 delay = self.reconnect_strategy.next_delay()
-                self.log_error(f"연결 실패: {conn_e}, 재연결 {delay}s 후 재시도", exc_info=False)
+                self.log_error(f"{self.exchange_name_kr} 연결 실패: {conn_e}, 재연결 {delay}s 후 재시도", exc_info=False)
                 await asyncio.sleep(delay)
             finally:
                 if self.ws:
@@ -286,6 +307,6 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         """
         웹소켓 연결 종료
         """
-        self.logger.info("바이낸스 선물 웹소켓 연결 종료 중...")
+        self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료 중...")
         await super().stop()
-        self.logger.info("바이낸스 선물 웹소켓 연결 종료 완료")
+        self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료 완료")

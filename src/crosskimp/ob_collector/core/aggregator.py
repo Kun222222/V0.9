@@ -10,8 +10,6 @@
 3. 거래소 간 공통 심볼 페어링
 4. 필터링 결과 저장
 
-작성자: CrossKimp Arbitrage Bot 개발팀
-최종수정: 2024.02
 """
 
 import asyncio

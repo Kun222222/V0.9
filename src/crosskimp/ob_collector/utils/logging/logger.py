@@ -45,7 +45,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(
 BASE_LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 LOG_DIRS = {
     'base': BASE_LOG_DIR,                  # 일반 로그가 저장됨
-    'raw': os.path.join(BASE_LOG_DIR, 'raw'),  # raw 데이터 로그가 저장됨
+    # 'raw': os.path.join(BASE_LOG_DIR, 'raw'),  # raw 데이터 로그가 저장됨 - 더 이상 사용하지 않음 (raw_data/{exchange_name}으로 대체)
     'queue': os.path.join(BASE_LOG_DIR, 'queue'),  # 큐 데이터 로그가 저장됨
     'error': os.path.join(BASE_LOG_DIR, 'error'),  # 에러 로그가 저장됨
     'telegram': os.path.join(BASE_LOG_DIR, 'telegram'),  # 텔레그램 로그가 저장됨
@@ -321,8 +321,8 @@ def create_logger(
     )
     file_handler.setLevel(level)
     
-    # 포맷터 설정 - 수정된 포맷 사용
-    formatter = logging.Formatter(format_str, datefmt='%Y-%m-%d %H:%M:%S')
+    # 포맷터 설정 - 수정된 포맷 사용 (밀리초 표시를 위해 datefmt 제거)
+    formatter = logging.Formatter(format_str)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     
@@ -361,11 +361,14 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
         logging.Logger: 생성된 로거 인스턴스
     """
     logger_name = f"{exchange_name}_raw_logger"
-    log_dir = LOG_DIRS['raw']
+    
+    # 'raw' 디렉토리 대신 'raw_data/{exchange_name}' 디렉토리에 로그 생성
+    raw_data_dir = os.path.join(BASE_LOG_DIR, 'raw_data', exchange_name)
+    os.makedirs(raw_data_dir, exist_ok=True)
     
     logger = create_logger(
         name=logger_name,
-        log_dir=log_dir,
+        log_dir=raw_data_dir,
         level=logging.DEBUG,
         console_level=logging.ERROR,
         format_str=DEBUG_LOG_FORMAT,
@@ -373,7 +376,7 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
         add_error_file=False
     )
     
-    logger.debug(f"{LOG_SYSTEM} {exchange_name} raw 로거 초기화 완료")
+    logger.debug(f"{LOG_SYSTEM} {exchange_name} raw 로거 초기화 완료 (raw_data 디렉토리)")
     return logger
 
 # ============================
@@ -449,13 +452,22 @@ def get_queue_logger() -> logging.Logger:
 
 def get_raw_logger(exchange_name: str) -> logging.Logger:
     """
-    거래소별 raw 데이터 로거 생성
+    거래소별 raw 데이터 로거 생성 (더 이상 사용하지 않음)
     - 거래소별로 별도의 로그 파일 생성
+    
+    이 함수는 더 이상 사용하지 않습니다.
+    대신 BaseWebsocketConnector 클래스의 로깅 기능을 사용하세요.
     """
     logger_name = f"{exchange_name}_raw_logger"
     
     with _lock:
         try:
+            # 경고 메시지 출력
+            unified_logger = get_unified_logger()
+            unified_logger.warning(f"{LOG_SYSTEM} get_raw_logger 함수는 더 이상 사용하지 않습니다. "
+                                  f"대신 BaseWebsocketConnector 클래스의 로깅 기능을 사용하세요.")
+            
+            # 기존 로직 유지 (하위 호환성)
             if logger_name not in _loggers or not _loggers[logger_name].handlers:
                 ensure_log_directories()
                 _loggers[logger_name] = create_raw_logger(exchange_name)

@@ -31,12 +31,10 @@ LOG_SYSTEM = "[시스템]"
 # ============================
 CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = "settings.json"
-API_KEYS_FILE = "api_keys.json"
 BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
 
 # 설정 파일 전체 경로
 SETTINGS_PATH = os.path.join(CONFIG_DIR, SETTINGS_FILE)
-API_KEYS_PATH = os.path.join(CONFIG_DIR, API_KEYS_FILE)
 
 # 프로젝트 루트 디렉토리 찾기
 # 기존 방식: PROJECT_ROOT = os.path.abspath(os.path.join(CONFIG_DIR, "../../../.."))
@@ -112,8 +110,6 @@ EXCHANGE_NAMES_KR = {
     Exchange.BITHUMB.value: "빗썸",
     Exchange.BINANCE_FUTURE.value: "바이낸스 선물",
     Exchange.BYBIT_FUTURE.value: "바이빗 선물",
-    Exchange.BYBIT_V2.value: "바이빗 v2",
-    Exchange.BYBIT_FUTURE_V2.value: "바이빗 선물 v2"
 }
 
 # 거래소 그룹화
@@ -287,8 +283,9 @@ WEBSOCKET_COMMON_CONFIG = {
 # 로그 포맷
 # 기존 포맷: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 # 수정된 포맷: 파일명과 위치 표시, 간격 20으로 설정, 로그 레벨 오른쪽 정렬
-LOG_FORMAT = "%(asctime)s - %(filename)-20s:%(lineno)-3d / %(levelname)-7s - %(message)s"
-DEBUG_LOG_FORMAT = "%(asctime)s - %(filename)-20s:%(lineno)-3d / %(levelname)-7s - %(message)s"
+# 밀리초 단위 추가: %(asctime)s.%(msecs)03d
+LOG_FORMAT = "%(asctime)s.%(msecs)03d - %(filename)-20s:%(lineno)-3d / %(levelname)-7s - %(message)s"
+DEBUG_LOG_FORMAT = "%(asctime)s.%(msecs)03d - %(filename)-20s:%(lineno)-3d / %(levelname)-7s - %(message)s"
 LOG_ENCODING = "utf-8"
 LOG_MODE = "a"
 
@@ -322,8 +319,8 @@ __all__ = [
     'LOG_SYSTEM',
     
     # 설정 파일 관련
-    'CONFIG_DIR', 'SETTINGS_FILE', 'API_KEYS_FILE',
-    'BACKUP_DIR', 'SETTINGS_PATH', 'API_KEYS_PATH',
+    'CONFIG_DIR', 'SETTINGS_FILE',
+    'BACKUP_DIR', 'SETTINGS_PATH',
     'LOAD_TIMEOUT', 'SAVE_TIMEOUT', 'RETRY_DELAY', 'MAX_RETRIES',
     'PROJECT_ROOT', 'ENV_FILE_PATHS', 'API_ENV_VARS',
     

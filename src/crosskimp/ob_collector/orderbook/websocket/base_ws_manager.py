@@ -81,19 +81,27 @@ class WebsocketManager:
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
         self.metrics_dir = os.path.join(self.base_dir, "logs", "metrics")
         
-        # 메트릭 디렉토리 생성
-        try:
-            os.makedirs(self.metrics_dir, exist_ok=True)
-            logger.info(f"메트릭 디렉토리 생성/확인 완료: {self.metrics_dir}")
-        except Exception as e:
-            logger.error(f"메트릭 디렉토리 생성 실패: {str(e)}", exc_info=True)
-
         # 시장가격 모니터 초기화
         self.current_usdt_rate = 0.0  # USDT 환율 캐시
 
         # 거래소 초기화
         for exchange in EXCHANGE_CLASS_MAP.keys():
             self.metrics_manager.initialize_exchange(exchange)
+
+    async def initialize_metrics_dir(self):
+        """메트릭 디렉토리 초기화 (비동기)"""
+        try:
+            # 디렉토리가 이미 존재하는지 확인 (비동기)
+            exists = await asyncio.to_thread(os.path.exists, self.metrics_dir)
+            if exists:
+                logger.debug(f"메트릭 디렉토리 이미 존재: {self.metrics_dir}")
+                return
+                
+            # 디렉토리 생성 (비동기)
+            await asyncio.to_thread(os.makedirs, self.metrics_dir, exist_ok=True)
+            logger.info(f"메트릭 디렉토리 생성 완료: {self.metrics_dir}")
+        except Exception as e:
+            logger.error(f"메트릭 디렉토리 생성 실패: {str(e)}", exc_info=True)
 
     def update_connection_status(self, exchange: str, status: str):
         """연결 상태 업데이트"""
@@ -451,6 +459,8 @@ class WebsocketManager:
 
     async def start_all_websockets(self, filtered_data: Dict[str, List[str]]):
         try:
+            # 메트릭 디렉토리 초기화
+            await self.initialize_metrics_dir()
             
             self.tasks['queue'] = asyncio.create_task(self.process_queue())
             logger.info(f"{LOG_SYSTEM} 큐 처리 태스크 생성 완료")
@@ -460,7 +470,6 @@ class WebsocketManager:
             logger.info(f"{LOG_SYSTEM} 메트릭 모니터링 태스크 생성 완료")
             
             for exchange, syms in filtered_data.items():
-                # logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] 웹소켓 초기화 준비")
                 await self.start_exchange_websocket(exchange, syms)
                 logger.info(f"[{EXCHANGE_NAMES_KR.get(exchange, exchange)}] {STATUS_EMOJIS['CONNECTING']} 웹소켓 초기화 완료")
             

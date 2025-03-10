@@ -18,7 +18,11 @@ import asyncio
 import logging
 import sys
 import time
-from typing import Dict, List
+import random
+from typing import Dict, List, Optional
+
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
 
 # 로깅 설정
 logging.basicConfig(
@@ -39,12 +43,20 @@ TEST_SYMBOLS = ["BTC", "ETH"]  # 테스트할 심볼 목록
 class SimpleReconnectTester:
     """간단한 재연결 테스트 클래스"""
     
-    def __init__(self, testnet: bool = False):
-        """초기화"""
-        self.logger = logger
-        self.testnet = testnet
+    def __init__(self):
+        # 로거 설정
+        self.logger = get_unified_logger()
+        
+        # 설정 로드
+        self.settings = {
+            "depth": 100
+        }
+        
+        # 웹소켓 및 큐 초기화
         self.binance_ws = None
-        self.message_queue = asyncio.Queue()
+        self.output_queue = asyncio.Queue()
+        
+        # 이벤트 초기화
         self.stop_event = asyncio.Event()
         
         # 스냅샷 추적
@@ -52,39 +64,29 @@ class SimpleReconnectTester:
         self.reconnection_snapshot_count = 0
         self.is_reconnecting = False
         
-        # 설정
-        self.settings = {
-            "api_key": "",
-            "api_secret": "",
-            "connection": {
-                "websocket": {
-                    "depth_level": 100
-                }
-            }
-        }
+        # 거래소 한글 이름
+        self.exchange_name_kr = EXCHANGE_NAMES_KR[Exchange.BINANCE_FUTURE.value]
     
     def connection_status_callback(self, exchange: str, status: str):
         """연결 상태 콜백"""
         if status == "connect_attempt":
-            self.logger.info(f"연결 시도 중...")
+            self.logger.info(f"{self.exchange_name_kr} 연결 시도 중...")
             
         elif status == "connect":
-            self.logger.info(f"연결 성공")
+            self.logger.info(f"{self.exchange_name_kr} 연결 성공")
             
         elif status == "disconnect":
-            self.logger.info(f"연결 끊김")
+            self.logger.info(f"{self.exchange_name_kr} 연결 끊김")
             self.is_reconnecting = True
             
-        elif status == "snapshot_request":
-            self.logger.info(f"스냅샷 요청 중...")
-            
-        elif status == "snapshot_parsed":
+        elif status == "snapshot":
             self.snapshot_count += 1
             if self.is_reconnecting:
                 self.reconnection_snapshot_count += 1
-                self.logger.info(f"재연결 후 스냅샷 수신 ({self.reconnection_snapshot_count}번째)")
-            else:
-                self.logger.info(f"초기 스냅샷 수신 ({self.snapshot_count}번째)")
+                self.logger.info(f"{self.exchange_name_kr} 재연결 후 스냅샷 수신 (총 {self.reconnection_snapshot_count}개)")
+                
+        elif status == "error":
+            self.logger.error(f"{self.exchange_name_kr} 오류 발생")
     
     async def process_queue(self):
         """메시지 큐 처리"""
@@ -92,7 +94,7 @@ class SimpleReconnectTester:
             try:
                 # 큐에서 메시지 가져오기 (0.1초 타임아웃)
                 try:
-                    message = await asyncio.wait_for(self.message_queue.get(), timeout=0.1)
+                    message = await asyncio.wait_for(self.output_queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
                 
@@ -109,32 +111,21 @@ class SimpleReconnectTester:
                 self.logger.error(f"메시지 처리 중 오류: {e}")
     
     async def force_disconnect(self):
-        """강제 연결 끊기"""
-        # 초기 연결 후 5초 대기
-        await asyncio.sleep(5)
-        
-        if not self.binance_ws or not self.binance_ws.is_connected:
-            self.logger.info("웹소켓이 연결되어 있지 않습니다.")
-            return
-        
-        self.logger.info("강제 연결 끊기 시도")
-        
-        # 웹소켓 객체를 None으로 설정하여 오류 발생
-        self.binance_ws.ws = None
-        self.logger.info("웹소켓 객체를 None으로 설정하여 오류 발생시킴")
+        """강제로 연결 끊기"""
+        self.logger.info(f"{self.exchange_name_kr} 웹소켓 객체를 None으로 설정하여 오류 발생시킴")
     
-    async def run_test(self):
+    async def run(self):
         """테스트 실행"""
-        self.logger.info(f"바이낸스 선물 웹소켓 재연결 테스트 시작 (testnet: {self.testnet})")
+        self.logger.info(f"{self.exchange_name_kr} 웹소켓 재연결 테스트 시작")
         self.logger.info(f"테스트 심볼: {', '.join(TEST_SYMBOLS)}")
         
         try:
             # 바이낸스 선물 웹소켓 인스턴스 생성
-            self.binance_ws = BinanceFutureWebsocket(self.settings, testnet=self.testnet)
+            self.binance_ws = BinanceFutureWebsocket(self.settings)
             
             # 콜백 및 큐 설정
             self.binance_ws.connection_status_callback = self.connection_status_callback
-            self.binance_ws.set_output_queue(self.message_queue)
+            self.binance_ws.set_output_queue(self.output_queue)
             
             # 테스트 작업 시작
             tasks = [
@@ -172,21 +163,7 @@ class SimpleReconnectTester:
                 self.logger.warning("테스트 결과: 실패 (재연결 후 스냅샷 수신 실패)")
 
 
-async def main():
-    """메인 함수"""
-    # 테스트넷 사용 여부 (기본값: False)
-    use_testnet = False
-    
-    # 명령행 인수 처리
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "testnet":
-        use_testnet = True
-        logger.info("테스트넷 모드로 실행합니다.")
-    
-    # 테스터 인스턴스 생성 및 실행
-    tester = SimpleReconnectTester(testnet=use_testnet)
-    await tester.run_test()
-
-
 if __name__ == "__main__":
-    # 이벤트 루프 실행
-    asyncio.run(main()) 
+    # 테스트 실행
+    tester = SimpleReconnectTester()
+    asyncio.run(tester.run()) 

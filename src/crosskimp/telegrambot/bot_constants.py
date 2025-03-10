@@ -58,74 +58,23 @@ class MessageIcon:
 
 # 텔레그램 메시지 템플릿
 MESSAGE_TEMPLATES = {
-    MessageType.ERROR: {
-        "icon": MessageIcon.ERROR,
-        "format": """[에러 발생]
-- 컴포넌트: {component}
-- 메시지: {message}
-- 시간: {time}"""
-    },
-    MessageType.INFO: {
-        "icon": MessageIcon.INFO,
-        "format": """[알림]
-{message}
-- 시간: {time}"""
-    },
-    MessageType.TRADE: {
-        "icon": MessageIcon.TRADE,
-        "format": """[거래 실행]
-- 거래소: {exchange_from} ➜ {exchange_to}
-- 심볼: {symbol}
-- 수량: {amount}
-- 가격: {price:,.0f} KRW
-- 김프: {kimp:.2f}%
-- 시간: {time}"""
-    },
-    MessageType.PROFIT: {
-        "icon": MessageIcon.PROFIT,
-        "format": """[수익 발생]
-- 금액: {amount:,.0f} KRW
-- 수익률: {percentage:.2f}%
-- 상세: {details}
-- 시간: {time}"""
-    },
-    MessageType.STARTUP: {
-        "icon": MessageIcon.STARTUP,
-        "format": """[시스템 시작]
-- 컴포넌트: {component}
-- 상태: {status}
-- 시간: {time}"""
-    },
-    MessageType.SHUTDOWN: {
-        "icon": MessageIcon.SHUTDOWN,
-        "format": """[시스템 종료]
-- 컴포넌트: {component}
-- 사유: {reason}
-- 시간: {time}"""
-    },
-    MessageType.WARNING: {
-        "icon": MessageIcon.WARNING,
-        "format": """[경고]
-- 컴포넌트: {component}
-- 메시지: {message}
-- 시간: {time}"""
-    },
-    MessageType.MARKET: {
-        "icon": MessageIcon.MARKET,
-        "format": """[시장 상태]
-- USDT/KRW: {usdt_price:,.2f} KRW
-- 업비트: {upbit_status}
-- 빗썸: {bithumb_status}
-- 시간: {time}"""
-    },
-    MessageType.SYSTEM: {
-        "icon": MessageIcon.SYSTEM,
-        "format": """[시스템 상태]
-- CPU: {cpu_usage:.1f}%
-- 메모리: {memory_usage:.1f}%
-- 업타임: {uptime}
-- 시간: {time}"""
-    }
+    MessageType.ERROR: f"{MessageIcon.ERROR} <b>오류 발생</b>\n\n<b>컴포넌트:</b> {{component}}\n<b>메시지:</b> {{message}}",
+    
+    MessageType.INFO: f"{MessageIcon.INFO} <b>알림</b>\n\n{{message}}",
+    
+    MessageType.TRADE: f"{MessageIcon.TRADE} <b>거래 실행</b>\n\n<b>거래소:</b> {{exchange_from}} ➜ {{exchange_to}}\n<b>심볼:</b> {{symbol}}\n<b>수량:</b> {{amount}}\n<b>가격:</b> {{price:,.0f}} KRW\n<b>김프:</b> {{kimp:.2f}}%",
+    
+    MessageType.PROFIT: f"{MessageIcon.PROFIT} <b>수익 발생</b>\n\n<b>금액:</b> {{amount:,.0f}} KRW\n<b>수익률:</b> {{percentage:.2f}}%\n<b>상세:</b> {{details}}",
+    
+    MessageType.STARTUP: f"{MessageIcon.STARTUP} <b>시스템 시작</b>\n\n<b>컴포넌트:</b> {{component}}\n<b>상태:</b> {{status}}",
+    
+    MessageType.SHUTDOWN: f"{MessageIcon.SHUTDOWN} <b>시스템 종료</b>\n\n<b>컴포넌트:</b> {{component}}\n<b>사유:</b> {{reason}}",
+    
+    MessageType.WARNING: f"{MessageIcon.WARNING} <b>경고</b>\n\n<b>컴포넌트:</b> {{component}}\n<b>메시지:</b> {{message}}",
+    
+    MessageType.MARKET: f"{MessageIcon.MARKET} <b>시장 상태</b>\n\n<b>USDT/KRW:</b> {{usdt_price:,.2f}} KRW\n<b>업비트:</b> {{upbit_status}}\n<b>빗썸:</b> {{bithumb_status}}",
+    
+    MessageType.SYSTEM: f"{MessageIcon.SYSTEM} <b>시스템 상태</b>\n\n<b>CPU:</b> {{cpu_usage:.1f}}%\n<b>메모리:</b> {{memory_usage:.1f}}%\n<b>업타임:</b> {{uptime}}"
 }
 
 # Command settings

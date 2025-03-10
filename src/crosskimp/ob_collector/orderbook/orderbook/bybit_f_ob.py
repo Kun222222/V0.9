@@ -142,10 +142,10 @@ class BybitFutureOrderBookManager(BaseOrderBookManager):
             }
             self.snapshot_retries[symbol] = 0
 
-            self.logger.info(
-                f"[{self.exchangename}][{symbol}] 스냅샷 초기화 완료 | "
-                f"sequence={seq}"
-            )
+            # self.logger.info(
+            #     f"[{self.exchangename}][{symbol}] 스냅샷 초기화 완료 | "
+            #     f"sequence={seq}"
+            # )
             return res
 
         except Exception as e:

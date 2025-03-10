@@ -1,14 +1,13 @@
 import time
 import json
 from typing import Dict, Optional, List
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger, get_raw_logger
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 import logging
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 queue_logger = get_queue_logger()
-raw_logger = get_raw_logger("bybit")  # raw 데이터 로거 추가
 
 class BybitOrderBook(OrderBookV2):
     """
@@ -140,11 +139,6 @@ class BybitSpotOrderBookManager(BaseOrderBookManagerV2):
             # 시퀀스 및 타임스탬프
             sequence = ob_data.get("u")
             timestamp = data.get("ts", int(time.time() * 1000))
-            
-            # Raw 데이터 로깅 (raw_bybit 로거 사용)
-            raw_logger.info(
-                f"{symbol}|{msg_type}|{sequence}|{timestamp}|{json.dumps(ob_data)}"
-            )
             
             # 업데이트 처리 여부 확인
             if not ob.should_process_update(sequence, timestamp):

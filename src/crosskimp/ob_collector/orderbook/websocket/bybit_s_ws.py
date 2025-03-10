@@ -3,10 +3,10 @@ import json
 import time
 from websockets import connect
 import websockets  # 전체 websockets 모듈 임포트 추가
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Any
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_raw_logger
-from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector, WebSocketError
 from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob import BybitSpotOrderBookManager
 
 # 바이빗 현물 웹소켓 전용 상수
@@ -78,51 +78,12 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
         # 연결 상태 관리
         self.is_connected = False
         self.current_retry = 0
-        self.retry_delay = 1
+        self.retry_delay = 0.5
         self.last_ping_time = 0
         self.last_pong_time = 0
         self.ping_task = None
         self.health_check_task = None
 
-        # 로거 초기화 부분 제거 - 부모 클래스의 로깅 설정 사용
-        """
-        # 로거 초기화
-        self.raw_logger = get_raw_logger("bybit")
-        
-        # 로그 파일 경로 설정 (직접 로깅용)
-        try:
-            import os
-            import glob
-            from datetime import datetime
-            
-            log_dir = os.path.join("src", "logs", "raw")
-            os.makedirs(log_dir, exist_ok=True)
-            
-            today = datetime.now().strftime("%y%m%d")
-            existing_logs = glob.glob(os.path.join(log_dir, f"{today}_*_bybit_raw_logger.log"))
-            
-            if existing_logs:
-                self.log_file_path = sorted(existing_logs)[-1]
-                logger.info(f"[Bybit] 기존 로그 파일 사용: {self.log_file_path}")
-                
-                with open(self.log_file_path, "a", encoding="utf-8") as f:
-                    now = datetime.now()
-                    f.write(f"\n{now.strftime('%Y-%m-%d %H:%M:%S')} - INIT|SYSTEM|바이빗 로거 재시작\n")
-            else:
-                now = datetime.now()
-                date_str = now.strftime("%y%m%d")
-                time_str = now.strftime("%H%M%S")
-                self.log_file_path = os.path.join(log_dir, f"{date_str}_{time_str}_bybit_raw_logger.log")
-                
-                with open(self.log_file_path, "w", encoding="utf-8") as f:
-                    f.write(f"{now.strftime('%Y-%m-%d %H:%M:%S')} - INIT|SYSTEM|바이빗 로거 초기화 완료\n")
-                
-                logger.info(f"[Bybit] 새 로그 파일 생성 완료: {self.log_file_path}")
-            
-        except Exception as e:
-            logger.error(f"[Bybit] 로그 파일 설정 실패: {str(e)}", exc_info=True)
-        """
-        
         # 오더북 관리자 초기화
         self.ob_manager = BybitSpotOrderBookManager(self.depth_level)
 
