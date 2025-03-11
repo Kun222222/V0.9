@@ -5,7 +5,7 @@ import asyncio
 from collections import defaultdict
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.manager.metrics_manager import WebsocketMetricsManager
+from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
 from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
 
 logger = get_unified_logger()

@@ -11,10 +11,24 @@ from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWeb
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
 from crosskimp.ob_collector.utils.config.constants import Exchange, WEBSOCKET_URLS, WEBSOCKET_CONFIG, EXCHANGE_NAMES_KR
 
+# ============================
 # 빗썸 웹소켓 관련 상수
-EXCHANGE_NAME = Exchange.BITHUMB.value  # 거래소 이름
-EXCHANGE_KR_NAME = EXCHANGE_NAMES_KR[EXCHANGE_NAME]  # 거래소 한글 이름
-BITHUMB_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_NAME]  # 빗썸 설정
+# ============================
+# 기본 설정
+EXCHANGE_CODE = Exchange.BITHUMB.value  # 거래소 코드
+EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
+
+# 웹소켓 연결 설정
+WS_URL = WEBSOCKET_URLS[EXCHANGE_CODE]  # 웹소켓 URL
+PING_INTERVAL = 30  # 핑 전송 간격 (초)
+PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+
+# 오더북 관련 설정
+DEFAULT_DEPTH = 15  # 기본 오더북 깊이
+SYMBOL_SUFFIX = "_KRW"  # 심볼 접미사
+
+# 빗썸 특화 설정
+BITHUMB_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 빗썸 설정
 
 # 로거 설정
 logger = get_unified_logger()
@@ -73,7 +87,7 @@ def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
 
     # 공통 포맷으로 변환하여 반환
     return {
-        "exchangename": EXCHANGE_NAME,
+        "exchangename": EXCHANGE_CODE,
         "symbol": symbol,
         "bids": bids,
         "asks": asks,
@@ -88,9 +102,9 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
     - 연결, 구독, 스냅샷 요청, 델타 메시지 수신 및 처리
     """
     def __init__(self, settings: dict):
-        super().__init__(settings, EXCHANGE_NAME)
-        self.ws_url = WEBSOCKET_URLS[EXCHANGE_NAME]  # 웹소켓 URL
-        self.depth = settings.get("depth", BITHUMB_CONFIG["default_depth"])  # 내부 depth 설정
+        super().__init__(settings, EXCHANGE_CODE)
+        self.ws_url = WS_URL  # 웹소켓 URL
+        self.depth = settings.get("depth", DEFAULT_DEPTH)  # 내부 depth 설정
         self.manager = BithumbSpotOrderBookManager(depth=self.depth)
         self.subscribed_symbols: List[str] = []
         self.ws = None
@@ -100,7 +114,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
         self.last_reconnect_time = 0
         
         # raw 로거 초기화 제거
-        # self.raw_logger = get_raw_logger(EXCHANGE_NAME)  # 중앙화된 로깅 사용을 위해 제거
+        # self.raw_logger = get_raw_logger(EXCHANGE_CODE)  # 중앙화된 로깅 사용을 위해 제거
         self.logger = logger
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
@@ -121,8 +135,8 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
             # 웹소켓 연결 수립
             self.ws = await connect(
                 self.ws_url,
-                ping_interval=BITHUMB_CONFIG["ping_interval"],
-                ping_timeout=BITHUMB_CONFIG["ping_timeout"],
+                ping_interval=PING_INTERVAL,
+                ping_timeout=PING_TIMEOUT,
                 close_timeout=BITHUMB_CONFIG["close_timeout"],
                 max_size=BITHUMB_CONFIG["max_size"],
                 compression=BITHUMB_CONFIG["compression"]
@@ -133,11 +147,11 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect")
                 
-            self.logger.info(f"{EXCHANGE_KR_NAME} 웹소켓 연결 성공")
+            self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 성공")
             return True
                 
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR_NAME} 웹소켓 연결 중 예외 발생: {e}", exc_info=True)
+            self.log_error(f"{EXCHANGE_KR} 웹소켓 연결 중 예외 발생: {e}", exc_info=True)
             return False
 
     async def subscribe(self, symbols: List[str]):
@@ -152,7 +166,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
             symbols: 구독할 심볼 목록
         """
         if not symbols:
-            self.log_error(f"{EXCHANGE_KR_NAME} 구독할 심볼이 없음")
+            self.log_error(f"{EXCHANGE_KR} 구독할 심볼이 없음")
             return
 
         # 구독 심볼 목록 초기화
@@ -169,15 +183,15 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                     # 스냅샷을 오더북 매니저에 적용
                     init_res = await self.manager.initialize_orderbook(sym, snap)
                     if not init_res.is_valid:
-                        self.log_error(f"{EXCHANGE_KR_NAME} {sym} 스냅샷 적용 실패: {init_res.error_messages}")
+                        self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 적용 실패: {init_res.error_messages}")
                     else:
                         if self.connection_status_callback:
                             self.connection_status_callback(self.exchangename, "snapshot_received")
                         self.subscribed_symbols.append(sym.upper())
                 else:
-                    self.log_error(f"{EXCHANGE_KR_NAME} {sym} 스냅샷 요청 실패")
+                    self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 요청 실패")
             except Exception as e:
-                self.log_error(f"{EXCHANGE_KR_NAME} {sym} 스냅샷 요청 중 오류: {str(e)}")
+                self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 요청 중 오류: {str(e)}")
 
         # 구독 메시지 전송
         if self.subscribed_symbols and self.ws and self.is_connected:
@@ -197,9 +211,9 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "subscribe_complete")
                 
-                self.logger.info(f"{EXCHANGE_KR_NAME} 구독 완료: {len(self.subscribed_symbols)}개 심볼")
+                self.logger.info(f"{EXCHANGE_KR} 구독 완료: {len(self.subscribed_symbols)}개 심볼")
             except Exception as e:
-                self.log_error(f"{EXCHANGE_KR_NAME} 구독 메시지 전송 중 오류: {str(e)}")
+                self.log_error(f"{EXCHANGE_KR} 구독 메시지 전송 중 오류: {str(e)}")
                 # 연결이 끊어진 경우 재연결 필요
                 self.is_connected = False
                 raise
@@ -223,9 +237,9 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                 if data["status"] == "0000":  # 성공 상태 코드
                     if self.connection_status_callback:
                         self.connection_status_callback(self.exchangename, "subscribe_response")
-                    self.logger.info(f"{EXCHANGE_KR_NAME} 구독 응답 성공: {data['resmsg']}")
+                    self.logger.info(f"{EXCHANGE_KR} 구독 응답 성공: {data['resmsg']}")
                 else:  # 실패 상태 코드
-                    self.log_error(f"{EXCHANGE_KR_NAME} 구독 실패: {data['resmsg']}")
+                    self.log_error(f"{EXCHANGE_KR} 구독 실패: {data['resmsg']}")
                 return None
 
             # Delta 메시지 처리 (오더북 업데이트)
@@ -238,10 +252,10 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
 
             return None
         except json.JSONDecodeError as e:
-            self.log_error(f"{EXCHANGE_KR_NAME} JSON 파싱 오류: {e}, 메시지: {message[:100]}...")
+            self.log_error(f"{EXCHANGE_KR} JSON 파싱 오류: {e}, 메시지: {message[:100]}...")
             return None
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR_NAME} 메시지 파싱 중 예외 발생: {e}", exc_info=True)
+            self.log_error(f"{EXCHANGE_KR} 메시지 파싱 중 예외 발생: {e}", exc_info=True)
             return None
 
     def _extract_symbol(self, parsed: dict) -> str:
@@ -261,7 +275,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                 raw_symbol = order_list[0].get("symbol", "")
                 return raw_symbol.replace(BITHUMB_CONFIG["symbol_suffix"], "").upper()
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR_NAME} 심볼 추출 중 오류: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} 심볼 추출 중 오류: {str(e)}")
         return "UNKNOWN"
 
     async def handle_parsed_message(self, parsed: dict) -> None:
@@ -279,11 +293,11 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                 # 오더북 매니저를 통해 업데이트 수행
                 res = await self.manager.update(symbol, evt)
                 if not res.is_valid:
-                    self.log_error(f"{EXCHANGE_KR_NAME} {symbol} 업데이트 실패: {res.error_messages}")
+                    self.log_error(f"{EXCHANGE_KR} {symbol} 업데이트 실패: {res.error_messages}")
                 elif self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "message")
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR_NAME} handle_parsed_message 예외: {e}", exc_info=True)
+            self.log_error(f"{EXCHANGE_KR} handle_parsed_message 예외: {e}", exc_info=True)
 
     async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
         """
@@ -302,7 +316,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                     if not connected:
                         # 연결 실패 시 지수 백오프 적용
                         delay = self.reconnect_strategy.next_delay()
-                        self.log_error(f"{EXCHANGE_KR_NAME} 연결 실패, {delay}초 후 재시도")
+                        self.log_error(f"{EXCHANGE_KR} 연결 실패, {delay}초 후 재시도")
                         await asyncio.sleep(delay)
                         continue
                 
@@ -313,7 +327,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                 try:
                     await self.subscribe(symbols)
                 except Exception as sub_e:
-                    self.log_error(f"{EXCHANGE_KR_NAME} 구독 실패: {str(sub_e)}")
+                    self.log_error(f"{EXCHANGE_KR} 구독 실패: {str(sub_e)}")
                     # 구독 실패 시 연결 재설정
                     self.is_connected = False
                     continue
@@ -324,7 +338,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                     try:
                         # 웹소켓 연결 상태 확인
                         if not self.ws:
-                            self.log_error(f"{EXCHANGE_KR_NAME} 웹소켓 객체가 None입니다. 재연결이 필요합니다.")
+                            self.log_error(f"{EXCHANGE_KR} 웹소켓 객체가 None입니다. 재연결이 필요합니다.")
                             self.is_connected = False
                             break
                             
@@ -341,7 +355,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                         
                         # 메시지 지연이 30초 이상이면 연결 재설정
                         if message_delay > BITHUMB_CONFIG["message_timeout"]:
-                            self.log_error(f"{EXCHANGE_KR_NAME} 높은 메시지 지연 감지: {message_delay:.1f}초 -> 연결 재설정")
+                            self.log_error(f"{EXCHANGE_KR} 높은 메시지 지연 감지: {message_delay:.1f}초 -> 연결 재설정")
                             self.is_connected = False
                             break
 
@@ -352,7 +366,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
 
                         # 디버깅을 위해 메시지 내용 로깅
                         if self.stats.message_count <= BITHUMB_CONFIG["log_sample_count"]:
-                            self.logger.debug(f"{EXCHANGE_KR_NAME} 수신된 메시지 샘플 (#{self.stats.message_count}): {message[:BITHUMB_CONFIG['log_message_preview_length']]}...")
+                            self.logger.debug(f"{EXCHANGE_KR} 수신된 메시지 샘플 (#{self.stats.message_count}): {message[:BITHUMB_CONFIG['log_message_preview_length']]}...")
 
                         # 메시지 파싱 및 처리
                         parsed = await self.parse_message(message)
@@ -363,12 +377,12 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                         # 타임아웃 발생 시 연결 상태 확인
                         current_time = time.time()
                         if current_time - last_message_time > BITHUMB_CONFIG["message_timeout"]:
-                            self.log_error(f"{EXCHANGE_KR_NAME} 메시지 수신 타임아웃: {current_time - last_message_time:.1f}초 -> 연결 재설정")
+                            self.log_error(f"{EXCHANGE_KR} 메시지 수신 타임아웃: {current_time - last_message_time:.1f}초 -> 연결 재설정")
                             self.is_connected = False
                             break
                         continue
                     except Exception as e:
-                        self.log_error(f"{EXCHANGE_KR_NAME} 메시지 수신 오류: {e}", exc_info=True)
+                        self.log_error(f"{EXCHANGE_KR} 메시지 수신 오류: {e}", exc_info=True)
                         self.is_connected = False
                         break
 
@@ -380,7 +394,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                     
                     # 재연결 지연 계산
                     delay = self.reconnect_strategy.next_delay()
-                    self.logger.info(f"{EXCHANGE_KR_NAME} {delay:.1f}초 후 재연결 시도 (#{self.reconnect_count})")
+                    self.logger.info(f"{EXCHANGE_KR} {delay:.1f}초 후 재연결 시도 (#{self.reconnect_count})")
                     
                     # 연결 종료 콜백 호출
                     if self.connection_status_callback:
@@ -398,11 +412,11 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                     await asyncio.sleep(delay)
 
             except Exception as e:
-                self.log_error(f"{EXCHANGE_KR_NAME} 연결 루프 오류: {str(e)}", exc_info=True)
+                self.log_error(f"{EXCHANGE_KR} 연결 루프 오류: {str(e)}", exc_info=True)
                 
                 # 재연결 지연
                 delay = self.reconnect_strategy.next_delay()
-                self.logger.info(f"{EXCHANGE_KR_NAME} {delay:.1f}초 후 재연결 시도...")
+                self.logger.info(f"{EXCHANGE_KR} {delay:.1f}초 후 재연결 시도...")
                 
                 # 연결 상태 초기화
                 self.is_connected = False
@@ -419,6 +433,6 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
         """
         웹소켓 연결 종료
         """
-        self.logger.info(f"{EXCHANGE_KR_NAME} 웹소켓 연결 종료 중...")
+        self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 종료 중...")
         await super().stop()
-        self.logger.info(f"{EXCHANGE_KR_NAME} 웹소켓 연결 종료 완료")
+        self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 종료 완료")

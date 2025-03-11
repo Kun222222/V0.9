@@ -1,0 +1,166 @@
+오더북 시스템의 메트릭을 다음과 같이 카테고리별로 정리했습니다:
+
+### 1. 시장 데이터 품질 메트릭
+```python
+class MarketDataQualityMetrics:
+    # 오더북 상태
+    orderbook_metrics = {
+        "bids_count": int,          # 매수 호가 개수
+        "asks_count": int,          # 매도 호가 개수
+        "best_bid_price": float,    # 최우선 매수가
+        "best_ask_price": float,    # 최우선 매도가
+        "spread_percentage": float,  # 스프레드 비율
+        "depth_utilization": float, # 설정된 깊이 대비 실제 데이터 비율
+    }
+    
+    # 가격 품질
+    price_quality = {
+        "price_inversion_count": int,    # 가격 역전 발생 수
+        "price_level_gaps": float,       # 호가 간 평균 간격
+        "price_volatility": float,       # 가격 변동성
+        "cross_detection_count": int,    # 매수/매도 가격 교차 감지 수
+    }
+    
+    # 유동성 지표
+    liquidity_metrics = {
+        "total_liquidity": float,        # 총 유동성
+        "bid_ask_imbalance": float,      # 매수/매도 불균형
+        "liquidity_depth": float,        # 유동성 깊이
+    }
+```
+
+### 2. 시스템 성능 메트릭
+```python
+class SystemPerformanceMetrics:
+    # 처리 성능
+    processing_metrics = {
+        "update_processing_time": float,  # 업데이트 처리 시간
+        "updates_per_second": int,       # 초당 처리 건수
+        "message_processing_rate": float, # 메시지 처리율
+    }
+    
+    # 리소스 사용
+    resource_metrics = {
+        "memory_usage": float,           # 메모리 사용량
+        "cpu_usage": float,              # CPU 사용률
+        "buffer_size": int,              # 버퍼 크기
+    }
+    
+    # 지연 시간
+    latency_metrics = {
+        "queue_latency": float,          # 큐 대기 시간
+        "processing_latency": float,      # 처리 지연 시간
+        "total_latency": float,          # 전체 지연 시간
+    }
+```
+
+### 3. 데이터 동기화 메트릭
+```python
+class DataSyncMetrics:
+    # 시퀀스 관리
+    sequence_metrics = {
+        "last_sequence": int,            # 마지막 시퀀스 번호
+        "sequence_gap_count": int,       # 시퀀스 갭 발생 수
+        "sequence_gap_size": int,        # 시퀀스 갭 크기
+        "force_jump_count": int,         # 강제 점프 횟수
+    }
+    
+    # 스냅샷 관리
+    snapshot_metrics = {
+        "snapshot_request_count": int,    # 스냅샷 요청 수
+        "snapshot_success_rate": float,   # 스냅샷 성공률
+        "snapshot_retry_count": int,      # 재시도 횟수
+        "snapshot_init_time": float,      # 초기화 시간
+    }
+```
+
+### 4. 오류 및 복구 메트릭
+```python
+class ErrorRecoveryMetrics:
+    # 에러 추적
+    error_metrics = {
+        "error_count": int,              # 총 에러 발생 수
+        "error_types": Dict[str, int],   # 에러 유형별 발생 수
+        "validation_failures": int,       # 검증 실패 수
+    }
+    
+    # 복구 성능
+    recovery_metrics = {
+        "recovery_attempt_count": int,    # 복구 시도 수
+        "recovery_success_rate": float,   # 복구 성공률
+        "recovery_time": float,          # 복구 소요 시간
+    }
+```
+
+### 5. 큐 관리 메트릭
+```python
+class QueueManagementMetrics:
+    # 큐 상태
+    queue_metrics = {
+        "queue_size": int,               # 현재 큐 크기
+        "queue_capacity": int,           # 큐 용량
+        "queue_utilization": float,      # 큐 사용률
+    }
+    
+    # 메시지 처리
+    message_metrics = {
+        "messages_queued": int,          # 큐잉된 메시지 수
+        "message_delivery_rate": float,  # 메시지 전송 성공률
+        "message_drop_count": int,       # 버려진 메시지 수
+    }
+```
+
+### 6. 거래소별 특화 메트릭
+```python
+class ExchangeSpecificMetrics:
+    # 바이낸스
+    binance_metrics = {
+        "force_jump_count": int,         # 강제 점프 횟수
+        "gap_threshold_exceeds": int,    # 갭 임계값 초과 수
+    }
+    
+    # 빗썸
+    bithumb_metrics = {
+        "timestamp_sequence_gaps": int,   # 타임스탬프 시퀀스 갭
+        "orderbook_sync_status": bool,   # 오더북 동기화 상태
+    }
+    
+    # 업비트
+    upbit_metrics = {
+        "depth_conversion_rate": float,  # 깊이 변환 성공률
+        "snapshot_interval": float,      # 스냅샷 간격
+    }
+    
+    # 바이빗
+    bybit_metrics = {
+        "three_sec_snapshot_count": int, # 3초 스냅샷 처리 수
+        "snapshot_compliance": float,    # 스냅샷 간격 준수율
+    }
+```
+
+이러한 메트릭들은 다음과 같은 목적으로 활용됩니다:
+
+1. **실시간 모니터링**
+   - 시스템 상태 감시
+   - 성능 병목 감지
+   - 이상 징후 조기 발견
+
+2. **성능 최적화**
+   - 처리 지연 구간 식별
+   - 리소스 사용량 최적화
+   - 버퍼 크기 조정
+
+3. **품질 관리**
+   - 데이터 정확성 검증
+   - 시장 데이터 품질 유지
+   - 동기화 상태 확인
+
+4. **장애 대응**
+   - 문제 원인 신속 파악
+   - 복구 프로세스 효율화
+   - 재발 방지 대책 수립
+
+5. **비즈니스 인사이트**
+   - 거래소별 성능 비교
+   - 시장 유동성 분석
+   - 서비스 품질 개선

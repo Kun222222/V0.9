@@ -10,9 +10,21 @@ from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWeb
 from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob import BybitSpotOrderBookManager
 from crosskimp.ob_collector.utils.config.constants import Exchange, LOG_SYSTEM, EXCHANGE_NAMES_KR
 
-# 바이빗 현물 웹소켓 전용 상수
-BYBIT_SPOT_PING_INTERVAL = 20  # 20초마다 ping (공식 문서 권장)
-BYBIT_SPOT_PING_TIMEOUT = 10   # 10초 이내 pong 응답 없으면 재연결
+# ============================
+# 바이빗 현물 웹소켓 관련 상수
+# ============================
+# 기본 설정
+EXCHANGE_CODE = Exchange.BYBIT.value  # 거래소 코드
+EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
+
+# 웹소켓 연결 설정
+WS_URL = "wss://stream.bybit.com/v5/public/spot"  # 웹소켓 URL
+PING_INTERVAL = 20  # 핑 전송 간격 (초) - 공식 문서 권장
+PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+
+# 오더북 관련 설정
+DEFAULT_DEPTH = 50  # 기본 오더북 깊이
+MAX_SYMBOLS_PER_SUBSCRIPTION = 10  # 구독당 최대 심볼 수
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -58,7 +70,7 @@ def parse_bybit_depth_update(data: dict) -> Optional[dict]:
             "type": msg_type
         }
     except Exception as e:
-        logger.error(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} parse_bybit_depth_update 오류: {e}", exc_info=True)
+        logger.error(f"{LOG_SYSTEM} {EXCHANGE_KR} parse_bybit_depth_update 오류: {e}", exc_info=True)
         return None
 
 class BybitSpotWebsocket(BaseWebsocketConnector):
@@ -72,9 +84,9 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
         self.ob_manager = BybitSpotOrderBookManager(self.depth_level)
         
         # Bybit specific settings - 파일 상단에 정의된 상수 사용
-        self.ping_interval = BYBIT_SPOT_PING_INTERVAL
-        self.ping_timeout = BYBIT_SPOT_PING_TIMEOUT
-        self.max_symbols_per_subscription = 10
+        self.ping_interval = PING_INTERVAL
+        self.ping_timeout = PING_TIMEOUT
+        self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
         
         # 연결 상태 관리
         self.is_connected = False
@@ -105,7 +117,7 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                 timeout = min(30, 5 * (1 + self.current_retry * 0.5))
                 
                 logger.info(
-                    f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 시도 | 시도={self.current_retry + 1}회차, timeout={timeout}초"
+                    f"{LOG_SYSTEM} {EXCHANGE_KR} 웹소켓 연결 시도 | 시도={self.current_retry + 1}회차, timeout={timeout}초"
                 )
                 
                 self.ws = await asyncio.wait_for(
@@ -125,7 +137,7 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                 self.last_pong_time = time.time()
                 self.stats.last_pong_time = self.last_pong_time
                 
-                logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 성공")
+                logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 웹소켓 연결 성공")
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "connect")
                 break
@@ -133,7 +145,7 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
             except asyncio.TimeoutError:
                 self.current_retry += 1
                 logger.warning(
-                    f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 연결 타임아웃 발생 (무시됨) | 시도={self.current_retry}회차, timeout={timeout}초"
+                    f"{LOG_SYSTEM} {EXCHANGE_KR} 연결 타임아웃 발생 (무시됨) | 시도={self.current_retry}회차, timeout={timeout}초"
                 )
                 await asyncio.sleep(1)
                 
@@ -143,16 +155,16 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                 self.stats.last_error_time = time.time()
                 self.stats.last_error_message = str(e)
                 logger.error(
-                    f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 연결 오류: {str(e)} | 시도={self.current_retry}회차"
+                    f"{LOG_SYSTEM} {EXCHANGE_KR} 연결 오류: {str(e)} | 시도={self.current_retry}회차"
                 )
                 retry_delay = min(30, self.retry_delay * (2 ** (self.current_retry - 1)))
-                logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 재연결 대기 중 ({retry_delay}초)")
+                logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 재연결 대기 중 ({retry_delay}초)")
                 await asyncio.sleep(retry_delay)
 
     async def subscribe(self, symbols: List[str]) -> None:
         try:
             total_batches = (len(symbols) + self.max_symbols_per_subscription - 1) // self.max_symbols_per_subscription
-            logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 구독 시작 | 총 {len(symbols)}개 심볼, {total_batches}개 배치로 나눔")
+            logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 구독 시작 | 총 {len(symbols)}개 심볼, {total_batches}개 배치로 나눔")
             
             for i in range(0, len(symbols), self.max_symbols_per_subscription):
                 batch_symbols = symbols[i:i + self.max_symbols_per_subscription]
@@ -172,16 +184,16 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                     self.connection_status_callback(self.exchangename, "subscribe")
                     
                 await self.ws.send(json.dumps(msg))
-                logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 구독 요청 전송 | 배치 {batch_num}/{total_batches}, symbols={batch_symbols}")
+                logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 구독 요청 전송 | 배치 {batch_num}/{total_batches}, symbols={batch_symbols}")
                 await asyncio.sleep(0.1)
             
-            logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 전체 구독 요청 완료 | 총 {len(symbols)}개 심볼")
+            logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 전체 구독 요청 완료 | 총 {len(symbols)}개 심볼")
             
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "subscribe_complete")
             
         except Exception as e:
-            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 구독 요청 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} 구독 요청 실패: {str(e)}")
             raise
 
     async def parse_message(self, message: str) -> Optional[dict]:
@@ -189,13 +201,13 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
             try:
                 data = json.loads(message)
             except json.JSONDecodeError as e:
-                logger.error(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} JSON 파싱 실패: {str(e)}, 메시지: {message[:100]}...")
+                logger.error(f"{LOG_SYSTEM} {EXCHANGE_KR} JSON 파싱 실패: {str(e)}, 메시지: {message[:100]}...")
                 return None
             
             if data.get("op") == "subscribe":
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "subscribe_response")
-                logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 구독 응답 수신: {data}")
+                logger.debug(f"{LOG_SYSTEM} {EXCHANGE_KR} 구독 응답 수신: {data}")
                 return None
                 
             if data.get("op") == "pong" or (data.get("ret_msg") == "pong" and data.get("op") == "ping"):
@@ -219,15 +231,15 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                         self._raw_log_count += 1
                         
                         if self._raw_log_count <= 5:
-                            logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 원본 데이터 로깅 성공 #{self._raw_log_count}: {symbol}")
+                            logger.debug(f"{LOG_SYSTEM} {EXCHANGE_KR} 원본 데이터 로깅 성공 #{self._raw_log_count}: {symbol}")
                         
                         if msg_type == "snapshot":
-                            logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 스냅샷 메시지 수신: {symbol}, type={msg_type}")
+                            logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 스냅샷 메시지 수신: {symbol}, type={msg_type}")
                         return data
             return None
             
         except Exception as e:
-            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 파싱 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} 메시지 파싱 실패: {str(e)}")
             return None
 
     async def handle_parsed_message(self, parsed: dict) -> None:
@@ -249,9 +261,9 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                     self._parsed_log_count += 1
                     
                     if self._parsed_log_count <= 5:
-                        logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 데이터 파싱 성공 #{self._parsed_log_count}: {symbol}")
+                        logger.debug(f"{LOG_SYSTEM} {EXCHANGE_KR} 데이터 파싱 성공 #{self._parsed_log_count}: {symbol}")
             except Exception as e:
-                logger.error(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 데이터 파싱 실패: {str(e)}", exc_info=True)
+                logger.error(f"{LOG_SYSTEM} {EXCHANGE_KR} 데이터 파싱 실패: {str(e)}", exc_info=True)
             
             start_time = time.time()
             await self.ob_manager.update(symbol, parsed)
@@ -266,14 +278,14 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                 if self.stats.message_count % 1000 == 0:
                     avg_time = sum(self.stats.processing_times[-1000:]) / min(1000, len(self.stats.processing_times))
                     logger.info(
-                        f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} {symbol} 처리 성능 | 평균={avg_time:.2f}ms, 총={self.stats.message_count:,}개"
+                        f"{LOG_SYSTEM} {EXCHANGE_KR} {symbol} 처리 성능 | 평균={avg_time:.2f}ms, 총={self.stats.message_count:,}개"
                     )
             
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "message")
                 
         except Exception as e:
-            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 처리 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} 메시지 처리 실패: {str(e)}")
 
     async def _send_ping(self) -> None:
         """Bybit 공식 핑 메시지 전송"""
@@ -285,9 +297,9 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                 }
                 await self.ws.send(json.dumps(ping_message))
                 self.last_ping_time = time.time()
-                logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} PING 전송: {ping_message}")
+                logger.debug(f"{LOG_SYSTEM} {EXCHANGE_KR} PING 전송: {ping_message}")
         except Exception as e:
-            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} PING 전송 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} PING 전송 실패: {str(e)}")
 
     def _handle_pong(self, data: dict) -> bool:
         """Bybit 공식 퐁 메시지 처리. 파싱된 데이터(dict)를 인자로 받습니다."""
@@ -298,10 +310,10 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
             self.stats.latency_ms = latency
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "heartbeat")
-            logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} PONG 수신 | 레이턴시: {latency:.2f}ms | req_id: {data.get('req_id', 'N/A')}")
+            logger.debug(f"{LOG_SYSTEM} {EXCHANGE_KR} PONG 수신 | 레이턴시: {latency:.2f}ms | req_id: {data.get('req_id', 'N/A')}")
             return True
         except Exception as e:
-            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} PONG 처리 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} PONG 처리 실패: {str(e)}")
             return False
 
     async def _ping_loop(self):
@@ -330,7 +342,7 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                     continue
                 
                 if pong_diff > self.ping_timeout:
-                    logger.error(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} PONG 응답 타임아웃 ({self.ping_timeout}초) | 마지막 PONG: {pong_diff:.1f}초 전")
+                    logger.error(f"{LOG_SYSTEM} {EXCHANGE_KR} PONG 응답 타임아웃 ({self.ping_timeout}초) | 마지막 PONG: {pong_diff:.1f}초 전")
                     if self.connection_status_callback:
                         self.connection_status_callback(self.exchangename, "heartbeat_timeout")
                     self.is_connected = False
@@ -339,7 +351,7 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                     break
                     
             except Exception as e:
-                self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} PING 태스크 오류: {str(e)}")
+                self.log_error(f"{EXCHANGE_KR} PING 태스크 오류: {str(e)}")
                 await asyncio.sleep(1)
 
     async def _prepare_start(self, symbols: List[str]) -> None:
@@ -347,11 +359,11 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
         시작 전 초기화 및 설정 (BaseWebsocketConnector 템플릿 메서드 구현)
         """
         if self.current_retry > 0:
-            logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 재연결 감지 (retry={self.current_retry}), 오더북 초기화 수행")
+            logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 재연결 감지 (retry={self.current_retry}), 오더북 초기화 수행")
             self.ob_manager.clear_all()
-            logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 재연결 후 오더북 매니저 초기화 완료")
+            logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 재연결 후 오더북 매니저 초기화 완료")
         
-        logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 시작 준비 완료 | 심볼 수: {len(symbols)}개")
+        logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 시작 준비 완료 | 심볼 수: {len(symbols)}개")
 
     async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
         """
@@ -369,26 +381,26 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                         await self.handle_parsed_message(parsed)
                         
                 except asyncio.TimeoutError:
-                    logger.debug(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 30초 동안 메시지 없음, 연결 상태 확인을 위해 PING 전송")
+                    logger.debug(f"{LOG_SYSTEM} {EXCHANGE_KR} 30초 동안 메시지 없음, 연결 상태 확인을 위해 PING 전송")
                     try:
                         await self._send_ping()
                     except Exception as e:
-                        self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} PING 전송 실패: {str(e)}")
+                        self.log_error(f"{EXCHANGE_KR} PING 전송 실패: {str(e)}")
                         await self.reconnect()
                         break
                         
                 except websockets.exceptions.ConnectionClosed as e:
-                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 종료: {str(e)}")
+                    self.log_error(f"{EXCHANGE_KR} 웹소켓 연결 종료: {str(e)}")
                     await self.reconnect()
                     break
                     
                 except Exception as e:
-                    self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 루프 오류: {str(e)}")
+                    self.log_error(f"{EXCHANGE_KR} 메시지 루프 오류: {str(e)}")
                     await self.reconnect()
                     break
                     
         except Exception as e:
-            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 메시지 루프 실행 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} 메시지 루프 실행 실패: {str(e)}")
             await self.reconnect()
             
         finally:
@@ -401,7 +413,7 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                         pass
             
             if not self.stop_event.is_set():
-                logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 메시지 루프 종료 후 재시작 시도")
+                logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 메시지 루프 종료 후 재시작 시도")
                 asyncio.create_task(self.start({"bybit": symbols}))
 
     async def start_background_tasks(self) -> List[asyncio.Task]:
@@ -424,20 +436,20 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.warning(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} {name} 취소 중 오류 (무시됨): {str(e)}")
+                logger.warning(f"{LOG_SYSTEM} {EXCHANGE_KR} {name} 취소 중 오류 (무시됨): {str(e)}")
 
     async def reconnect(self) -> None:
         """
         웹소켓 연결 재설정
         """
-        logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 재연결 시작")
+        logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 재연결 시작")
         
         try:
             if self.ws:
                 try:
                     await self.ws.close()
                 except Exception as e:
-                    logger.warning(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 종료 중 오류 (무시됨): {str(e)}")
+                    logger.warning(f"{LOG_SYSTEM} {EXCHANGE_KR} 웹소켓 종료 중 오류 (무시됨): {str(e)}")
             
             await self._cancel_task(self.ping_task, "PING 태스크")
             await self._cancel_task(self.health_check_task, "헬스 체크 태스크")
@@ -451,15 +463,15 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
             await super().reconnect()
             
         except Exception as e:
-            self.log_error(f"{EXCHANGE_NAMES_KR[self.exchangename]} 재연결 실패: {str(e)}")
+            self.log_error(f"{EXCHANGE_KR} 재연결 실패: {str(e)}")
             delay = min(30, self.retry_delay * (2 ** (self.current_retry - 1)))
-            logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 재연결 대기 중 ({delay}초) | 시도={self.current_retry}회차")
+            logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 재연결 대기 중 ({delay}초) | 시도={self.current_retry}회차")
             await asyncio.sleep(delay)
 
     async def stop(self) -> None:
         """
         웹소켓 연결 종료
         """
-        self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 종료 중...")
+        self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 웹소켓 연결 종료 중...")
         await super().stop()
-        self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_NAMES_KR[self.exchangename]} 웹소켓 연결 종료 완료")
+        self.logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 웹소켓 연결 종료 완료")

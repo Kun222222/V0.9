@@ -7,7 +7,7 @@ from typing import Dict, Optional, List
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
-from crosskimp.ob_collector.orderbook.manager.metrics_manager import WebsocketMetricsManager
+from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

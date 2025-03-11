@@ -11,8 +11,6 @@
 
 텔레그램 관련 상수는 crosskimp.telegrambot.bot_constants에 정의되어 있습니다.
 
-작성자: CrossKimp Arbitrage Bot 개발팀
-최종수정: 2024.03
 """
 
 import os
