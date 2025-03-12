@@ -48,29 +48,22 @@ def parse_bybit_depth_update(data: dict) -> Optional[dict]:
         ob_data = data.get("data", {})
 
         seq = ob_data.get("u", 0)
-        ts = ob_data.get("ts", int(time.time() * 1000))
-
-        bids = []
-        for b in ob_data.get("b", []):
-            px, qty = float(b[0]), float(b[1])
-            bids.append([px, qty if qty > 0 else 0.0])
-
-        asks = []
-        for a in ob_data.get("a", []):
-            px, qty = float(a[0]), float(a[1])
-            asks.append([px, qty if qty > 0 else 0.0])
-
-        return {
-            "exchangename": Exchange.BYBIT.value,
-            "symbol": symbol,
-            "bids": bids,
-            "asks": asks,
-            "timestamp": ts,
-            "sequence": seq,
-            "type": msg_type
+        ts = data.get("ts", int(time.time() * 1000))
+        
+        # 바이낸스 형식으로 변환
+        result = {
+            "e": "depthUpdate",
+            "E": ts,
+            "s": symbol,
+            "U": seq - 1,  # 바이낸스 형식에 맞춰 시작 시퀀스 설정
+            "u": seq,
+            "b": ob_data.get("b", []),  # bids
+            "a": ob_data.get("a", [])   # asks
         }
+        
+        return result
     except Exception as e:
-        logger.error(f"{LOG_SYSTEM} {EXCHANGE_KR} parse_bybit_depth_update 오류: {e}", exc_info=True)
+        logger.error(f"Bybit 메시지 파싱 실패: {str(e)}", exc_info=True)
         return None
 
 class BybitSpotWebsocket(BaseWebsocketConnector):
@@ -101,8 +94,25 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
         self.ob_manager = BybitSpotOrderBookManager(self.depth_level)
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
+        """
+        출력 큐 설정
+        - 부모 클래스의 output_queue 설정
+        - 오더북 매니저의 output_queue 설정
+        """
+        # 부모 클래스의 output_queue 설정
         super().set_output_queue(queue)
+        
+        # 오더북 매니저의 output_queue 설정
         self.ob_manager.set_output_queue(queue)
+        
+        # 로깅 추가
+        logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 웹소켓 출력 큐 설정 완료 (큐 ID: {id(queue)})")
+        
+        # 큐 설정 확인
+        if not hasattr(self.ob_manager, '_output_queue') or self.ob_manager._output_queue is None:
+            logger.error(f"{LOG_SYSTEM} {EXCHANGE_KR} 오더북 매니저 큐 설정 실패!")
+        else:
+            logger.info(f"{LOG_SYSTEM} {EXCHANGE_KR} 오더북 매니저 큐 설정 확인 (큐 ID: {id(self.ob_manager._output_queue)})")
 
     async def connect(self) -> None:
         """
@@ -114,7 +124,12 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "connect_attempt")
                 
-                timeout = min(30, 5 * (1 + self.current_retry * 0.5))
+                # 초기 3번은 매우 공격적으로 시도
+                if self.current_retry < 3:
+                    timeout = min(30, (0.2 + self.current_retry * 0.3))  # 0.2초, 0.5초, 0.8초
+                else:
+                    # 3번 이후부터는 좀 더 보수적으로
+                    timeout = min(30, 2 * (1 + self.current_retry * 0.5))  # 2초, 3.6초, 4.2초...
                 
                 logger.info(
                     f"{LOG_SYSTEM} {EXCHANGE_KR} 웹소켓 연결 시도 | 시도={self.current_retry + 1}회차, timeout={timeout}초"

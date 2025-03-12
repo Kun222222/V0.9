@@ -22,7 +22,7 @@ EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 # 웹소켓 연결 설정
 WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
 PING_INTERVAL = 60  # 핑 전송 간격 (초)
-PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+PING_TIMEOUT = 120   # 핑 응답 타임아웃 (초)
 PONG_RESPONSE = '{"status":"UP"}'  # 업비트 PONG 응답 형식
 
 # 오더북 관련 설정

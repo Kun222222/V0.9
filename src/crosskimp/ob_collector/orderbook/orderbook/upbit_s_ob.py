@@ -6,8 +6,14 @@ from typing import Dict, Optional, List
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
-from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
+
+# ============================
+# 업비트 오더북 관련 상수
+# ============================
+EXCHANGE_CODE = Exchange.UPBIT.value  # 거래소 코드
+EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -21,7 +27,7 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
     """
     def __init__(self, depth: int = 15):
         super().__init__(depth)
-        self.exchangename = "upbit"
+        self.exchangename = EXCHANGE_CODE
 
     async def start(self):
         """오더북 매니저 시작"""
@@ -60,11 +66,15 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
             is_valid = True
             error_messages = []
             
-            if bids and asks and max(bid[0] for bid in bids) >= min(ask[0] for ask in asks):
-                is_valid = False
-                error_messages.append("Invalid price ordering")
-                # 가격 역전 메트릭 기록
-                self.record_metric("error", error_type="price_inversion")
+            if bids and asks:
+                max_bid = max(bid[0] for bid in bids)
+                min_ask = min(ask[0] for ask in asks)
+                if max_bid >= min_ask:
+                    is_valid = False
+                    error_messages.append(f"가격 역전 발생: 최고매수가({max_bid}) >= 최저매도가({min_ask})")
+                    # 가격 역전 메트릭 기록
+                    self.record_metric("error", error_type="price_inversion")
+                    logger.warning(f"{EXCHANGE_KR} {symbol} {error_messages[0]}")
             
             if is_valid:
                 self.orderbooks[symbol].update_orderbook(
@@ -81,6 +91,11 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
                 # 데이터 크기 메트릭 업데이트
                 data_size = len(str(data))  # 간단한 크기 측정
                 self.record_metric("bytes", size=data_size)
+                
+                # DEBUG 레벨로 변경하여 스팸 로깅 감소
+                logger.debug(f"{EXCHANGE_KR} {symbol} 오더북 업데이트 | "
+                           f"매수:{len(bids)}건, 매도:{len(asks)}건, "
+                           f"시퀀스:{converted['sequence']}")
             else:
                 # 검증 실패 메트릭 기록
                 self.record_metric("error", error_type="validation_failed")
@@ -91,8 +106,8 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
             # 예외 발생 메트릭 기록
             self.record_metric("error", error_type="exception")
             logger.error(
-                f"[{EXCHANGE_NAMES_KR[self.exchangename]}] {symbol} 초기화 중 예외 발생 | "
-                f"error={str(e)}",
+                f"{EXCHANGE_KR} {symbol} 초기화 중 예외 발생 | "
+                f"error={str(e)} | data={str(data)[:200]}...",
                 exc_info=True
             )
             return ValidationResult(False, [str(e)])
@@ -127,15 +142,10 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
     def clear_symbol(self, symbol: str) -> None:
         """심볼 데이터 제거"""
         self.orderbooks.pop(symbol, None)
-        logger.info(
-            f"[{EXCHANGE_NAMES_KR[self.exchangename]}] {symbol} 심볼 데이터 제거 완료"
-        )
+        logger.info(f"{EXCHANGE_KR} {symbol} 심볼 데이터 제거 완료")
 
     def clear_all(self) -> None:
         """전체 데이터 제거"""
         symbols = list(self.orderbooks.keys())
         self.orderbooks.clear()
-        logger.info(
-            f"[{EXCHANGE_NAMES_KR[self.exchangename]}] 전체 데이터 제거 완료 | "
-            f"symbols={symbols}"
-        )
+        logger.info(f"{EXCHANGE_KR} 전체 데이터 제거 완료 | symbols={symbols}")

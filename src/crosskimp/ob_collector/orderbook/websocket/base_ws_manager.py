@@ -2,15 +2,6 @@
 웹소켓 관리자 모듈
 
 이 모듈은 여러 거래소의 웹소켓 연결을 중앙에서 관리하는 기능을 제공합니다.
-주요 기능:
-1. 거래소별 웹소켓 연결 관리
-2. 메시지 큐 처리
-3. 연결 상태 모니터링
-4. 메트릭 수집 및 관리
-5. 메모리 사용량 모니터링
-
-작성자: CrossKimp Arbitrage Bot 개발팀
-최종수정: 2024.03
 """
 
 import asyncio
@@ -24,8 +15,6 @@ import json
 import os
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger
-from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.ob_collector.utils.config.config_loader import get_settings
 from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
 from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutureWebsocket
@@ -204,10 +193,22 @@ class WebsocketManager:
         # 큐 로거 초기화 (모듈 레벨 변수가 아닌 로컬 변수로 사용)
         queue_logger = get_queue_logger()
         
+        # 큐 처리 시작 로깅
+        logger.info(f"{LOG_SYSTEM} 큐 처리 시작 (큐 ID: {id(self.output_queue)})")
+        
+        # 큐 처리 카운터 초기화
+        processed_count = 0
+        
         while not self.stop_event.is_set():
             try:
                 start_time = time.time()
+                
+                # 큐에서 데이터 가져오기 (5초마다 큐 상태 로깅)
+                if processed_count % 100 == 0:
+                    logger.debug(f"{LOG_SYSTEM} 큐 상태: {self.output_queue.qsize()} 항목 대기 중")
+                
                 queue_item = await self.output_queue.get()
+                processed_count += 1
                 
                 # 큐 아이템 형식 검증
                 if not isinstance(queue_item, tuple) or len(queue_item) != 2:
@@ -225,7 +226,11 @@ class WebsocketManager:
                 
                 # 메시지 타입 판별 및 큐 데이터 로깅
                 msg_type = self._determine_message_type(data)
+                
+                # 큐 로깅 (1000개마다 로깅 상태 출력)
                 queue_logger.info(f"{exchange} {data}")
+                if processed_count % 1000 == 0:
+                    logger.info(f"{LOG_SYSTEM} 큐 처리 진행 상황: {processed_count}개 처리됨")
                 
                 if self.callback:
                     await self.callback(exchange, data)

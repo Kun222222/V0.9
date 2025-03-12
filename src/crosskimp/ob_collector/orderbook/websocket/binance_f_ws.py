@@ -24,8 +24,8 @@ EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 
 # 웹소켓 연결 설정
 WS_BASE_URL = "wss://fstream.binance.com/stream?streams="  # 웹소켓 기본 URL
-PING_INTERVAL = 150  # 핑 전송 간격 (초)
-PING_TIMEOUT = 10    # 핑 응답 타임아웃 (초)
+PING_INTERVAL = 20  # 핑 전송 간격 (초)
+PING_TIMEOUT = 60    # 핑 응답 타임아웃 (초)
 
 # REST API 설정 (스냅샷 요청용)
 REST_BASE_URL = "https://fapi.binance.com/fapi/v1/depth"  # REST API 기본 URL

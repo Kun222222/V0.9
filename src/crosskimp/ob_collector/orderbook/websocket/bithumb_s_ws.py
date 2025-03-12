@@ -3,8 +3,10 @@
 import asyncio
 import json
 import time
+from typing import Dict, List, Optional, Any, Callable, Union
+
+import websockets
 from websockets import connect
-from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
@@ -21,7 +23,7 @@ EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 # 웹소켓 연결 설정
 WS_URL = WEBSOCKET_URLS[EXCHANGE_CODE]  # 웹소켓 URL
 PING_INTERVAL = 30  # 핑 전송 간격 (초)
-PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+PING_TIMEOUT = 60   # 핑 응답 타임아웃 (초)
 
 # 오더북 관련 설정
 DEFAULT_DEPTH = 15  # 기본 오더북 깊이
@@ -105,7 +107,8 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
         super().__init__(settings, EXCHANGE_CODE)
         self.ws_url = WS_URL  # 웹소켓 URL
         self.depth = settings.get("depth", DEFAULT_DEPTH)  # 내부 depth 설정
-        self.manager = BithumbSpotOrderBookManager(depth=self.depth)
+        self.manager = BithumbSpotOrderBookManager(depth=self.depth, logger=logger)
+        self.manager.set_websocket(self)  # 웹소켓 연결 설정
         self.subscribed_symbols: List[str] = []
         self.ws = None
         
@@ -119,7 +122,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)
-        self.manager.output_queue = queue  # 오더북 매니저 큐 설정
+        self.manager.set_output_queue(queue)  # 오더북 매니저 큐 설정
 
     async def connect(self):
         """
@@ -177,19 +180,16 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
             try:
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "snapshot_request")
-                # REST API를 통해 스냅샷 요청
-                snap = await self.manager.fetch_snapshot(sym)
-                if snap:
-                    # 스냅샷을 오더북 매니저에 적용
-                    init_res = await self.manager.initialize_orderbook(sym, snap)
-                    if not init_res.is_valid:
-                        self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 적용 실패: {init_res.error_messages}")
-                    else:
-                        if self.connection_status_callback:
-                            self.connection_status_callback(self.exchangename, "snapshot_received")
-                        self.subscribed_symbols.append(sym.upper())
-                else:
-                    self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 요청 실패")
+                
+                # 오더북 초기화 (스냅샷 요청 및 적용)
+                await self.manager.subscribe(sym)
+                
+                # 구독 심볼 목록에 추가
+                self.subscribed_symbols.append(sym.upper())
+                
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "snapshot_received")
+                    
             except Exception as e:
                 self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 요청 중 오류: {str(e)}")
 
@@ -436,3 +436,33 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
         self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 종료 중...")
         await super().stop()
         self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 종료 완료")
+
+    async def subscribe_depth(self, symbol: str):
+        """
+        단일 심볼의 오더북 구독
+        
+        Args:
+            symbol: 구독할 심볼
+        """
+        if not self.ws or not self.is_connected:
+            self.log_error(f"{EXCHANGE_KR} {symbol} 웹소켓 연결이 없어 구독할 수 없음")
+            return
+            
+        try:
+            # 빗썸 형식으로 심볼 변환 (예: BTC -> BTC_KRW)
+            symbol_str = f"{symbol.upper()}{BITHUMB_CONFIG['symbol_suffix']}"
+            
+            # 구독 메시지 구성
+            sub_msg = {
+                "type": BITHUMB_CONFIG["message_type_depth"],
+                "symbols": [symbol_str],
+                "tickTypes": BITHUMB_CONFIG["tick_types"]
+            }
+            
+            # 웹소켓을 통해 구독 메시지 전송
+            await self.ws.send(json.dumps(sub_msg))
+            self.logger.info(f"{EXCHANGE_KR} {symbol} 오더북 구독 메시지 전송 완료")
+            
+        except Exception as e:
+            self.log_error(f"{EXCHANGE_KR} {symbol} 오더북 구독 메시지 전송 중 오류: {str(e)}")
+            raise

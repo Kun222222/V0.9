@@ -104,7 +104,8 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                     if hasattr(self, 'connection_status_callback') and self.connection_status_callback:
                         self.connection_status_callback(self.exchangename, "snapshot")
                     
-                    # 출력 큐에 스냅샷 메시지 전송
+                    # 출력 큐에 스냅샷 메시지 전송 - 스냅샷은 큐로 전송하지 않도록 주석 처리
+                    """
                     if self._output_queue:
                         await self._output_queue.put((
                             self.exchangename,
@@ -118,6 +119,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                                 }
                             }
                         ))
+                    """
                     
                     logger.info(f"[BaseOrderBook][{self.exchangename}] - {symbol} 스냅샷 init")
                     return result

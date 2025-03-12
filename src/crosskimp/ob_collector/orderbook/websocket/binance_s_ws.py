@@ -21,8 +21,8 @@ EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 
 # 웹소켓 연결 설정
 WS_URL = "wss://stream.binance.com:9443/ws"  # 웹소켓 URL
-PING_INTERVAL = 150  # 핑 전송 간격 (초)
-PING_TIMEOUT = 10    # 핑 응답 타임아웃 (초)
+PING_INTERVAL = 20  # 핑 전송 간격 (초)
+PING_TIMEOUT = 60    # 핑 응답 타임아웃 (초)
 HEALTH_CHECK_INTERVAL = 30  # 헬스 체크 간격 (초)
 
 # 오더북 관련 설정

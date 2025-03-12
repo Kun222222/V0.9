@@ -1,14 +1,13 @@
-# file: orderbook/base_orderbook.py
+# file: core/websocket/base_orderbook.py
 
 import time
 import asyncio
 from dataclasses import dataclass
 from typing import List, Dict, Optional
-
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-
-# 로거 인스턴스 가져오기
-logger = get_unified_logger()
+from utils.logger import (
+    unified_logger, binance_logger, binance_future_logger,
+    bybit_logger, bybit_future_logger, upbit_logger, bithumb_logger
+)
 
 @dataclass
 class ValidationResult:
@@ -35,7 +34,17 @@ class OrderBook:
         self.exchangename = exchangename
         self.symbol = symbol
         self.depth = depth  # 기본 100
-        self.logger = logger if logger else get_unified_logger()
+        if logger:
+            self.logger = logger
+        else:
+            self.logger = {
+                'binance': binance_logger,
+                'binancefuture': binance_future_logger,
+                'bybit': bybit_logger,
+                'bybitfuture': bybit_future_logger,
+                'upbit': upbit_logger,
+                'bithumb': bithumb_logger
+            }.get(exchangename.lower(), unified_logger)
 
         self.bids: Dict[float, float] = {}
         self.asks: Dict[float, float] = {}
@@ -200,8 +209,7 @@ class OrderBook:
                         )
 
             parsed = self.to_dict()
-            # 스냅샷 데이터는 큐로 전송하지 않고, 델타 업데이트만 큐로 전송
-            if self.output_queue and msg_type != "snapshot":
+            if self.output_queue:
                 await self.output_queue.put((self.exchangename, parsed))
             return UpdateResult(True, [])
 
@@ -241,37 +249,3 @@ class OrderBook:
         if len(self.bids) > self.depth or len(self.asks) > self.depth:
             errors.append("Depth limit exceeded")
         return ValidationResult(len(errors) == 0, errors)
-
-    def get_bids(self, limit: int = 10) -> List[List[float]]:
-        """
-        상위 N개의 매수 호가를 반환합니다.
-        
-        Args:
-            limit: 반환할 호가 수
-            
-        Returns:
-            List[List[float]]: [[가격, 수량], ...] 형태의 매수 호가 목록
-        """
-        try:
-            sorted_bids = sorted(self.bids.items(), key=lambda x: x[0], reverse=True)
-            return [[p, q] for p, q in sorted_bids[:limit]]
-        except Exception as e:
-            self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} get_bids fail: {e}")
-            return []
-            
-    def get_asks(self, limit: int = 10) -> List[List[float]]:
-        """
-        상위 N개의 매도 호가를 반환합니다.
-        
-        Args:
-            limit: 반환할 호가 수
-            
-        Returns:
-            List[List[float]]: [[가격, 수량], ...] 형태의 매도 호가 목록
-        """
-        try:
-            sorted_asks = sorted(self.asks.items(), key=lambda x: x[0])
-            return [[p, q] for p, q in sorted_asks[:limit]]
-        except Exception as e:
-            self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} get_asks fail: {e}")
-            return []
