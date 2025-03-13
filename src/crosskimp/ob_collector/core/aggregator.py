@@ -15,7 +15,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import aiohttp
 from typing import Dict, List, Set, Optional, Tuple
 
@@ -384,6 +384,144 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
         return []
 
 # ============================
+# 상장 시간 조회 함수
+# ============================
+async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetime]]:
+    """
+    바이낸스 선물과 바이빗 선물의 상장 시간을 조회합니다.
+    
+    Args:
+        symbols: 조회할 심볼 목록
+    
+    Returns:
+        Dict[str, Dict[str, datetime]]: 거래소별 심볼의 상장 시간 정보
+        {
+            "binancefuture": {"BTC": datetime(...), ...},
+            "bybitfuture": {"BTC": datetime(...), ...}
+        }
+    """
+    try:
+        listing_times = {
+            "binancefuture": {},
+            "bybitfuture": {}
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            # 바이낸스 선물 상장 시간 조회
+            data = await make_request(session, BINANCE_URLS["future"])
+            if data and "symbols" in data:
+                for item in data["symbols"]:
+                    symbol = item["baseAsset"]
+                    if symbol in symbols and "onboardDate" in item:
+                        onboard_date = datetime.fromtimestamp(
+                            int(item["onboardDate"]) / 1000,
+                            tz=timezone.utc
+                        )
+                        listing_times["binancefuture"][symbol] = onboard_date
+            
+            # 바이빗 선물 상장 시간 조회
+            for symbol in symbols:
+                params = {"category": "linear", "symbol": f"{symbol}USDT"}
+                data = await make_request(session, BYBIT_URLS["future"], params)
+                
+                if (data and data.get("retCode") == 0 and 
+                    data.get("result", {}).get("list")):
+                    item = data["result"]["list"][0]
+                    if "launchTime" in item:
+                        launch_time = datetime.fromtimestamp(
+                            int(item["launchTime"]) / 1000,
+                            tz=timezone.utc
+                        )
+                        listing_times["bybitfuture"][symbol] = launch_time
+            
+            # 현재 시간 (UTC)
+            now = datetime.now(timezone.utc)
+            
+            # 상장 시간 로깅
+            logger.info(f"{LOG_SYSTEM} === 선물 거래소 상장 시간 ===")
+            for exchange, times in listing_times.items():
+                logger.info(f"\n[{EXCHANGE_NAMES_KR[exchange]}]")
+                for symbol, listing_time in sorted(times.items()):
+                    age = now - listing_time
+                    days = age.days
+                    hours = age.seconds // 3600
+                    minutes = (age.seconds % 3600) // 60
+                    
+                    logger.info(
+                        f"- {symbol}: {listing_time.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                        f" (상장 후 {days}일 {hours}시간 {minutes}분)"
+                    )
+        
+        return listing_times
+        
+    except Exception as e:
+        logger.error(f"선물 거래소 상장 시간 조회 실패: {str(e)}", exc_info=True)
+        return {"binancefuture": {}, "bybitfuture": {}}
+
+# ============================
+# 최근 상장 심볼 필터링 함수
+# ============================
+def filter_recently_listed_symbols(
+    filtered_data: Dict[str, List[str]],
+    listing_times: Dict[str, Dict[str, datetime]],
+    min_hours_since_listing: int = 10
+) -> Dict[str, List[str]]:
+    """
+    상장 후 일정 시간이 지나지 않은 심볼을 모든 거래소에서 제외합니다.
+    
+    Args:
+        filtered_data: 거래소별 필터링된 심볼 목록
+        listing_times: 거래소별 심볼 상장 시간 정보
+        min_hours_since_listing: 최소 상장 경과 시간 (시간)
+    
+    Returns:
+        Dict[str, List[str]]: 최종 필터링된 심볼 목록
+    """
+    try:
+        # 현재 시간 (UTC)
+        now = datetime.now(timezone.utc)
+        
+        # 최근 상장된 심볼 목록
+        recently_listed = set()
+        
+        # 각 거래소별 최근 상장 심볼 확인
+        for exchange, times in listing_times.items():
+            for symbol, listing_time in times.items():
+                time_diff = now - listing_time
+                hours_since_listing = time_diff.days * 24 + time_diff.seconds // 3600
+                
+                if hours_since_listing < min_hours_since_listing:
+                    recently_listed.add(symbol)
+                    logger.info(
+                        f"{LOG_SYSTEM} 최근 상장 제외: {symbol} "
+                        f"(상장 후 {hours_since_listing}시간, "
+                        f"기준: {min_hours_since_listing}시간)"
+                    )
+        
+        # 모든 거래소에서 최근 상장 심볼 제외
+        if recently_listed:
+            logger.info(f"{LOG_SYSTEM} === 최근 상장으로 제외된 심볼 === {sorted(list(recently_listed))}")
+            
+            for exchange in filtered_data:
+                before_symbols = filtered_data[exchange]
+                filtered_data[exchange] = [
+                    s for s in filtered_data[exchange]
+                    if s not in recently_listed
+                ]
+                
+                removed = set(before_symbols) - set(filtered_data[exchange])
+                if removed:
+                    logger.info(
+                        f"{EXCHANGE_NAMES_KR[exchange]} 최근 상장으로 제외된 심볼: {sorted(list(removed))}"
+                    )
+        
+        return filtered_data
+        
+    except Exception as e:
+        logger.error(f"{LOG_SYSTEM} 최근 상장 심볼 필터링 실패: {str(e)}", exc_info=True)
+        return filtered_data
+
+# ============================
 # 심볼 페어링 함수
 # ============================
 async def get_paired_symbols(
@@ -548,8 +686,17 @@ class Aggregator:
                         f"{EXCHANGE_NAMES_KR[exchange]} 제외된 심볼: {sorted(list(removed))}"
                     )
             
-            # # 4. 최종 결과 저장 및 로깅
-            # self.save_filtered_symbols(filtered_data)
+            # 4. 선물 거래소 상장 시간 조회
+            all_symbols = set()
+            for symbols in filtered_data.values():
+                all_symbols.update(symbols)
+            listing_times = await fetch_listing_times(list(all_symbols))
+            
+            # 5. 최근 상장 심볼 필터링
+            filtered_data = filter_recently_listed_symbols(
+                filtered_data,
+                listing_times
+            )
             
             logger.info(f"{LOG_SYSTEM} === 거래소별 최종 구독 심볼 ===")
             for exchange, symbols in filtered_data.items():

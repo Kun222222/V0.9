@@ -8,9 +8,16 @@ from dataclasses import dataclass
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_manager import BaseOrderBookManager
+from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
+
+# ============================
+# 바이낸스 선물 오더북 관련 상수
+# ============================
+EXCHANGE_CODE = Exchange.BINANCE_FUTURE.value  # 거래소 코드
+EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 
 @dataclass
 class OrderBookUpdate:
@@ -24,8 +31,8 @@ class OrderBookUpdate:
         if not self.bids or not self.asks:
             return True  # 한쪽만 업데이트되는 경우 허용
             
-        best_bid = max(self.bids.keys())
-        best_ask = min(self.asks.keys())
+        best_bid = max(self.bids.keys()) if self.bids else 0
+        best_ask = min(self.asks.keys()) if self.asks else float('inf')
         return best_bid < best_ask
 
 def parse_binance_future_depth_update(msg_data: dict) -> Optional[dict]:
@@ -77,6 +84,9 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
         self.gap_threshold = 1000  # 갭 크기 임계값 (1000으로 조정)
         self.gap_warning_interval = 5.0  # 갭 경고 간격 (초)
         self.last_gap_warning_time: Dict[str, float] = {}  # 심볼별 마지막 갭 경고 시간
+        
+        # 가격 역전 감지 관련 설정
+        self.price_inversion_count: Dict[str, int] = {}  # 심볼별 가격 역전 발생 횟수
 
     async def update(self, symbol: str, data: dict) -> ValidationResult:
         """
@@ -85,33 +95,79 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
         - 초기화 후: 시퀀스 검증 후 적용
         - 선물 특화: 갭 발생 시 강제 진행
         """
-        # 버퍼 초기화
-        if symbol not in self.buffer_events:
-            self.buffer_events[symbol] = []
+        try:
+            # 바이낸스 선물 depthUpdate 메시지 처리
+            if data.get("e") == "depthUpdate":
+                # 메시지 변환
+                symbol = data.get("s", "").replace("USDT", "").upper()
+                first_update_id = data.get("U", 0)
+                final_update_id = data.get("u", 0)
+                
+                # 변환된 데이터 생성
+                converted_data = {
+                    "exchangename": "binancefuture",
+                    "symbol": symbol,
+                    "bids": [[float(b[0]), float(b[1])] for b in data.get("b", [])],
+                    "asks": [[float(a[0]), float(a[1])] for a in data.get("a", [])],
+                    "timestamp": data.get("E", int(time.time() * 1000)),
+                    "first_update_id": first_update_id,
+                    "final_update_id": final_update_id
+                }
+                
+                # 버퍼 초기화
+                if symbol not in self.buffer_events:
+                    self.buffer_events[symbol] = []
+                
+                # 버퍼 크기 제한
+                if len(self.buffer_events[symbol]) >= self.max_buffer_size:
+                    self.buffer_events[symbol].pop(0)
+                
+                # 이벤트 버퍼링
+                self.buffer_events[symbol].append(converted_data)
+                
+                # 초기화 상태 확인
+                st = self.sequence_states.get(symbol)
+                if not st or not st["initialized"]:
+                    self.logger.debug(f"{EXCHANGE_KR} {symbol} 초기화 전 버퍼링")
+                    return ValidationResult(True, [])
+                
+                # 초기화 완료 후 이벤트 적용
+                await self._apply_buffered_events(symbol)
+                return ValidationResult(True, [])
             
-        # 버퍼 크기 제한
-        if len(self.buffer_events[symbol]) >= self.max_buffer_size:
-            self.buffer_events[symbol].pop(0)
-            
-        # 이벤트 버퍼링
-        self.buffer_events[symbol].append(data)
-
-        # 초기화 상태 확인
-        st = self.sequence_states.get(symbol)
-        if not st or not st["initialized"]:
-            self.logger.debug(f"[{self.exchangename}] {symbol} 초기화 전 버퍼링")
-            return ValidationResult(True, [])
-
-        # 초기화 완료 후 이벤트 적용
-        await self._apply_buffered_events(symbol)
-        return ValidationResult(True, [])
+            # 기존 처리 로직 (이미 변환된 데이터)
+            else:
+                # 버퍼 초기화
+                if symbol not in self.buffer_events:
+                    self.buffer_events[symbol] = []
+                
+                # 버퍼 크기 제한
+                if len(self.buffer_events[symbol]) >= self.max_buffer_size:
+                    self.buffer_events[symbol].pop(0)
+                
+                # 이벤트 버퍼링
+                self.buffer_events[symbol].append(data)
+                
+                # 초기화 상태 확인
+                st = self.sequence_states.get(symbol)
+                if not st or not st["initialized"]:
+                    self.logger.debug(f"{EXCHANGE_KR} {symbol} 초기화 전 버퍼링")
+                    return ValidationResult(True, [])
+                
+                # 초기화 완료 후 이벤트 적용
+                await self._apply_buffered_events(symbol)
+                return ValidationResult(True, [])
+        
+        except Exception as e:
+            self.logger.error(f"{EXCHANGE_KR} {symbol} 업데이트 중 오류: {e}", exc_info=True)
+            return ValidationResult(False, [str(e)])
 
     async def initialize_orderbook(self, symbol: str, snapshot: dict) -> ValidationResult:
         """오더북 초기화 (스냅샷 적용)"""
         try:
             last_update_id = snapshot.get("sequence")
             if last_update_id is None:
-                return ValidationResult(False, [f"{symbol} snapshot에 sequence 없음"])
+                return ValidationResult(False, [f"{symbol} 스냅샷에 sequence 없음"])
 
             # 시퀀스 상태 초기화
             self.sequence_states[symbol] = {
@@ -129,13 +185,20 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
             res = await ob.update(snapshot)
             if not res.is_valid:
                 return res
+                
+            # 초기화 직후 가격 역전 감지 활성화 (수정)
+            ob.enable_cross_detection()
+            self.logger.info(f"{EXCHANGE_KR} {symbol} 초기화 직후 가격 역전 감지 활성화")
+            
+            # 가격 역전 카운터 초기화
+            self.price_inversion_count[symbol] = 0
 
             await self._apply_buffered_events(symbol)
             return res
 
         except Exception as e:
             self.logger.error(
-                f"[{self.exchangename}] {symbol} 초기화 중 오류: {e}",
+                f"{EXCHANGE_KR} {symbol} 초기화 중 오류: {e}",
                 exc_info=True
             )
             return ValidationResult(False, [str(e)])
@@ -146,6 +209,7 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
         - gap 발생 시 강제 jump
         - gap 크기 모니터링
         - 과도한 갭 발생 시 경고 제한
+        - 가격 역전 감지 및 처리 강화 (수정)
         """
         st = self.sequence_states.get(symbol)
         if not st or not st["initialized"]:
@@ -173,30 +237,60 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
                 last_warning = self.last_gap_warning_time.get(symbol, 0)
                 
                 # 갭 크기가 임계값을 초과하고 경고 간격이 지났으면 경고
-                # if gap_size > self.gap_threshold and (current_time - last_warning) >= self.gap_warning_interval:
-                    # self.logger.warning(
-                    #     f"[{self.exchangename}] {symbol} 큰 시퀀스 갭 발생: "
-                    #     f"last_id={last_id}, first_id={first_id}, gap={gap_size}, "
-                    #     f"force_jumps={st['force_jump_count']}, "
-                    #     f"초당갭비율={gap_size/self.gap_warning_interval:.2f}"
-                    # )
-                #     self.last_gap_warning_time[symbol] = current_time
-                # elif gap_size <= self.gap_threshold:
-                #     self.logger.debug(
-                #         f"[{self.exchangename}] {symbol} 작은 시퀀스 갭: "
-                #         f"last_id={last_id}, first_id={first_id}, gap={gap_size}"
-                #     )
+                if gap_size > self.gap_threshold and (current_time - last_warning) >= self.gap_warning_interval:
+                    self.logger.warning(
+                        f"{EXCHANGE_KR} {symbol} 큰 시퀀스 갭 발생: "
+                        f"last_id={last_id}, first_id={first_id}, gap={gap_size}, "
+                        f"force_jumps={st['force_jump_count']}, "
+                        f"초당갭비율={gap_size/self.gap_warning_interval:.2f}"
+                    )
+                    self.last_gap_warning_time[symbol] = current_time
+                elif gap_size <= self.gap_threshold:
+                    self.logger.debug(
+                        f"{EXCHANGE_KR} {symbol} 작은 시퀀스 갭: "
+                        f"last_id={last_id}, first_id={first_id}, gap={gap_size}"
+                    )
+
+            # 가격 역전 검사 추가 (수정)
+            bids_dict = {float(b[0]): float(b[1]) for b in evt.get("bids", [])}
+            asks_dict = {float(a[0]): float(a[1]) for a in evt.get("asks", [])}
+            
+            if bids_dict and asks_dict:
+                update = OrderBookUpdate(
+                    bids=bids_dict,
+                    asks=asks_dict,
+                    timestamp=evt.get("timestamp", 0),
+                    first_update_id=first_id,
+                    final_update_id=final_id
+                )
+                
+                if not update.is_valid():
+                    best_bid = max(bids_dict.keys()) if bids_dict else 0
+                    best_ask = min(asks_dict.keys()) if asks_dict else float('inf')
+                    
+                    # 가격 역전 카운터 증가
+                    self.price_inversion_count[symbol] = self.price_inversion_count.get(symbol, 0) + 1
+                    
+                    self.logger.warning(
+                        f"{EXCHANGE_KR} {symbol} 가격 역전 감지 및 수정 (#{self.price_inversion_count[symbol]}): "
+                        f"최고매수={best_bid}, 최저매도={best_ask}, 차이={best_bid-best_ask}"
+                    )
+                    
+                    # 가격 역전 수정: 역전된 호가 제거
+                    if best_bid >= best_ask:
+                        # 매수가가 매도가보다 높거나 같은 경우, 해당 매수가 제거
+                        evt["bids"] = [[p, q] for p, q in evt.get("bids", []) if float(p) < best_ask]
+                        self.logger.info(f"{EXCHANGE_KR} {symbol} 역전된 매수호가 제거 완료")
 
             res = await ob.update(evt)
             if res.is_valid:
                 if not st["first_delta_applied"]:
                     st["first_delta_applied"] = True
-                    ob.enable_cross_detection()
                 last_id = final_id
                 applied_count += 1
             else:
                 self.logger.error(
-                    f"[{self.exchangename}] {symbol} 델타 적용 실패: {res.error_messages}"
+                    f"{EXCHANGE_KR} {symbol} 델타 적용 실패: {res.error_messages}"
                 )
 
         self.buffer_events[symbol] = []
@@ -204,14 +298,16 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
 
         if applied_count > 0 and self.output_queue:
             final_ob = ob.to_dict()
+            
+            # 시퀀스 번호 업데이트 - 마지막으로 적용된 시퀀스 번호 사용
+            final_ob["sequence"] = last_id
+            
+            # 큐에 전송 - (exchangename, final_ob) 형태로 전송
             try:
                 await self.output_queue.put((self.exchangename, final_ob))
-                # self.logger.debug(f"[{self.exchangename}] {symbol} 큐 전송 완료")
+                self.logger.debug(f"{EXCHANGE_KR} {symbol} 오더북 큐 전송 완료 (시퀀스: {last_id})")
             except Exception as e:
-                self.logger.error(
-                    f"[{self.exchangename}] {symbol} 큐 전송 실패: {e}",
-                    exc_info=True
-                )
+                self.logger.error(f"{EXCHANGE_KR} {symbol} 큐 전송 실패: {e}")
 
     def is_initialized(self, symbol: str) -> bool:
         st = self.sequence_states.get(symbol)
@@ -224,10 +320,10 @@ class BinanceFutureOrderBookManager(BaseOrderBookManager):
         self.orderbooks.pop(symbol, None)
         self.sequence_states.pop(symbol, None)
         self.buffer_events.pop(symbol, None)
-        self.logger.info(f"[{self.exchangename}] {symbol} 데이터 제거 완료")
+        self.logger.info(f"{EXCHANGE_KR} {symbol} 데이터 제거 완료")
 
     def clear_all(self) -> None:
         self.orderbooks.clear()
         self.sequence_states.clear()
         self.buffer_events.clear()
-        self.logger.info(f"[{self.exchangename}] 전체 데이터 제거 완료")
+        self.logger.info(f"{EXCHANGE_KR} 전체 데이터 제거 완료")

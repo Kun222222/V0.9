@@ -11,7 +11,7 @@ async def test_bithumb_snapshot():
         logger = get_unified_logger()
         print("로거 초기화 완료")
         
-        manager = BithumbSpotOrderBookManager(logger=logger)
+        manager = BithumbSpotOrderBookManager()
         print("매니저 초기화 완료")
         
         # 스냅샷 요청

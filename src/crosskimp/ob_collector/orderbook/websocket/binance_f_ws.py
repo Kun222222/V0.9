@@ -9,10 +9,9 @@ import websockets
 from websockets import connect
 from typing import Dict, List, Optional
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutureOrderBookManager, parse_binance_future_depth_update
-from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.utils.config.constants import Exchange
 
 
 # ============================
@@ -20,12 +19,11 @@ from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAM
 # ============================
 # 기본 설정
 EXCHANGE_CODE = Exchange.BINANCE_FUTURE.value  # 거래소 코드
-EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 
 # 웹소켓 연결 설정
 WS_BASE_URL = "wss://fstream.binance.com/stream?streams="  # 웹소켓 기본 URL
 PING_INTERVAL = 20  # 핑 전송 간격 (초)
-PING_TIMEOUT = 60    # 핑 응답 타임아웃 (초)
+PING_TIMEOUT = 20    # 핑 응답 타임아웃 (초)
 
 # REST API 설정 (스냅샷 요청용)
 REST_BASE_URL = "https://fapi.binance.com/fapi/v1/depth"  # REST API 기본 URL
@@ -41,10 +39,6 @@ SNAPSHOT_REQUEST_TIMEOUT = 10  # 스냅샷 요청 타임아웃 (초)
 
 # DNS 캐시 설정
 DNS_CACHE_TTL = 300  # DNS 캐시 TTL (초)
-
-
-# 로거 인스턴스 가져오기
-logger = get_unified_logger()
 
 class BinanceFutureWebsocket(BaseWebsocketConnector):
     """
@@ -77,9 +71,6 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         # Ping/Pong 설정 추가
         self.ping_interval = PING_INTERVAL
         self.ping_timeout = PING_TIMEOUT
-        
-        # raw 로거 초기화 제거
-        # self.raw_logger = get_raw_logger("binance_future")  # 중앙화된 로깅 사용을 위해 제거
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """
@@ -111,9 +102,9 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             self.stats.connection_start_time = time.time()
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect")
-            self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 성공")
+            self.log_info("웹소켓 연결 성공")
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR} connect() 예외: {e}", exc_info=True)
+            self.log_error(f"connect() 예외: {e}", exc_info=True)
             raise
 
     async def subscribe(self, symbols: List[str]):
@@ -143,9 +134,9 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             if snapshot:
                 res = await self.orderbook_manager.initialize_orderbook(sym, snapshot)
                 if not res.is_valid:
-                    self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 적용 실패: {res.error_messages}")
+                    self.log_error(f"{sym} 스냅샷 적용 실패: {res.error_messages}")
             else:
-                self.log_error(f"{EXCHANGE_KR} {sym} 스냅샷 요청 실패")
+                self.log_error(f"{sym} 스냅샷 요청 실패")
 
     async def request_snapshot(self, symbol: str) -> Optional[dict]:
         """
@@ -162,7 +153,7 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         for attempt in range(max_retries):
             try:
                 url = f"{self.snapshot_base}?symbol={symbol_upper}&limit={self.snapshot_depth}"
-                self.logger.info(f"{EXCHANGE_KR} 스냅샷 요청 URL: {url}")
+                self.log_info(f"스냅샷 요청 URL: {url}")
                 
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "snapshot_request")
@@ -179,16 +170,16 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                             raw_data = await resp.json()
                             return self.parse_snapshot(raw_data, symbol)
                         else:
-                            self.log_error(f"{EXCHANGE_KR} {symbol} 스냅샷 status={resp.status}")
+                            self.log_error(f"{symbol} 스냅샷 status={resp.status}")
                             
             except Exception as e:
-                self.log_error(f"{EXCHANGE_KR} 스냅샷 요청 실패: {e}", exc_info=True)
+                self.log_error(f"스냅샷 요청 실패: {e}", exc_info=True)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
                     continue
                 
-        self.log_error(f"{EXCHANGE_KR} {symbol} ME 스냅샷 요청 최대 재시도 횟수 초과")
+        self.log_error(f"{symbol} ME 스냅샷 요청 최대 재시도 횟수 초과")
         return None
 
     def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
@@ -197,7 +188,7 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         """
         try:
             if "lastUpdateId" not in data:
-                self.log_error(f"{EXCHANGE_KR} {symbol} 'lastUpdateId' 없음")
+                self.log_error(f"{symbol} 'lastUpdateId' 없음")
                 return None
 
             last_id = data["lastUpdateId"]
@@ -217,7 +208,7 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                 self.connection_status_callback(self.exchangename, "snapshot_parsed")
             return snapshot
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR} parse_snapshot() 예외: {e}", exc_info=True)
+            self.log_error(f"parse_snapshot() 예외: {e}", exc_info=True)
             return None
 
     async def parse_message(self, message: str) -> Optional[dict]:
@@ -235,34 +226,156 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
             # depthUpdate
             if data.get("e") == "depthUpdate":
                 symbol = data["s"].replace("USDT","").upper()
-                # Raw 메시지 그대로 로깅 (raw 로그 파일에만 기록)
-                self.log_raw_message(f"{EXCHANGE_KR} depthUpdate", message, symbol)
+                # Raw 메시지 로깅
+                self.log_raw_message("depthUpdate", message, symbol)
                 return data
 
             return None
         except json.JSONDecodeError as je:
-            self.log_error(f"{EXCHANGE_KR} JSON 파싱실패: {je}, message={message[:200]}", exc_info=False)
+            self.log_error(f"JSON 파싱실패: {je}, message={message[:200]}")
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR} parse_message() 예외: {e}", exc_info=True)
+            self.log_error(f"parse_message() 예외: {e}")
         return None
 
     async def handle_parsed_message(self, parsed: dict) -> None:
+        """파싱된 메시지 처리"""
         try:
-            symbol = parsed.get("s", "").replace("USDT","").upper()
-            evt = parse_binance_future_depth_update(parsed)
-            if not evt:
-                return
+            start_time = time.time()
             
-            res = await self.orderbook_manager.update(symbol, evt)
-            if not res.is_valid:
-                self.log_error(f"{EXCHANGE_KR} {symbol} 오더북 업데이트 실패: {res.error_messages}")
+            # depthUpdate 메시지 처리
+            if parsed.get("e") == "depthUpdate":
+                symbol = parsed.get("s", "").replace("USDT", "").upper()
+                
+                # 메시지 크기 메트릭 기록 - 안전하게 호출
+                try:
+                    # metrics_manager 속성이 있는지 확인
+                    if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                        message_size = len(str(parsed))
+                        await self.record_metric("bytes", size=message_size, message_type="orderbook", symbol=symbol)
+                except Exception:
+                    # 오류 로그를 출력하지 않음
+                    pass
+                
+                # 오더북 업데이트
+                if self.orderbook_manager:
+                    try:
+                        # 오더북 업데이트
+                        result = await self.orderbook_manager.update(symbol, parsed)
+                        
+                        # 처리 시간 메트릭 기록 - 안전하게 호출
+                        try:
+                            # metrics_manager 속성이 있는지 확인
+                            if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                                processing_time = (time.time() - start_time) * 1000  # ms 단위
+                                await self.record_metric("processing_time", time_ms=processing_time, operation="orderbook_update", symbol=symbol)
+                        except Exception:
+                            # 오류 로그를 출력하지 않음
+                            pass
+                        
+                        # 업데이트 결과에 따른 메트릭 기록 - 안전하게 호출
+                        try:
+                            # metrics_manager 속성이 있는지 확인
+                            if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                                if result.is_valid:
+                                    await self.record_metric("orderbook", symbol=symbol, operation="update")
+                                else:
+                                    await self.record_metric("error", error_type="update_failed", symbol=symbol, error=str(result.error_messages))
+                        except Exception:
+                            # 오류 로그를 출력하지 않음
+                            pass
+                    except Exception as e:
+                        self.log_error(f"오더북 업데이트 실패: {e}")
+            
+            # 바이빗 스타일 메시지 처리 (이전 코드 유지)
+            elif "topic" in parsed and "data" in parsed:
+                topic = parsed["topic"]
+                data = parsed["data"]
+                
+                # 오더북 메시지 처리
+                if topic.startswith("orderbook."):
+                    # 심볼 추출
+                    symbol_with_suffix = topic.split(".")[-1]
+                    symbol = symbol_with_suffix.replace("USDT", "")
+                    
+                    # 메시지 크기 메트릭 기록 - 안전하게 호출
+                    try:
+                        # metrics_manager 속성이 있는지 확인
+                        if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                            message_size = len(str(parsed))
+                            await self.record_metric("bytes", size=message_size, message_type="orderbook", symbol=symbol)
+                    except Exception:
+                        # 오류 로그를 출력하지 않음
+                        pass
+                    
+                    # 오더북 업데이트
+                    if self.orderbook_manager:
+                        try:
+                            # 데이터 변환
+                            converted_data = self._convert_orderbook_data(data, symbol)
+                            
+                            # 오더북 업데이트
+                            result = await self.orderbook_manager.update(symbol, converted_data)
+                            
+                            # 처리 시간 메트릭 기록 - 안전하게 호출
+                            try:
+                                # metrics_manager 속성이 있는지 확인
+                                if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                                    processing_time = (time.time() - start_time) * 1000  # ms 단위
+                                    await self.record_metric("processing_time", time_ms=processing_time, operation="orderbook_update", symbol=symbol)
+                            except Exception:
+                                # 오류 로그를 출력하지 않음
+                                pass
+                            
+                            # 업데이트 결과에 따른 메트릭 기록 - 안전하게 호출
+                            try:
+                                # metrics_manager 속성이 있는지 확인
+                                if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                                    if result.is_valid:
+                                        await self.record_metric("orderbook", symbol=symbol, operation="update")
+                                    else:
+                                        await self.record_metric("error", error_type="update_failed", symbol=symbol, error=str(result.error_messages))
+                            except Exception:
+                                # 오류 로그를 출력하지 않음
+                                pass
+                        except Exception as e:
+                            self.log_error(f"오더북 업데이트 실패: {e}")
+                        
+                # 핑/퐁 메시지 처리
+                elif "op" in parsed and parsed["op"] == "pong":
+                    # 퐁 수신 시간 기록
+                    self.stats.last_pong_time = time.time()
+                    
+                    # 핑-퐁 지연시간 계산
+                    latency = (self.stats.last_pong_time - self.stats.last_ping_time) * 1000  # ms 단위
+                    self.stats.latency_ms = latency
+                    
+                    # 핑-퐁 메트릭 기록 - 안전하게 호출
+                    try:
+                        # metrics_manager 속성이 있는지 확인
+                        if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                            await self.record_metric("pong", latency_ms=latency)
+                    except Exception:
+                        # 오류 로그를 출력하지 않음
+                        pass
+                    
+                    self.log_debug(f"퐁 수신 | 지연시간: {latency:.2f}ms")
+                
         except Exception as e:
-            self.log_error(f"{EXCHANGE_KR} handle_parsed_message() 예외: {e}", exc_info=True)
+            self.log_error(f"메시지 처리 중 오류: {e}")
+            
+            # 오류 메트릭 기록 - 안전하게 호출
+            try:
+                # metrics_manager 속성이 있는지 확인
+                if hasattr(self, 'metrics_manager') and self.metrics_manager:
+                    await self.record_metric("error", error_type="message_handling", error=str(e))
+            except Exception:
+                # 오류 로그를 출력하지 않음
+                pass
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         exchange_symbols = symbols_by_exchange.get(self.exchangename.lower(), [])
         if not exchange_symbols:
-            self.log_error(f"{EXCHANGE_KR} 구독할 심볼 없음.")
+            self.log_error("구독할 심볼 없음.")
             return
 
         # 부모 클래스의 start 메소드를 호출하지 않고 직접 필요한 로직 구현
@@ -297,13 +410,13 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                         # 헬스체크 timeout
                         continue
                     except Exception as e:
-                        self.log_error(f"{EXCHANGE_KR} 메시지 수신 실패 | error={str(e)}")
+                        self.log_error(f"메시지 수신 실패: {str(e)}")
                         break
 
             except Exception as conn_e:
                 # 연결 실패 시 백오프
                 delay = self.reconnect_strategy.next_delay()
-                self.log_error(f"{EXCHANGE_KR} 연결 실패: {conn_e}, 재연결 {delay}s 후 재시도", exc_info=False)
+                self.log_error(f"연결 실패: {conn_e}, 재연결 {delay}s 후 재시도")
                 await asyncio.sleep(delay)
             finally:
                 if self.ws:
@@ -319,6 +432,20 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         """
         웹소켓 연결 종료
         """
-        self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 종료 중...")
+        self.log_info("웹소켓 연결 종료 중...")
         await super().stop()
-        self.logger.info(f"{EXCHANGE_KR} 웹소켓 연결 종료 완료")
+        self.log_info("웹소켓 연결 종료 완료")
+
+    async def record_metric(self, metric_type: str, **kwargs):
+        """
+        메트릭 기록 메서드 (metrics_manager가 없을 때 호출되는 더미 메서드)
+        
+        이 메서드는 metrics_manager 속성이 없을 때 호출되어도 오류가 발생하지 않도록 합니다.
+        실제 메트릭 기록은 수행하지 않습니다.
+        
+        Args:
+            metric_type: 메트릭 유형
+            **kwargs: 추가 매개변수
+        """
+        # metrics_manager가 없으면 아무 작업도 수행하지 않음
+        pass

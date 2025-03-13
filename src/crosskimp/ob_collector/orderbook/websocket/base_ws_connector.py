@@ -13,6 +13,9 @@ from datetime import datetime
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
 
+# 전역 로거 설정
+logger = get_unified_logger()
+
 @dataclass
 class WebSocketStats:
     """웹소켓 통계 데이터"""
@@ -70,9 +73,6 @@ class ReconnectStrategy:
         """재시도 카운터 초기화"""
         self.attempt = 0
 
-# 로거 인스턴스 가져오기
-logger = get_unified_logger()
-
 class BaseWebsocketConnector:
     """
     웹소켓 연결 관리 특화 클래스
@@ -93,16 +93,8 @@ class BaseWebsocketConnector:
         self.exchangename = exchangename
         self.settings = settings
 
-        # 거래소 한글 이름 매핑
-        self.exchange_korean_names = {
-            Exchange.BINANCE.value: "[바이낸스]",
-            Exchange.BYBIT.value: "[바이빗]",
-            Exchange.UPBIT.value: "[업비트]",
-            Exchange.BITHUMB.value: "[빗썸]",
-            Exchange.BINANCE_FUTURE.value: "[바이낸스선물]",
-            Exchange.BYBIT_FUTURE.value: "[바이빗선물]",
-        }
-        self.exchange_korean_name = self.exchange_korean_names.get(exchangename, exchangename)
+        # 거래소 한글 이름 설정
+        self.exchange_korean_name = EXCHANGE_NAMES_KR.get(exchangename, exchangename)
 
         self.ws = None
         self.is_connected = False
@@ -133,9 +125,6 @@ class BaseWebsocketConnector:
 
         # 모니터링 콜백
         self.connection_status_callback: Optional[Callable[[str, str], None]] = None
-
-        # 로거 설정
-        self.logger = logger
         
         # 성능 측정
         self.message_processing_times = []
@@ -174,6 +163,32 @@ class BaseWebsocketConnector:
                 logger.error(f"{self.exchange_korean_name} Raw 데이터 로깅 설정 실패: {str(e)}", exc_info=True)
                 self.log_raw_data = False
 
+    # 로깅 헬퍼 메서드들 - 모든 로깅은 이 메서드들을 통해 수행
+    def _update_error_stats(self, msg: str):
+        """에러 통계 업데이트 및 콜백 호출"""
+        self.stats.error_count += 1
+        self.stats.last_error_time = time.time()
+        self.stats.last_error_message = msg
+        if self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "error")
+
+    def log_error(self, msg: str, exc_info: bool = True):
+        """에러 로깅 공통 메서드 (통계 업데이트 + 로깅 + 콜백)"""
+        self._update_error_stats(msg)
+        logger.error(f"{self.exchange_korean_name} {msg}", exc_info=exc_info)
+
+    def log_info(self, msg: str):
+        """정보 로깅 공통 메서드"""
+        logger.info(f"{self.exchange_korean_name} {msg}")
+
+    def log_debug(self, msg: str):
+        """디버그 로깅 공통 메서드"""
+        logger.debug(f"{self.exchange_korean_name} {msg}")
+
+    def log_warning(self, msg: str):
+        """경고 로깅 공통 메서드"""
+        logger.warning(f"{self.exchange_korean_name} {msg}")
+
     def get_connection_status(self) -> ConnectionStatus:
         """현재 연결 상태 정보 반환"""
         now = time.time()
@@ -191,15 +206,6 @@ class BaseWebsocketConnector:
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """메시지 출력 큐 설정"""
         self.output_queue = queue
-
-    def log_error(self, msg: str, exc_info: bool = True):
-        """에러 로깅 공통 메서드"""
-        self.stats.error_count += 1
-        self.stats.last_error_time = time.time()
-        self.stats.last_error_message = msg
-        self.logger.error(f"{self.exchange_korean_name} {msg}", exc_info=exc_info)
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "error")
 
     def _get_connection_params(self) -> dict:
         """
@@ -227,7 +233,7 @@ class BaseWebsocketConnector:
             
         # 연결 중인 경우 대기
         if self.connecting:
-            self.logger.debug(f"{self.exchange_korean_name} 이미 연결 중")
+            self.log_debug("이미 연결 중")
             return True
             
         self.connecting = True
@@ -252,13 +258,13 @@ class BaseWebsocketConnector:
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect")
             
-            self.logger.info(f"{self.exchange_korean_name} 웹소켓 연결 성공")
+            self.log_info("웹소켓 연결 성공")
             return True
             
         except asyncio.TimeoutError as e:
             # 바이빗 거래소의 경우 타임아웃 에러를 무시하고 재연결 시도
             if self.exchangename in ["bybitspot", "bybitfuture"]:
-                self.logger.warning(f"{self.exchange_korean_name} 연결 타임아웃 발생 (무시됨)")
+                self.log_warning("연결 타임아웃 발생 (무시됨)")
                 
                 # 연결 중 플래그 해제
                 self.connecting = False
@@ -268,10 +274,7 @@ class BaseWebsocketConnector:
                 return await self.connect()  # 재귀적으로 다시 연결 시도
             else:
                 # 다른 거래소는 기존대로 타임아웃 에러 처리
-                self.logger.error(f"{self.exchange_korean_name} 연결 타임아웃: {str(e)}")
-                self.stats.error_count += 1
-                self.stats.last_error_time = time.time()
-                self.stats.last_error_message = f"연결 타임아웃: {str(e)}"
+                self.log_error(f"연결 타임아웃: {str(e)}")
                 
                 # 연결 중 플래그 해제
                 self.connecting = False
@@ -280,10 +283,7 @@ class BaseWebsocketConnector:
                 return await self._handle_connection_failure("timeout", e)
                 
         except Exception as e:
-            self.logger.error(f"{self.exchange_korean_name} 연결 오류: {str(e)}", exc_info=True)
-            self.stats.error_count += 1
-            self.stats.last_error_time = time.time()
-            self.stats.last_error_message = str(e)
+            self.log_error(f"연결 오류: {str(e)}", exc_info=True)
             
             # 연결 중 플래그 해제
             self.connecting = False
@@ -324,11 +324,11 @@ class BaseWebsocketConnector:
         self.stats.reconnect_count += 1
         
         if not self.auto_reconnect or self.stop_event.is_set():
-            self.logger.warning(f"{self.exchange_korean_name} 자동 재연결 비활성화 상태")
+            self.log_warning("자동 재연결 비활성화 상태")
             return False
             
         delay = self.reconnect_strategy.next_delay()
-        self.logger.info(f"{self.exchange_korean_name} 재연결 대기: {delay:.1f}초 (시도: {self.reconnect_strategy.attempt})")
+        self.log_info(f"재연결 대기: {delay:.1f}초 (시도: {self.reconnect_strategy.attempt})")
         
         if self.connection_status_callback:
             self.connection_status_callback(self.exchangename, "reconnect_wait")
@@ -338,7 +338,7 @@ class BaseWebsocketConnector:
         if self.stop_event.is_set():
             return False
             
-        self.logger.info(f"{self.exchange_korean_name} 재연결 시도")
+        self.log_info("재연결 시도")
         if self.connection_status_callback:
             self.connection_status_callback(self.exchangename, "reconnect_attempt")
             
@@ -359,11 +359,11 @@ class BaseWebsocketConnector:
                 await self.ws.close()
                 
             self.is_connected = False
-            self.logger.info(f"{self.exchange_korean_name} 웹소켓 연결 종료")
+            self.log_info("웹소켓 연결 종료")
             return True
             
         except Exception as e:
-            self.log_error(f"{self.exchange_korean_name} 웹소켓 연결 종료 실패: {str(e)}")
+            self.log_error(f"웹소켓 연결 종료 실패: {str(e)}")
             return False
 
     async def reconnect(self):
@@ -379,7 +379,7 @@ class BaseWebsocketConnector:
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "reconnect_attempt")
                 
-            self.logger.info(f"{self.exchange_korean_name} 웹소켓 재연결 시작")
+            self.log_info("웹소켓 재연결 시작")
             await self.disconnect()
             
             # 잠시 대기 후 재연결
@@ -388,7 +388,7 @@ class BaseWebsocketConnector:
             return await self.connect()
             
         except Exception as e:
-            self.log_error(f"{self.exchange_korean_name} 웹소켓 재연결 실패: {str(e)}")
+            self.log_error(f"웹소켓 재연결 실패: {str(e)}")
             return False
 
     async def health_check(self):
@@ -398,7 +398,7 @@ class BaseWebsocketConnector:
         일정 간격으로 연결 상태를 확인하고, 필요시 재연결을 시도합니다.
         이 메서드는 백그라운드 태스크로 실행됩니다.
         """
-        self.logger.info(f"{self.exchange_korean_name} 헬스 체크 시작 (간격: {self.health_check_interval}초)")
+        self.log_info(f"헬스 체크 시작 (간격: {self.health_check_interval}초)")
         
         while not self.stop_event.is_set():
             try:
@@ -406,15 +406,15 @@ class BaseWebsocketConnector:
                 
                 # 메시지 타임아웃 체크
                 if self.is_connected and self.stats.last_message_time > 0 and (current_time - self.stats.last_message_time) > self.message_timeout:
-                    self.log_error(f"{self.exchange_korean_name} 웹소켓 메시지 타임아웃 발생 ({self.message_timeout}초), 마지막 메시지: {current_time - self.stats.last_message_time:.1f}초 전")
+                    self.log_error(f"웹소켓 메시지 타임아웃 발생 ({self.message_timeout}초), 마지막 메시지: {current_time - self.stats.last_message_time:.1f}초 전")
                     await self.reconnect()
                 
                 # 연결 상태 로깅 (디버그)
                 if self.is_connected:
                     uptime = current_time - self.stats.connection_start_time
                     last_msg_time_diff = current_time - self.stats.last_message_time if self.stats.last_message_time > 0 else -1
-                    self.logger.debug(
-                        f"{self.exchange_korean_name} 헬스 체크: 연결됨, "
+                    self.log_debug(
+                        f"헬스 체크: 연결됨, "
                         f"업타임={uptime:.1f}초, "
                         f"메시지={self.stats.message_count}개, "
                         f"마지막 메시지={last_msg_time_diff:.1f}초 전, "
@@ -424,7 +424,7 @@ class BaseWebsocketConnector:
                 await asyncio.sleep(self.health_check_interval)
                 
             except Exception as e:
-                self.log_error(f"{self.exchange_korean_name} 웹소켓 상태 체크 중 오류 발생: {str(e)}")
+                self.log_error(f"웹소켓 상태 체크 중 오류 발생: {str(e)}")
                 await asyncio.sleep(1)
 
     async def ping(self):
@@ -434,7 +434,7 @@ class BaseWebsocketConnector:
         일정 간격으로 핑 메시지를 전송하여 연결 상태를 유지합니다.
         이 메서드는 백그라운드 태스크로 실행됩니다.
         """
-        self.logger.info(f"{self.exchange_korean_name} 핑 태스크 시작 (간격: {self.ping_interval}초)")
+        self.log_info(f"핑 태스크 시작 (간격: {self.ping_interval}초)")
         
         while not self.stop_event.is_set():
             try:
@@ -442,14 +442,14 @@ class BaseWebsocketConnector:
                     if self.connection_status_callback:
                         self.connection_status_callback(self.exchangename, "ping")
                         
-                    self.logger.debug(f"{self.exchange_korean_name} 핑 전송")
+                    self.log_debug("핑 전송")
                     await self.ws.ping()
                     self.stats.last_ping_time = time.time()
                     
                 await asyncio.sleep(self.ping_interval)
                 
             except Exception as e:
-                self.log_error(f"{self.exchange_korean_name} 웹소켓 핑 전송 중 오류 발생: {str(e)}")
+                self.log_error(f"웹소켓 핑 전송 중 오류 발생: {str(e)}")
                 await asyncio.sleep(1)
 
     async def start_background_tasks(self):
@@ -472,7 +472,7 @@ class BaseWebsocketConnector:
             
         self.stop_event.set()
         await self.disconnect()
-        self.logger.info(f"{self.exchange_korean_name} 웹소켓 연결 및 태스크 종료 완료")
+        self.log_info("웹소켓 연결 및 태스크 종료 완료")
 
     async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
         """
@@ -497,7 +497,7 @@ class BaseWebsocketConnector:
         symbols = symbols_by_exchange.get(self.exchangename, [])
         
         if not symbols:
-            self.logger.warning(f"{self.exchange_korean_name} 구독할 심볼이 없습니다.")
+            self.log_warning("구독할 심볼이 없습니다.")
             return
         
         # 1. 초기화 및 설정
@@ -517,10 +517,10 @@ class BaseWebsocketConnector:
             # 5. 메시지 처리 루프 실행
             await self._run_message_loop(symbols, tasks)
             
-            self.logger.info(f"{self.exchange_korean_name} 웹소켓 시작 완료 (심볼: {len(symbols)}개)")
+            self.log_info(f"웹소켓 시작 완료 (심볼: {len(symbols)}개)")
             
         except Exception as e:
-            self.log_error(f"{self.exchange_korean_name} 웹소켓 시작 실패: {str(e)}")
+            self.log_error(f"웹소켓 시작 실패: {str(e)}")
             
     async def _prepare_start(self, symbols: List[str]) -> None:
         """
@@ -548,46 +548,41 @@ class BaseWebsocketConnector:
 
     def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
         """
-        Raw 메시지 로깅을 위한 공통 메서드
+        원시 메시지 로깅
         
         Args:
-            msg_type: 메시지 타입 (snapshot/depthUpdate 등)
-            message: raw 메시지
-            symbol: 심볼명
+            msg_type: 메시지 타입 (예: "orderbook", "trade")
+            message: 원시 메시지 내용
+            symbol: 관련 심볼
         """
         if not self.log_raw_data:
             return
             
         try:
-            # 로그 카운트 추적
-            self._log_count = getattr(self, '_log_count', 0) + 1
+            # 로그 항목 생성
+            timestamp = int(time.time() * 1000)
+            log_entry = f"{timestamp}|{msg_type}|{symbol}|{message}"
             
-            # 로그 메시지 포맷
-            log_entry = f"{msg_type}|{symbol}|{message}"
-            
-            # 파일에 직접 로깅
-            if hasattr(self, 'log_file_path') and self.log_file_path:
+            # 파일 로깅 (raw_logger가 없는 경우)
+            if not self.raw_logger:
                 try:
-                    # 밀리초까지 포함된 타임스탬프 생성
-                    timestamp = time.strftime('%Y-%m-%d %H:%M:%S.') + f'{int(time.time() * 1000) % 1000:03d}'
-                    with open(self.log_file_path, "a", encoding="utf-8") as f:
-                        f.write(f"{timestamp} - {log_entry}\n")
-                    
-                    # 초기 로깅 성공 메시지 (처음 5개만)
-                    if self._log_count <= 5:
-                        logger.debug(f"{self.exchange_korean_name} 로깅 성공 #{self._log_count}: {symbol}")
-                    
-                    # 통계 업데이트
-                    if self.stats:
-                        if not hasattr(self.stats, 'raw_logged_messages'):
-                            self.stats.raw_logged_messages = 0
-                        self.stats.raw_logged_messages += 1
+                    # 로그 디렉토리 확인
+                    if not hasattr(self, 'log_file_path') or not self.log_file_path:
+                        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+                        log_dir = os.path.join(base_dir, "logs", "raw_data", self.exchangename)
+                        os.makedirs(log_dir, exist_ok=True)
                         
-                        # 주기적 통계 로깅
-                        if self.stats.raw_logged_messages % 1000 == 0:
-                            logger.info(f"{self.exchange_korean_name} 로깅 통계 | 총 {self.stats.raw_logged_messages:,}개 메시지")
+                        # 로그 파일 경로 설정
+                        current_datetime = time.strftime("%Y%m%d_%H%M%S")
+                        self.log_file_path = os.path.join(log_dir, f"{self.exchangename}_raw_{current_datetime}.log")
                     
-                    return
+                    # 파일에 직접 로깅
+                    with open(self.log_file_path, "a", encoding="utf-8") as f:
+                        f.write(log_entry + "\n")
+                        
+                    # 통계 업데이트
+                    self.stats.raw_logged_messages += 1
+                    
                 except Exception as e:
                     logger.error(f"{self.exchange_korean_name} 파일 로깅 실패: {str(e)}")
             
@@ -595,4 +590,4 @@ class BaseWebsocketConnector:
             if self.raw_logger:
                 self.raw_logger.info(log_entry)
         except Exception as e:
-            self.log_error(f"{self.exchange_korean_name} Raw 로깅 실패: {str(e)}")
+            self.log_error(f"Raw 로깅 실패: {str(e)}")

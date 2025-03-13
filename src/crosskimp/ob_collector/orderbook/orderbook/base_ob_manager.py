@@ -5,6 +5,10 @@ import time
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
+from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+
+logger = get_unified_logger()
 
 class BaseOrderBookManager:
     """
@@ -18,6 +22,10 @@ class BaseOrderBookManager:
         self.buffer_events: Dict[str, List[dict]] = {}
         self.sequence_states: Dict[str, Dict] = {}
         self.max_buffer_size = 5000
+        self.exchangename = ""  # 자식 클래스에서 설정해야 함
+        
+        # 한글 거래소명 속성 추가
+        self.exchange_kr = ""  # 자식 클래스에서 설정해야 함
 
         # 출력용 큐
         self._output_queue = None
@@ -28,6 +36,7 @@ class BaseOrderBookManager:
 
     def set_output_queue(self, queue: asyncio.Queue):
         self._output_queue = queue
+        logger.info(f"{self.exchange_kr} 출력 큐 설정 완료")
 
     def is_initialized(self, symbol: str) -> bool:
         st = self.sequence_states.get(symbol)
@@ -68,6 +77,9 @@ class BaseOrderBookManager:
         orderbook = self.orderbooks.get(symbol)
         if not orderbook:
             return
+
+        # 한글 거래소명 가져오기
+        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, f"[{self.exchangename}]")
 
         bids_100 = sorted(ob_dict["bids"], key=lambda x: x[0], reverse=True)
         asks_100 = sorted(ob_dict["asks"], key=lambda x: x[0])

@@ -30,6 +30,9 @@ class OrderBookV2:
         self.symbol = symbol
         self.depth = depth
         
+        # 한글 거래소명 가져오기
+        self.exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, f"[{self.exchangename}]")
+        
         # 기본 데이터 구조
         self.bids: List[List[float]] = []  # [[price, quantity], ...]
         self.asks: List[List[float]] = []  # [[price, quantity], ...]
@@ -143,7 +146,7 @@ class BaseOrderBookManagerV2:
                 
                 # 기본 메트릭 로깅
                 logger.info(
-                    f"[{exchange_name_kr}] 메트릭 현황 | "
+                    f"{exchange_name_kr} 메트릭 현황 | "
                     f"메시지={message_count:,}건, "
                     f"오더북={orderbook_count:,}건, "
                     f"처리시간={avg_processing_time:.2f}ms (최소={min_processing_time:.2f}ms, 최대={max_processing_time:.2f}ms), "
@@ -161,7 +164,7 @@ class BaseOrderBookManagerV2:
                         spread = ((best_ask - best_bid) / best_bid) * 100
                         
                         logger.info(
-                            f"[{exchange_name_kr}] {symbol} 호가 현황 | "
+                            f"{exchange_name_kr} {symbol} 호가 현황 | "
                             f"매수호가={len(ob.bids)}건, "
                             f"매도호가={len(ob.asks)}건, "
                             f"최고매수가={best_bid:,.0f}, "
@@ -175,14 +178,15 @@ class BaseOrderBookManagerV2:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[{exchange_name_kr}] 메트릭 로깅 중 오류 발생: {str(e)}", exc_info=True)
+                logger.error(f"{exchange_name_kr} 메트릭 로깅 중 오류 발생: {str(e)}", exc_info=True)
                 await asyncio.sleep(5)
 
     async def start_metrics_logging(self):
         """메트릭 로깅 시작"""
         if self._metrics_task is None:
             self._metrics_task = asyncio.create_task(self._log_metrics_periodically())
-            logger.info(f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] 메트릭 로깅 시작")
+            exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
+            logger.info(f"{exchange_name_kr} 메트릭 로깅 시작")
 
     async def stop_metrics_logging(self):
         """메트릭 로깅 중지"""
@@ -193,7 +197,8 @@ class BaseOrderBookManagerV2:
             except asyncio.CancelledError:
                 pass
             self._metrics_task = None
-            logger.info(f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] 메트릭 로깅 중지")
+            exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
+            logger.info(f"{exchange_name_kr} 메트릭 로깅 중지")
 
     def record_metric(self, event_type: str, **kwargs):
         """메트릭 기록"""
@@ -238,8 +243,9 @@ class BaseOrderBookManagerV2:
                 # 기타 이벤트 타입은 그대로 전달
                 self.metrics.update_metric(self.exchangename, event_type, **kwargs)
         except Exception as e:
+            exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)
             logger.error(
-                f"[{EXCHANGE_NAMES_KR.get(self.exchangename, self.exchangename)}] "
+                f"{exchange_name_kr} "
                 f"메트릭 기록 중 오류 발생: {str(e)}", 
                 exc_info=True
             )

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -36,6 +37,9 @@ class OrderBook:
         self.symbol = symbol
         self.depth = depth  # 기본 100
         self.logger = logger if logger else get_unified_logger()
+        
+        # 한글 거래소명 가져오기
+        self.exchange_kr = EXCHANGE_NAMES_KR.get(self.exchangename, f"[{self.exchangename}]")
 
         self.bids: Dict[float, float] = {}
         self.asks: Dict[float, float] = {}
@@ -57,7 +61,7 @@ class OrderBook:
 
     def enable_cross_detection(self):
         self.ignore_cross_detection = False
-        self.logger.info(f"[BaseOrderBook][{self.exchangename}] - {self.symbol} 역전감지 On")
+        self.logger.info(f"{self.exchange_kr} {self.symbol} 역전감지 활성화")
 
     def _get_best_prices(self) -> tuple[Optional[float], Optional[float]]:
         """현재 최고 매수호가와 최저 매도호가 반환"""
@@ -81,7 +85,7 @@ class OrderBook:
                     for ask_price in invalid_asks:
                         new_asks.pop(ask_price)
                         self.logger.debug(
-                            f"[{self.symbol}] 매수호가({price}) 추가로 인해 낮은 매도호가({ask_price}) 제거"
+                            f"{self.exchange_kr} {self.symbol} 매수호가({price}) 추가로 인해 낮은 매도호가({ask_price}) 제거"
                         )
             else:
                 # 1. 새로운 매도호가가 기존 매수호가보다 낮거나 같은 경우
@@ -91,13 +95,13 @@ class OrderBook:
                     for bid_price in invalid_bids:
                         new_bids.pop(bid_price)
                         self.logger.debug(
-                            f"[{self.symbol}] 매도호가({price}) 추가로 인해 높은 매수호가({bid_price}) 제거"
+                            f"{self.exchange_kr} {self.symbol} 매도호가({price}) 추가로 인해 높은 매수호가({bid_price}) 제거"
                         )
 
             return True
 
         except Exception as e:
-            self.logger.error(f"[{self.symbol}] 가격 검증 중 오류: {e}", exc_info=True)
+            self.logger.error(f"{self.exchange_kr} {self.symbol} 가격 검증 중 오류: {e}", exc_info=True)
             return False
 
     def _maintain_depth(self) -> None:
@@ -112,7 +116,7 @@ class OrderBook:
             self.asks = dict(sorted_asks[:self.depth])
 
         except Exception as e:
-            self.logger.error(f"[_maintain_depth] {self.symbol} 오류: {e}", exc_info=True)
+            self.logger.error(f"{self.exchange_kr} {self.symbol} 오더북 깊이 유지 중 오류: {e}", exc_info=True)
 
     async def update(self, data: dict) -> UpdateResult:
         """오더북 업데이트 후, 필요 시 큐에 전달"""
@@ -121,7 +125,7 @@ class OrderBook:
             self.message_type = msg_type
 
             if msg_type == "snapshot":
-                self.logger.info(f"[BaseOrderBook][{self.exchangename}] - {self.symbol} 스냅샷 init")
+                self.logger.info(f"{self.exchange_kr} {self.symbol} 스냅샷 초기화")
                 self.bids.clear()
                 self.asks.clear()
                 self.ignore_cross_detection = True
@@ -165,7 +169,7 @@ class OrderBook:
                 # rollback
                 self.bids = prev_bids
                 self.asks = prev_asks
-                self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} update 검증 실패, rollback")
+                self.logger.error(f"{self.exchange_kr} {self.symbol} 업데이트 검증 실패, 롤백")
                 return UpdateResult(False, validation.error_messages)
 
             self.last_update_id = data.get("sequence", self.last_update_id)
@@ -173,7 +177,7 @@ class OrderBook:
 
             # 스냅샷 → 첫 delta 시 역전감지 on
             if self.ignore_cross_detection and msg_type == "delta":
-                self.logger.info(f"[BaseOrderBook][{self.exchangename}] {self.symbol} 역전감지 on")
+                self.logger.info(f"{self.exchange_kr} {self.symbol} 역전감지 활성화")
                 self.ignore_cross_detection = False
 
             # 데이터 품질 로깅 추가
@@ -186,14 +190,14 @@ class OrderBook:
                     
                     if spread < -0.1:  # 음수 스프레드(역전) 감지
                         self.logger.warning(
-                            f"[{self.symbol}] 가격 역전 감지 | "
+                            f"{self.exchange_kr} {self.symbol} 가격 역전 감지 | "
                             f"최고매수={best_bid:,.8f}, "
                             f"최저매도={best_ask:,.8f}, "
                             f"스프레드={spread:.2f}%"
                         )
                     elif spread > 5:  # 비정상적으로 큰 스프레드 감지
                         self.logger.warning(
-                            f"[{self.symbol}] 큰 스프레드 감지 | "
+                            f"{self.exchange_kr} {self.symbol} 큰 스프레드 감지 | "
                             f"최고매수={best_bid:,.8f}, "
                             f"최저매도={best_ask:,.8f}, "
                             f"스프레드={spread:.2f}%"
@@ -206,7 +210,7 @@ class OrderBook:
             return UpdateResult(True, [])
 
         except Exception as e:
-            self.logger.error(f"오더북 업데이트 중 오류: {e}")
+            self.logger.error(f"{self.exchange_kr} {self.symbol} 오더북 업데이트 중 오류: {e}")
             return UpdateResult(False, [str(e)])
 
     def to_dict(self) -> dict:
@@ -224,7 +228,7 @@ class OrderBook:
                 "sequence": self.last_update_id
             }
         except Exception as e:
-            self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} to_dict fail: {e}", exc_info=True)
+            self.logger.error(f"{self.exchange_kr} {self.symbol} to_dict 실패: {e}", exc_info=True)
             return {
                 "exchangename": self.exchangename,
                 "symbol": self.symbol,
@@ -237,9 +241,9 @@ class OrderBook:
     def _validate_orderbook(self) -> ValidationResult:
         errors = []
         if len(self.bids) == 0 or len(self.asks) == 0:
-            errors.append("Empty order book")
+            errors.append("오더북이 비어있음")
         if len(self.bids) > self.depth or len(self.asks) > self.depth:
-            errors.append("Depth limit exceeded")
+            errors.append("깊이 제한 초과")
         return ValidationResult(len(errors) == 0, errors)
 
     def get_bids(self, limit: int = 10) -> List[List[float]]:
@@ -256,7 +260,7 @@ class OrderBook:
             sorted_bids = sorted(self.bids.items(), key=lambda x: x[0], reverse=True)
             return [[p, q] for p, q in sorted_bids[:limit]]
         except Exception as e:
-            self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} get_bids fail: {e}")
+            self.logger.error(f"{self.exchange_kr} {self.symbol} get_bids 실패: {e}")
             return []
             
     def get_asks(self, limit: int = 10) -> List[List[float]]:
@@ -273,5 +277,5 @@ class OrderBook:
             sorted_asks = sorted(self.asks.items(), key=lambda x: x[0])
             return [[p, q] for p, q in sorted_asks[:limit]]
         except Exception as e:
-            self.logger.error(f"[BaseOrderBook][{self.exchangename}] {self.symbol} get_asks fail: {e}")
+            self.logger.error(f"{self.exchange_kr} {self.symbol} get_asks 실패: {e}")
             return []
