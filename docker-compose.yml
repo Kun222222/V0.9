@@ -10,3 +10,6 @@ services:
       - CROSSKIMP_ENV=production
     volumes:
       - ./src:/app/src
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./.env:/app/.env

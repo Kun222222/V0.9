@@ -7,38 +7,25 @@ import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import telegram.error
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    CallbackContext,
-)
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, CallbackContext
+from crosskimp.telegrambot.bot_constants import COMMAND_BOT_TOKEN, ADMIN_USER_IDS, BotCommands, WELCOME_MESSAGE, HELP_MESSAGE, PROGRAM_STARTED, PROGRAM_STOPPED, PROGRAM_ALREADY_RUNNING, PROGRAM_NOT_RUNNING, UNAUTHORIZED_USER, setup_logger
 
-from crosskimp.telegrambot.bot_constants import (
-    COMMAND_BOT_TOKEN,
-    ADMIN_USER_IDS,
-    BotCommands,
-    WELCOME_MESSAGE,
-    HELP_MESSAGE,
-    PROGRAM_STARTED,
-    PROGRAM_STOPPED,
-    PROGRAM_ALREADY_RUNNING,
-    PROGRAM_NOT_RUNNING,
-    UNAUTHORIZED_USER,
-)
+# 시스템 관리 모듈 가져오기
+from crosskimp.telegrambot.system_commands import register_system_commands, AUTHORIZED_USERS
+from crosskimp.system_manager.process_manager import start_process, stop_process, restart_process, get_process_status, PROCESS_INFO
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+# 로거 설정
+logger = setup_logger()
+
+# 관리자 사용자 ID를 시스템 명령어 모듈의 인증된 사용자 목록에 추가
+AUTHORIZED_USERS.extend(ADMIN_USER_IDS)
 
 class OrderbookCommandBot:
     def __init__(self):
         self.ob_process: Optional[subprocess.Popen] = None
         self.application = Application.builder().token(COMMAND_BOT_TOKEN).build()
         self._setup_handlers()
+        logger.info("텔레그램 봇 초기화 완료")
 
     def _setup_handlers(self):
         """Set up command handlers"""
@@ -49,6 +36,11 @@ class OrderbookCommandBot:
         self.application.add_handler(CommandHandler(BotCommands.STATUS, self.status))
         # 버튼 콜백 핸들러 추가
         self.application.add_handler(CallbackQueryHandler(self.button_click))
+        
+        # 시스템 관리 명령어 핸들러 등록
+        register_system_commands(self.application)
+        
+        logger.info("텔레그램 봇 핸들러 설정 완료")
 
     def get_keyboard(self) -> InlineKeyboardMarkup:
         """Create inline keyboard with command buttons"""
@@ -121,42 +113,20 @@ class OrderbookCommandBot:
         if not await self.check_admin(update):
             return
 
-        if self.ob_process and self.ob_process.poll() is None:
+        # 시스템 관리 모듈을 사용하여 프로세스 상태 확인
+        process_status = await get_process_status()
+        if "ob_collector" in process_status and process_status["ob_collector"]["running"]:
             await self._send_message(update, PROGRAM_ALREADY_RUNNING)
             return
 
         try:
-            # Get the paths
-            current_dir = Path(__file__).resolve().parent
-            project_root = current_dir.parent.parent.parent
-            main_script = project_root / "src" / "cross_kimp_arbitrage" / "ob_collector" / "main.py"
+            # 시스템 관리 모듈을 사용하여 프로세스 시작
+            success = await start_process("ob_collector")
             
-            # Start the orderbook collector process
-            self.ob_process = subprocess.Popen(
-                [sys.executable, str(main_script)],
-                cwd=str(project_root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
-            
-            # 프로세스가 실제로 시작되었는지 확인
-            import time
-            time.sleep(2)  # 프로세스 시작 대기
-            
-            if self.ob_process.poll() is None:
-                # 로그 파일 찾기
-                logs_dir = project_root / "logs"
-                log_files = sorted(logs_dir.glob("ob_collector_*.log"), reverse=True)
-                
-                if log_files:
-                    latest_log = log_files[0]
-                    await self._send_message(update, f"{PROGRAM_STARTED}\n📝 로그 파일: {latest_log.name}\n🆔 프로세스 ID: {self.ob_process.pid}")
-                else:
-                    await self._send_message(update, f"{PROGRAM_STARTED}\n🆔 프로세스 ID: {self.ob_process.pid}")
+            if success:
+                await self._send_message(update, f"{PROGRAM_STARTED}\n🆔 프로세스 시작됨")
             else:
-                error_output = self.ob_process.stdout.read()
-                raise Exception(f"프로세스 시작 실패:\n{error_output}")
+                await self._send_message(update, "❌ 오더북 수집 프로그램 시작 실패")
             
         except Exception as e:
             error_message = f"오더북 수집 프로그램 시작 중 오류 발생: {str(e)}"
@@ -168,24 +138,20 @@ class OrderbookCommandBot:
         if not await self.check_admin(update):
             return
 
-        if not self.ob_process or self.ob_process.poll() is not None:
+        # 시스템 관리 모듈을 사용하여 프로세스 상태 확인
+        process_status = await get_process_status()
+        if "ob_collector" not in process_status or not process_status["ob_collector"]["running"]:
             await self._send_message(update, PROGRAM_NOT_RUNNING)
             return
 
         try:
-            # Try to terminate the process gracefully
-            self.ob_process.terminate()
+            # 시스템 관리 모듈을 사용하여 프로세스 중지
+            success = await stop_process("ob_collector")
             
-            # Wait for process to terminate (10초 대기)
-            try:
-                self.ob_process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                # Force kill if still running after 10 seconds
-                self.ob_process.kill()
-                self.ob_process.wait()
-            
-            self.ob_process = None
-            await self._send_message(update, PROGRAM_STOPPED)
+            if success:
+                await self._send_message(update, PROGRAM_STOPPED)
+            else:
+                await self._send_message(update, "❌ 오더북 수집 프로그램 중지 실패")
             
         except Exception as e:
             error_message = f"오더북 수집 프로그램 종료 중 오류 발생: {str(e)}"
@@ -197,8 +163,21 @@ class OrderbookCommandBot:
         if not await self.check_admin(update):
             return
 
-        status_message = "✅ 오더북 수집 프로그램이 실행 중입니다." if self.ob_process and self.ob_process.poll() is None else "❌ 오더북 수집 프로그램이 실행 중이지 않습니다."
-        await self._send_message(update, status_message)
+        try:
+            # 시스템 관리 모듈을 사용하여 프로세스 상태 확인
+            process_status = await get_process_status()
+            
+            if "ob_collector" in process_status and process_status["ob_collector"]["running"]:
+                status_message = f"✅ 오더북 수집 프로그램이 실행 중입니다. (PID: {process_status['ob_collector']['pid']})"
+            else:
+                status_message = "❌ 오더북 수집 프로그램이 실행 중이지 않습니다."
+                
+            await self._send_message(update, status_message)
+            
+        except Exception as e:
+            error_message = f"상태 확인 중 오류 발생: {str(e)}"
+            logger.error(error_message)
+            await self._send_message(update, error_message)
 
     async def _send_message(self, update: Update, text: str):
         """Helper method to send messages with keyboard"""

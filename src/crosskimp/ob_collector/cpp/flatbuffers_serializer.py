@@ -146,8 +146,8 @@ class OrderBookSerializer:
         try:
             start_time = time.time()
             
-            # 빌더 초기화
-            self.builder.Clear()
+            # 빌더 초기화 - Clear() 대신 새 Builder 객체 생성
+            self.builder = flatbuffers.Builder(1024 * 1024)
             
             # 거래소 이름과 심볼이 있는지 확인
             if "exchangename" not in orderbook_data or not orderbook_data["exchangename"]:

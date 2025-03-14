@@ -33,7 +33,7 @@ dependencies = [
     "ujson==5.7.0",
     
     # 텔레그램 봇
-    "python-telegram-bot==13.7",
+    "python-telegram-bot==13.15",
     "APScheduler==3.6.3",
     "cachetools==4.2.2",
     "tornado==6.1",

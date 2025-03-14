@@ -29,22 +29,23 @@ from typing import Dict, Optional, List, Union, Any
 from crosskimp.ob_collector.utils.config.constants import (
     LOG_SYSTEM, LOG_FORMAT, DEBUG_LOG_FORMAT, LOG_ENCODING, LOG_MODE,
     DEFAULT_CONSOLE_LEVEL, DEFAULT_FILE_LEVEL, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    LOG_CLEANUP_DAYS
+    LOG_CLEANUP_DAYS, PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS, ensure_directories
 )
 
 # ============================
 # 로그 디렉토리 설정
 # ============================
-# Docker 컨테이너 내부의 로그 디렉토리 설정
-BASE_LOG_DIR = "/app/src/logs"
+# constants.py에서 정의한 LOGS_DIR 사용
+BASE_LOG_DIR = LOGS_DIR
+
+# constants.py에서 정의한 LOG_SUBDIRS 사용
 LOG_DIRS = {
     'base': BASE_LOG_DIR,                  # 일반 로그가 저장됨
-    # 'raw': os.path.join(BASE_LOG_DIR, 'raw'),  # raw 데이터 로그가 저장됨 - 더 이상 사용하지 않음 (raw_data/{exchange_name}으로 대체)
-    'queue': os.path.join(BASE_LOG_DIR, 'queue'),  # 큐 데이터 로그가 저장됨
-    'error': os.path.join(BASE_LOG_DIR, 'error'),  # 에러 로그가 저장됨
-    'telegram': os.path.join(BASE_LOG_DIR, 'telegram'),  # 텔레그램 로그가 저장됨
-    'metrics': os.path.join(BASE_LOG_DIR, 'metrics'),  # 메트릭 데이터가 저장됨
-    'archive': os.path.join(BASE_LOG_DIR, 'archive')  # 압축된 로그 파일이 저장됨
+    'queue': LOG_SUBDIRS['queue'],         # 큐 데이터 로그가 저장됨
+    'error': LOG_SUBDIRS['error'],         # 에러 로그가 저장됨
+    'telegram': LOG_SUBDIRS['telegram'],   # 텔레그램 로그가 저장됨
+    'metrics': LOG_SUBDIRS['metrics'],     # 메트릭 데이터가 저장됨
+    'archive': LOG_SUBDIRS['archive']      # 압축된 로그 파일이 저장됨
 }
 
 # ============================
@@ -64,13 +65,8 @@ def get_current_time_str() -> str:
 
 def ensure_log_directories() -> None:
     """로그 디렉토리 존재 여부 확인 및 생성"""
-    for dir_name, dir_path in LOG_DIRS.items():
-        if not os.path.exists(dir_path):
-            try:
-                os.makedirs(dir_path)
-                print(f"{LOG_SYSTEM} 디렉토리 생성: {dir_path}")
-            except Exception as e:
-                print(f"{LOG_SYSTEM} 디렉토리 생성 실패: {dir_path} | {str(e)}")
+    # constants.py에 정의된 ensure_directories 함수 호출
+    ensure_directories()
 
 def cleanup_old_logs(max_days: int = LOG_CLEANUP_DAYS) -> None:
     """오래된 로그 파일 정리 및 압축"""
