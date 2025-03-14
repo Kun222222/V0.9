@@ -14,6 +14,7 @@ from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM
 from crosskimp.system_manager.process_manager import start_process, stop_process, restart_process, get_process_status, PROCESS_INFO
 from crosskimp.system_manager.scheduler import schedule_daily_restart, cancel_task, get_scheduled_tasks, calculate_next_midnight, format_remaining_time
 from crosskimp.system_manager.health_monitor import get_system_info, get_process_info, start_monitoring, stop_monitoring
+from crosskimp.telegrambot.bot_constants import ADMIN_USER_IDS
 
 # 로거 설정
 logger = get_unified_logger()
@@ -22,6 +23,9 @@ logger = get_unified_logger()
 AUTHORIZED_USERS = [
     # 여기에 허용된 텔레그램 사용자 ID 추가
 ]
+
+# ADMIN_USER_IDS를 AUTHORIZED_USERS에 추가
+AUTHORIZED_USERS.extend(ADMIN_USER_IDS)
 
 async def handle_start_command(update, context):
     """

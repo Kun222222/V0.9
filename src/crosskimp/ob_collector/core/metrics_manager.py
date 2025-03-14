@@ -5,7 +5,7 @@ from typing import Dict, Optional, List
 from datetime import datetime
 from collections import defaultdict
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, EXCHANGE_LOGGER_MAP
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.utils.config.constants import (
     EXCHANGE_NAMES_KR, STATUS_EMOJIS, WEBSOCKET_STATES, LOG_SYSTEM,
     METRICS_RATE_CALCULATION_INTERVAL, METRICS_DELAY_THRESHOLD_MS,

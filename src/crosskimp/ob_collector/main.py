@@ -5,11 +5,11 @@ import logging
 from datetime import datetime, timedelta
 from typing import Tuple, Dict, Optional
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, EXCHANGE_LOGGER_MAP
+from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_logger
 from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.utils.config.config_loader import get_settings, initialize_config, add_config_observer, shutdown_config
-from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT
+from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT, Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.websocket.base_ws_manager import WebsocketManager
 
 from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_system_status, send_market_status, send_error
@@ -29,13 +29,24 @@ else:
     logger.setLevel(logging.DEBUG)
     logger.warning(f"{LOG_SYSTEM} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
 
+# 거래소별 로거 초기화
+def initialize_exchange_loggers():
+    """거래소별 로거 초기화"""
+    # 거래소별 로거를 생성하지 않도록 수정
+    # 통합 로거만 사용
+    logger.debug(f"{LOG_SYSTEM} 거래소별 로거 초기화 생략 (통합 로거만 사용)")
+
+# 거래소 로거 초기화 실행
+initialize_exchange_loggers()
+
 async def websocket_callback(exchange_name: str, data: dict):
     """웹소켓 메시지 수신 콜백"""
     try:
         sym = data.get("symbol")
         if sym:
-            exchange_logger = EXCHANGE_LOGGER_MAP.get(exchange_name.lower(), logger)
-            exchange_logger.debug(f"{exchange_name} 메시지 수신: {sym}")
+            # DEBUG 레벨이 필요한 경우에만 로깅 (개발 환경에서만)
+            if logger.level <= logging.DEBUG:
+                logger.debug(f"{exchange_name} 메시지 수신: {sym}")
     except Exception as e:
         logger.error(f"{LOG_SYSTEM} 콜백 오류: {e}")
 

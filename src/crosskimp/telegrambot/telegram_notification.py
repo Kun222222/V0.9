@@ -18,7 +18,10 @@ from crosskimp.telegrambot.bot_constants import (
     setup_logger, send_telegram_message,
     
     # 편의 함수
-    send_error, send_trade, send_profit, send_market_status, send_system_status
+    send_error, send_trade, send_profit, send_market_status, send_system_status,
+    
+    # 텔레그램 토큰 및 채팅 ID
+    NOTIFICATION_BOT_TOKEN, NOTIFICATION_CHAT_IDS
 )
 
 # 로거 초기화
@@ -34,6 +37,10 @@ if __name__ == "__main__":
                 }
             }
         }
+        
+        # 텔레그램 토큰 및 채팅 ID 확인
+        logger.info(f"텔레그램 봇 토큰: {NOTIFICATION_BOT_TOKEN[:5]}...{NOTIFICATION_BOT_TOKEN[-5:] if NOTIFICATION_BOT_TOKEN else None}")
+        logger.info(f"텔레그램 채팅 ID: {NOTIFICATION_CHAT_IDS}")
         
         # 테스트 메시지 전송
         await send_error(settings, "텔레그램 봇", "테스트 에러 메시지")

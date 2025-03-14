@@ -420,14 +420,11 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
                         listing_times["binancefuture"][symbol] = onboard_date
             
             # 바이빗 선물 상장 시간 조회
-            for symbol in symbols:
-                params = {"category": "linear", "symbol": f"{symbol}USDT"}
-                data = await make_request(session, BYBIT_URLS["future"], params)
-                
-                if (data and data.get("retCode") == 0 and 
-                    data.get("result", {}).get("list")):
-                    item = data["result"]["list"][0]
-                    if "launchTime" in item:
+            data = await make_request(session, BYBIT_URLS["future"])
+            if data and data.get("retCode") == 0:
+                for item in data.get("result", {}).get("list", []):
+                    symbol = item["baseCoin"]
+                    if symbol in symbols and "launchTime" in item:
                         launch_time = datetime.fromtimestamp(
                             int(item["launchTime"]) / 1000,
                             tz=timezone.utc
@@ -447,7 +444,7 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
                     hours = age.seconds // 3600
                     minutes = (age.seconds % 3600) // 60
                     
-                    logger.info(
+                    logger.debug(
                         f"- {symbol}: {listing_time.strftime('%Y-%m-%d %H:%M:%S')} UTC"
                         f" (상장 후 {days}일 {hours}시간 {minutes}분)"
                     )

@@ -110,11 +110,6 @@ API_ENV_VARS = {
         "api_key": "UPBIT_API_KEY",
         "api_secret": "UPBIT_API_SECRET"
     },
-    "telegram": {
-        "bot_token": "TELEGRAM_BOT_TOKEN",
-        "command_bot_token": "TELEGRAM_COMMAND_BOT_TOKEN",
-        "chat_id": "TELEGRAM_CHAT_ID"
-    },
     "security": {
         "access_token_secret": "ACCESS_TOKEN_SECRET"
     },
@@ -122,6 +117,7 @@ API_ENV_VARS = {
         "first_superuser": "FIRST_SUPERUSER",
         "first_superuser_password": "FIRST_SUPERUSER_PASSWORD"
     }
+    # 텔레그램 관련 환경 변수는 bot_constants.py에서 직접 관리
 }
 
 # 설정 관련 타임아웃
