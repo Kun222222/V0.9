@@ -1,0 +1,20 @@
+// orderbook.fbs
+// FlatBuffers 스키마 정의
+
+namespace OrderBookData;
+
+table PriceLevel {
+  price:double;
+  quantity:double;
+}
+
+table OrderBook {
+  exchange_name:string;
+  symbol:string;
+  timestamp:long;
+  sequence:long;
+  bids:[PriceLevel];
+  asks:[PriceLevel];
+}
+
+root_type OrderBook; 

@@ -8,9 +8,9 @@ import aiohttp
 from dataclasses import dataclass
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
-from crosskimp.ob_collector.orderbook.orderbook.base_ob_manager import BaseOrderBookManager
+from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -51,22 +51,134 @@ async def get_global_aiohttp_session() -> ClientSession:
             logger.info(f"{EXCHANGE_KR} 새로운 글로벌 aiohttp 세션 생성")
         return GLOBAL_AIOHTTP_SESSION
 
-class BinanceSpotOrderBookManager(BaseOrderBookManager):
+class BinanceOrderBook(OrderBookV2):
     """
-    바이낸스 현물 오더북 매니저
+    바이낸스 전용 오더북 클래스 (V2)
+    - 시퀀스 기반 업데이트 관리
+    - 가격 역전 감지 및 처리
+    """
+    def __init__(self, exchangename: str, symbol: str, depth: int = 500):
+        """초기화"""
+        super().__init__(exchangename, symbol, depth)
+        self.bids_dict = {}  # 매수 주문 (가격 -> 수량)
+        self.asks_dict = {}  # 매도 주문 (가격 -> 수량)
+        self.cross_detection_enabled = False
+        
+    def enable_cross_detection(self):
+        """역전 감지 활성화"""
+        self.cross_detection_enabled = True
+        logger.info(f"{EXCHANGE_KR} {self.symbol} 역전감지 활성화")
+        
+    def update_orderbook(self, bids: List[List[float]], asks: List[List[float]], 
+                        timestamp: Optional[int] = None, sequence: Optional[int] = None,
+                        is_snapshot: bool = False) -> None:
+        """
+        오더북 데이터 업데이트 (바이낸스 전용)
+        """
+        try:
+            # 스냅샷인 경우 딕셔너리 초기화
+            if is_snapshot:
+                self.bids_dict.clear()
+                self.asks_dict.clear()
+                
+            # 임시 딕셔너리에 복사 (가격 역전 검사를 위해)
+            temp_bids_dict = self.bids_dict.copy()
+            temp_asks_dict = self.asks_dict.copy()
+                
+            # bids 업데이트 및 가격 역전 검사
+            for price, qty in bids:
+                if qty > 0:
+                    # 새로운 매수 호가가 기존 매도 호가보다 높거나 같은 경우 검사
+                    if self.cross_detection_enabled and not is_snapshot:
+                        invalid_asks = [ask_price for ask_price in temp_asks_dict.keys() if ask_price <= price]
+                        if invalid_asks:
+                            # 가격 역전이 발생하는 매도 호가들 제거
+                            for ask_price in invalid_asks:
+                                temp_asks_dict.pop(ask_price)
+                                logger.debug(
+                                    f"{EXCHANGE_KR} {self.symbol} 매수호가({price}) 추가로 인해 낮은 매도호가({ask_price}) 제거"
+                                )
+                    temp_bids_dict[price] = qty
+                else:
+                    # 수량이 0이면 해당 가격 삭제
+                    temp_bids_dict.pop(price, None)
+                    
+            # asks 업데이트 및 가격 역전 검사
+            for price, qty in asks:
+                if qty > 0:
+                    # 새로운 매도 호가가 기존 매수 호가보다 낮거나 같은 경우 검사
+                    if self.cross_detection_enabled and not is_snapshot:
+                        invalid_bids = [bid_price for bid_price in temp_bids_dict.keys() if bid_price >= price]
+                        if invalid_bids:
+                            # 가격 역전이 발생하는 매수 호가들 제거
+                            for bid_price in invalid_bids:
+                                temp_bids_dict.pop(bid_price)
+                                logger.debug(
+                                    f"{EXCHANGE_KR} {self.symbol} 매도호가({price}) 추가로 인해 높은 매수호가({bid_price}) 제거"
+                                )
+                    temp_asks_dict[price] = qty
+                else:
+                    # 수량이 0이면 해당 가격 삭제
+                    temp_asks_dict.pop(price, None)
+            
+            # 임시 딕셔너리를 실제 딕셔너리로 적용
+            self.bids_dict = temp_bids_dict
+            self.asks_dict = temp_asks_dict
+                    
+            # 정렬된 리스트 생성
+            sorted_bids = sorted(self.bids_dict.items(), key=lambda x: x[0], reverse=True)
+            sorted_asks = sorted(self.asks_dict.items(), key=lambda x: x[0])
+            
+            # depth 제한 및 리스트 변환
+            self.bids = [[price, qty] for price, qty in sorted_bids[:self.depth]]
+            self.asks = [[price, qty] for price, qty in sorted_asks[:self.depth]]
+            
+            # 메타데이터 업데이트
+            if timestamp:
+                self.last_update_time = timestamp
+            if sequence:
+                self.last_update_id = sequence
+                
+            # 비정상적인 스프레드 감지 (가격 역전은 이미 처리되었으므로 여기서는 스프레드만 체크)
+            if self.bids and self.asks:
+                highest_bid = self.bids[0][0]
+                lowest_ask = self.asks[0][0]
+                spread_pct = (lowest_ask - highest_bid) / lowest_ask * 100
+                
+                if spread_pct > 5:  # 스프레드가 5% 이상인 경우
+                    logger.warning(
+                        f"{EXCHANGE_KR} {self.symbol} 비정상 스프레드 감지: "
+                        f"{spread_pct:.2f}% (매수: {highest_bid}, 매도: {lowest_ask})"
+                    )
+                    
+            # C++로 데이터 직접 전송
+            asyncio.create_task(self.send_to_cpp())
+                
+        except Exception as e:
+            logger.error(
+                f"{EXCHANGE_KR} {self.symbol} 오더북 업데이트 실패: {str(e)}", 
+                exc_info=True
+            )
+
+class BinanceSpotOrderBookManager(BaseOrderBookManagerV2):
+    """
+    바이낸스 현물 오더북 매니저 (V2)
     - depth=500
-    - gap 시 재스냅샷 대신 경고만
+    - 시퀀스 기반 업데이트 관리
+    - REST API 스냅샷 요청 및 적용
+    - C++ 직접 전송 지원
     """
 
     def __init__(self, depth: int = 500):
         super().__init__(depth)
-        self.exchangename = "binance"
+        self.exchangename = EXCHANGE_CODE
         self.snapshot_url = "https://api.binance.com/api/v3/depth"
         
         # 버퍼 및 시퀀스 관리 초기화
         self.buffer_events: Dict[str, List[dict]] = {}
         self.sequence_states: Dict[str, Dict] = {}
         self.initialization_locks: Dict[str, asyncio.Lock] = {}
+        self.orderbooks: Dict[str, BinanceOrderBook] = {}  # BinanceOrderBook 사용
         
         # 로깅 제어를 위한 상태 추가
         self.last_queue_log_time: Dict[str, float] = {}
@@ -74,6 +186,13 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         
         # 가격 역전 감지 관련 설정
         self.price_inversion_count: Dict[str, int] = {}  # 심볼별 가격 역전 발생 횟수
+        
+        # 버퍼 크기 제한 설정
+        self.max_buffer_size = 1000  # 최대 버퍼 크기
+        
+    async def start(self):
+        """오더북 매니저 시작"""
+        await self.initialize()  # 메트릭 로깅 시작
 
     async def _get_symbol_lock(self, symbol: str) -> asyncio.Lock:
         """심볼별 초기화 락 관리"""
@@ -81,13 +200,13 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
             self.initialization_locks[symbol] = asyncio.Lock()
         return self.initialization_locks[symbol]
 
-    async def initialize_orderbook(self, symbol: str, snapshot: dict) -> ValidationResult:
+    async def initialize_orderbook(self, symbol: str, snapshot: Optional[dict] = None) -> ValidationResult:
         """
         오더북 초기화 (스냅샷 적용)
         
         Args:
             symbol: 심볼
-            snapshot: 스냅샷 데이터
+            snapshot: 스냅샷 데이터 (없으면 API로 요청)
             
         Returns:
             ValidationResult: 검증 결과
@@ -96,6 +215,13 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
             # 심볼 락 획득
             lock = await self._get_symbol_lock(symbol)
             async with lock:
+                # 스냅샷이 제공되지 않은 경우 요청
+                if not snapshot:
+                    snapshot = await self.fetch_snapshot(symbol)
+                    if not snapshot:
+                        logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 요청 실패")
+                        return ValidationResult(False, ["스냅샷 요청 실패"])
+                
                 # 스냅샷 데이터 검증
                 if "lastUpdateId" not in snapshot:
                     logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷에 lastUpdateId가 없습니다")
@@ -103,19 +229,45 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                 
                 # 오더북 생성 또는 초기화
                 if symbol not in self.orderbooks:
-                    self.orderbooks[symbol] = OrderBook(self.exchangename, symbol, self.depth)
+                    self.orderbooks[symbol] = BinanceOrderBook(
+                        exchangename=self.exchangename,
+                        symbol=symbol,
+                        depth=self.depth
+                    )
+                    
+                    # 새로 생성된 오더북에 큐 설정
+                    if self._output_queue:
+                        self.orderbooks[symbol].set_output_queue(self._output_queue)
                 
                 # 스냅샷 데이터 형식 변환
-                formatted_snapshot = {
-                    "type": "snapshot",
-                    "bids": [(float(price), float(qty)) for price, qty in snapshot.get("bids", [])],
-                    "asks": [(float(price), float(qty)) for price, qty in snapshot.get("asks", [])],
-                }
+                bids = [(float(price), float(qty)) for price, qty in snapshot.get("bids", [])]
+                asks = [(float(price), float(qty)) for price, qty in snapshot.get("asks", [])]
                 
-                # 스냅샷 적용
-                result = await self.orderbooks[symbol].update(formatted_snapshot)
+                # 바이낸스 특화 검증: bid/ask가 모두 있는 경우에만 가격 순서 체크
+                is_valid = True
+                error_messages = []
                 
-                if result.is_valid:
+                if bids and asks:
+                    max_bid = max(bid[0] for bid in bids)
+                    min_ask = min(ask[0] for ask in asks)
+                    if max_bid >= min_ask:
+                        is_valid = False
+                        error_messages.append(f"가격 역전 발생: 최고매수가({max_bid}) >= 최저매도가({min_ask})")
+                        # 가격 역전 메트릭 기록
+                        self.record_metric("error", error_type="price_inversion")
+                        logger.warning(f"{EXCHANGE_KR} {symbol} {error_messages[0]}")
+                
+                if is_valid:
+                    # 오더북 업데이트
+                    ob = self.orderbooks[symbol]
+                    ob.update_orderbook(
+                        bids=bids,
+                        asks=asks,
+                        timestamp=int(time.time() * 1000),
+                        sequence=snapshot["lastUpdateId"],
+                        is_snapshot=True
+                    )
+                    
                     # 시퀀스 상태 초기화
                     self.sequence_states[symbol] = {
                         "last_update_id": snapshot["lastUpdateId"],
@@ -123,9 +275,8 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                         "first_delta_applied": False
                     }
                     
-                    # 초기화 직후 가격 역전 감지 활성화 (추가)
-                    self.orderbooks[symbol].enable_cross_detection()
-                    logger.info(f"{EXCHANGE_KR} {symbol} 초기화 직후 가격 역전 감지 활성화")
+                    # 초기화 직후 가격 역전 감지 활성화
+                    ob.enable_cross_detection()
                     
                     # 가격 역전 카운터 초기화
                     self.price_inversion_count[symbol] = 0
@@ -133,35 +284,30 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                     # 버퍼 이벤트 적용
                     await self._apply_buffered_events(symbol)
                     
-                    # 스냅샷 수신 콜백 호출 (추가)
-                    if hasattr(self, 'connection_status_callback') and self.connection_status_callback:
-                        self.connection_status_callback(self.exchangename, "snapshot")
+                    # 큐로 데이터 전송
+                    await ob.send_to_queue()
                     
-                    # 출력 큐에 스냅샷 메시지 전송 - 스냅샷은 큐로 전송하지 않도록 주석 처리
-                    """
-                    if self._output_queue:
-                        await self._output_queue.put((
-                            self.exchangename,
-                            {
-                                "type": "snapshot",
-                                "symbol": symbol,
-                                "timestamp": time.time(),
-                                "data": {
-                                    "bids": self.orderbooks[symbol].get_bids(10),
-                                    "asks": self.orderbooks[symbol].get_asks(10)
-                                }
-                            }
-                        ))
-                    """
+                    # 오더북 카운트 메트릭 업데이트
+                    self.record_metric("orderbook", symbol=symbol)
                     
-                    logger.info(f"{EXCHANGE_KR} {symbol} 스냅샷 초기화 완료")
-                    return result
+                    # 데이터 크기 메트릭 업데이트
+                    data_size = len(str(snapshot))  # 간단한 크기 측정
+                    self.record_metric("bytes", size=data_size)
+                    
+                    logger.info(
+                        f"{EXCHANGE_KR} {symbol} 스냅샷 초기화 완료 | "
+                        f"seq={snapshot['lastUpdateId']}, 매수:{len(bids)}개, 매도:{len(asks)}개"
+                    )
+                    
+                    return ValidationResult(True, [])
                 else:
-                    logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 적용 실패: {result.error_messages}")
-                    return result
+                    logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 적용 실패: {error_messages}")
+                    return ValidationResult(False, error_messages)
                     
         except Exception as e:
-            logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 초기화 오류: {str(e)}")
+            logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 초기화 오류: {str(e)}", exc_info=True)
+            # 예외 발생 메트릭 기록
+            self.record_metric("error", error_type="exception")
             return ValidationResult(False, [f"스냅샷 초기화 오류: {str(e)}"])
 
     async def update(self, symbol: str, data: dict) -> ValidationResult:
@@ -170,26 +316,47 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         - 초기화 전: 버퍼링
         - 초기화 후: 시퀀스 검증 후 적용
         """
-        # 버퍼 초기화
-        if symbol not in self.buffer_events:
-            self.buffer_events[symbol] = []
-            
-        # 버퍼 크기 제한
-        if len(self.buffer_events[symbol]) >= self.max_buffer_size:
-            self.buffer_events[symbol].pop(0)
-            
-        # 이벤트 버퍼링
-        self.buffer_events[symbol].append(data)
+        try:
+            # 오더북이 초기화되지 않은 경우 초기화
+            if symbol not in self.orderbooks:
+                result = await self.initialize_orderbook(symbol)
+                if not result.is_valid:
+                    return result
+                    
+            # 버퍼 초기화
+            if symbol not in self.buffer_events:
+                self.buffer_events[symbol] = []
+                
+            # 버퍼 크기 제한
+            if len(self.buffer_events[symbol]) >= self.max_buffer_size:
+                self.buffer_events[symbol].pop(0)
+                
+            # 이벤트 버퍼링
+            self.buffer_events[symbol].append(data)
 
-        # 초기화 상태 확인
-        st = self.sequence_states.get(symbol)
-        if not st or not st["initialized"]:
-            logger.debug(f"{EXCHANGE_KR} {symbol} 초기화 전 버퍼링")
+            # 초기화 상태 확인
+            st = self.sequence_states.get(symbol)
+            if not st or not st["initialized"]:
+                logger.debug(f"{EXCHANGE_KR} {symbol} 초기화 전 버퍼링")
+                return ValidationResult(True, ["초기화 전 버퍼링"])
+
+            # 초기화 완료 후 이벤트 적용
+            await self._apply_buffered_events(symbol)
+            
+            # 메트릭 업데이트
+            self.record_metric("orderbook", symbol=symbol)
+            
+            # 데이터 크기 메트릭 업데이트
+            data_size = len(str(data))  # 간단한 크기 측정
+            self.record_metric("bytes", size=data_size)
+            
             return ValidationResult(True, [])
-
-        # 초기화 완료 후 이벤트 적용
-        await self._apply_buffered_events(symbol)
-        return ValidationResult(True, [])
+            
+        except Exception as e:
+            logger.error(f"{EXCHANGE_KR} {symbol} 업데이트 오류: {str(e)}", exc_info=True)
+            # 예외 발생 메트릭 기록
+            self.record_metric("error", error_type="exception")
+            return ValidationResult(False, [f"업데이트 오류: {str(e)}"])
 
     async def fetch_snapshot(self, symbol: str) -> Optional[dict]:
         """REST API로 스냅샷 요청"""
@@ -288,6 +455,7 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
         """
         버퍼링된 이벤트 적용
         - 가격 역전 감지 및 처리 로직 추가
+        - C++ 직접 전송 지원
         """
         if symbol not in self.sequence_states:
             logger.debug(f"{EXCHANGE_KR} {symbol} 초기화 전 버퍼링")
@@ -328,10 +496,10 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                     f"{EXCHANGE_KR} {symbol} 시퀀스 갭 감지 U={first_id}, last_id={last_id} -> 재동기화 생략"
                 )
                 
-                # 시퀀스 갭 발생 시 가격 역전 검사 강화 (추가)
+                # 시퀀스 갭 발생 시 가격 역전 검사 강화
                 logger.info(f"{EXCHANGE_KR} {symbol} 시퀀스 갭 발생으로 가격 역전 검사 강화")
 
-            # 가격 역전 검사 추가 (추가)
+            # 가격 역전 검사 추가
             bids_dict = {float(b[0]): float(b[1]) for b in evt.get("bids", [])}
             asks_dict = {float(a[0]): float(a[1]) for a in evt.get("asks", [])}
             
@@ -360,34 +528,76 @@ class BinanceSpotOrderBookManager(BaseOrderBookManager):
                         evt["bids"] = [[p, q] for p, q in evt.get("bids", []) if float(p) < best_ask]
                         logger.info(f"{EXCHANGE_KR} {symbol} 역전된 매수호가 제거 완료")
 
-            res = await ob.update(evt)
-            if res.is_valid:
-                if not st["first_delta_applied"]:
-                    st["first_delta_applied"] = True
-                last_id = final_id
-                applied_count += 1
-            else:
-                logger.error(
-                    f"{EXCHANGE_KR} {symbol} 델타 적용 실패: {res.error_messages}"
-                )
+            # V2 방식으로 오더북 업데이트
+            bids = [(float(b[0]), float(b[1])) for b in evt.get("bids", [])]
+            asks = [(float(a[0]), float(a[1])) for a in evt.get("asks", [])]
+            
+            ob.update_orderbook(
+                bids=bids,
+                asks=asks,
+                timestamp=evt.get("timestamp", int(time.time() * 1000)),
+                sequence=final_id,
+                is_snapshot=False
+            )
+            
+            if not st["first_delta_applied"]:
+                st["first_delta_applied"] = True
+            
+            last_id = final_id
+            applied_count += 1
 
         self.buffer_events[symbol] = []
         st["last_update_id"] = last_id
 
-        if applied_count > 0 and self._output_queue:
-            final_ob = ob.to_dict()
-            try:
-                await self._output_queue.put((self.exchangename, final_ob))
-                
-                # 로깅 주기 체크
-                current_time = time.time()
-                last_log_time = self.last_queue_log_time.get(symbol, 0)
-                if current_time - last_log_time >= self.queue_log_interval:
-                    # self.logger.debug(f"[{self.exchangename}] {symbol} final OB queued")
-                    self.last_queue_log_time[symbol] = current_time
-                    
-            except Exception as e:
-                logger.error(
-                    f"{EXCHANGE_KR} {symbol} 큐 전송 실패: {e}",
-                    exc_info=True
+        if applied_count > 0:
+            # 큐로 데이터 전송
+            await ob.send_to_queue()
+            
+            # 로깅 주기 체크
+            current_time = time.time()
+            last_log_time = self.last_queue_log_time.get(symbol, 0)
+            if current_time - last_log_time >= self.queue_log_interval:
+                logger.debug(
+                    f"{EXCHANGE_KR} {symbol} 오더북 업데이트 | "
+                    f"seq={last_id}, 매수:{len(ob.bids)}개, 매도:{len(ob.asks)}개"
                 )
+                self.last_queue_log_time[symbol] = current_time
+
+    def is_initialized(self, symbol: str) -> bool:
+        """심볼 초기화 여부 확인"""
+        st = self.sequence_states.get(symbol)
+        return bool(st and st.get("initialized"))
+        
+    def get_orderbook(self, symbol: str) -> Optional[BinanceOrderBook]:
+        """심볼 오더북 객체 반환"""
+        return self.orderbooks.get(symbol)
+        
+    def clear_symbol(self, symbol: str) -> None:
+        """심볼 데이터 제거"""
+        self.orderbooks.pop(symbol, None)
+        self.sequence_states.pop(symbol, None)
+        self.buffer_events.pop(symbol, None)
+        self.initialization_locks.pop(symbol, None)
+        self.last_queue_log_time.pop(symbol, None)
+        self.price_inversion_count.pop(symbol, None)
+        logger.info(f"{EXCHANGE_KR} {symbol} 심볼 데이터 제거 완료")
+        
+    def clear_all(self) -> None:
+        """모든 심볼 데이터 제거"""
+        syms = list(self.orderbooks.keys())
+        self.orderbooks.clear()
+        self.sequence_states.clear()
+        self.buffer_events.clear()
+        self.initialization_locks.clear()
+        self.last_queue_log_time.clear()
+        self.price_inversion_count.clear()
+        logger.info(f"{EXCHANGE_KR} 전체 심볼 데이터 제거 완료: {syms}")
+        
+    async def subscribe(self, symbol: str):
+        """심볼 구독 - 오더북 초기화"""
+        # 오더북 초기화
+        if symbol not in self.orderbooks:
+            await self.initialize_orderbook(symbol)
+            logger.info(f"{EXCHANGE_KR} {symbol} 오더북 초기화 완료")
+        else:
+            logger.info(f"{EXCHANGE_KR} {symbol} 이미 초기화됨")

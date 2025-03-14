@@ -57,6 +57,12 @@ dependencies = [
     
     # 비동기 작업 관리
     "asyncio-throttle==1.0.2",
+    
+    # 공유 메모리
+    "posix_ipc==1.0.5",
+    
+    # Flatbuffers
+    "flatbuffers==23.5.26",
 ]
 
 [project.optional-dependencies]

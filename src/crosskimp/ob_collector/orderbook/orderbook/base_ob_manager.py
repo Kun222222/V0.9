@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBook, ValidationResult
 from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 logger = get_unified_logger()
 
@@ -67,6 +68,16 @@ class BaseOrderBookManager:
             self.buffer_events[symbol].pop(0)
         self.buffer_events[symbol].append(event)
 
+    async def _send_to_cpp(self, exchange_name: str, orderbook_data: dict) -> None:
+        """
+        오더북 데이터를 C++로 직접 전송
+        """
+        try:
+            # C++로 데이터 전송
+            await send_orderbook_to_cpp(exchange_name, orderbook_data)
+        except Exception as e:
+            logger.error(f"{self.exchange_kr} C++ 전송 중 오류: {str(e)}", exc_info=True)
+
     async def _send_to_output_queue(self, symbol: str, ob_dict: dict, top_n: int = 10):
         """
         오더북을 외부 큐로 전달. 
@@ -95,4 +106,12 @@ class BaseOrderBookManager:
             "timestamp": ob_dict["timestamp"],
             "sequence": ob_dict["sequence"]
         }
+        
+        # C++로 데이터 직접 전송
+        asyncio.create_task(self._send_to_cpp(ob_dict["exchangename"], final_dict))
+        
+        # 큐로 데이터 전송
         await self._output_queue.put((ob_dict["exchangename"], final_dict))
+        
+        # C++로 데이터 전송 (비동기 태스크로 실행하여 블로킹하지 않도록 함)
+        asyncio.create_task(send_orderbook_to_cpp(ob_dict["exchangename"], final_dict))

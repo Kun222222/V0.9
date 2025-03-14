@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -118,6 +119,14 @@ class OrderBook:
         except Exception as e:
             self.logger.error(f"{self.exchange_kr} {self.symbol} 오더북 깊이 유지 중 오류: {e}", exc_info=True)
 
+    async def send_to_cpp(self, parsed_data: dict) -> None:
+        """C++로 데이터 직접 전송"""
+        try:
+            # C++로 데이터 전송
+            await send_orderbook_to_cpp(self.exchangename, parsed_data)
+        except Exception as e:
+            self.logger.error(f"{self.exchange_kr} {self.symbol} C++ 전송 중 오류: {e}", exc_info=True)
+
     async def update(self, data: dict) -> UpdateResult:
         """오더북 업데이트 후, 필요 시 큐에 전달"""
         try:
@@ -204,9 +213,18 @@ class OrderBook:
                         )
 
             parsed = self.to_dict()
+            
+            # 스냅샷이 아닌 경우 C++로 데이터 직접 전송
+            if msg_type != "snapshot":
+                asyncio.create_task(self.send_to_cpp(parsed))
+            
             # 스냅샷 데이터는 큐로 전송하지 않고, 델타 업데이트만 큐로 전송
             if self.output_queue and msg_type != "snapshot":
                 await self.output_queue.put((self.exchangename, parsed))
+                
+                # C++로 데이터 전송 (비동기 태스크로 실행하여 블로킹하지 않도록 함)
+                asyncio.create_task(send_orderbook_to_cpp(self.exchangename, parsed))
+                
             return UpdateResult(True, [])
 
         except Exception as e:

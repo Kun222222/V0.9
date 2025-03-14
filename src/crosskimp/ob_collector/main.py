@@ -1,6 +1,7 @@
 # file: main.py
 
 import os, asyncio, time
+import logging
 from datetime import datetime, timedelta
 from typing import Tuple, Dict, Optional
 
@@ -17,6 +18,14 @@ from crosskimp.telegrambot.bot_constants import MessageType, TELEGRAM_START_MESS
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
+
+# 환경에 따른 로깅 설정
+if os.getenv("CROSSKIMP_ENV") == "production":
+    logger.setLevel(logging.INFO)
+    logger.info(f"{LOG_SYSTEM} 배포 환경에서 실행 중입니다.")
+else:
+    logger.setLevel(logging.DEBUG)
+    logger.warning(f"{LOG_SYSTEM} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
 
 # 환경 변수에서 프론트엔드 URL 가져오기
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")

@@ -10,7 +10,7 @@ from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
-from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutureOrderBookManager, parse_binance_future_depth_update
+from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob_v2 import BinanceFutureOrderBookManagerV2, parse_binance_future_depth_update
 from crosskimp.ob_collector.utils.config.constants import Exchange
 
 
@@ -60,7 +60,7 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
 
         self.update_speed = UPDATE_SPEED
         self.snapshot_depth = settings.get("depth", DEFAULT_DEPTH)
-        self.orderbook_manager = BinanceFutureOrderBookManager(self.snapshot_depth)
+        self.orderbook_manager = BinanceFutureOrderBookManagerV2(self.snapshot_depth)
 
         self.subscribed_symbols: set = set()
         self.instance_key: Optional[str] = None
@@ -78,7 +78,18 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         """
         super().set_output_queue(queue)
         if self.orderbook_manager:
-            self.orderbook_manager.output_queue = queue
+            self.orderbook_manager.set_output_queue(queue)
+            self.log_info(f"오더북 매니저에 출력 큐 설정 완료 (큐 ID: {id(queue)})")
+            
+            # 각 오더북 객체에 큐가 제대로 설정되었는지 확인
+            for symbol in self.subscribed_symbols:
+                orderbook = self.orderbook_manager.get_orderbook(symbol)
+                if orderbook:
+                    if orderbook.output_queue is None:
+                        orderbook.output_queue = queue
+                        self.log_info(f"{symbol} 오더북 객체에 출력 큐 직접 설정 완료")
+                    else:
+                        self.log_info(f"{symbol} 오더북 객체 출력 큐 확인: {id(orderbook.output_queue)}")
 
     async def connect(self):
         """
@@ -128,6 +139,11 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
 
         await self.connect()
 
+        # 출력 큐가 설정되어 있는지 확인
+        if self.output_queue and self.orderbook_manager:
+            self.log_info(f"출력 큐 확인: {id(self.output_queue)}")
+            self.orderbook_manager.set_output_queue(self.output_queue)
+
         # 스냅샷
         for sym in symbols:
             snapshot = await self.request_snapshot(sym)
@@ -135,6 +151,32 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                 res = await self.orderbook_manager.initialize_orderbook(sym, snapshot)
                 if not res.is_valid:
                     self.log_error(f"{sym} 스냅샷 적용 실패: {res.error_messages}")
+                else:
+                    self.log_info(f"{sym} 스냅샷 적용 성공")
+                    
+                    # 초기 오더북 데이터 큐에 전송 시도
+                    orderbook = self.orderbook_manager.get_orderbook(sym)
+                    if orderbook:
+                        # 오더북 객체에 큐가 설정되어 있는지 확인
+                        if orderbook.output_queue is None and self.output_queue:
+                            orderbook.output_queue = self.output_queue
+                            self.log_info(f"{sym} 오더북 객체에 출력 큐 설정 (subscribe 내)")
+                        
+                        # 큐로 데이터 전송
+                        if self.output_queue:
+                            try:
+                                data = orderbook.to_dict()
+                                await self.output_queue.put((self.exchangename, data))
+                                self.log_info(f"{sym} 초기 오더북 데이터 큐 전송 성공")
+                                
+                                # 직접 send_to_queue 메서드 호출 시도
+                                try:
+                                    await orderbook.send_to_queue()
+                                    self.log_info(f"{sym} send_to_queue 메서드 호출 성공")
+                                except Exception as e:
+                                    self.log_error(f"{sym} send_to_queue 메서드 호출 실패: {e}")
+                            except Exception as e:
+                                self.log_error(f"{sym} 초기 오더북 데이터 큐 전송 실패: {e}")
             else:
                 self.log_error(f"{sym} 스냅샷 요청 실패")
 
@@ -201,7 +243,7 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                 "bids": bids,
                 "asks": asks,
                 "timestamp": int(time.time()*1000),
-                "sequence": last_id,
+                "lastUpdateId": last_id,
                 "type": "snapshot"
             }
             if self.connection_status_callback:
@@ -261,6 +303,30 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                     try:
                         # 오더북 업데이트
                         result = await self.orderbook_manager.update(symbol, parsed)
+                        
+                        # 업데이트 성공 시 큐로 직접 전송 시도 (백업 메커니즘)
+                        if result.is_valid and self.output_queue:
+                            try:
+                                orderbook = self.orderbook_manager.get_orderbook(symbol)
+                                if orderbook:
+                                    # 오더북 객체에 큐가 설정되어 있는지 확인
+                                    if orderbook.output_queue is None:
+                                        orderbook.output_queue = self.output_queue
+                                        self.log_info(f"{symbol} 오더북 객체에 출력 큐 설정 (handle_parsed_message 내)")
+                                    
+                                    # 큐에 직접 전송
+                                    data = orderbook.to_dict()
+                                    await self.output_queue.put((self.exchangename, data))
+                                    self.log_info(f"{symbol} 오더북 데이터 큐 직접 전송 성공")
+                                    
+                                    # 직접 send_to_queue 메서드 호출 시도
+                                    try:
+                                        await orderbook.send_to_queue()
+                                        self.log_info(f"{symbol} send_to_queue 메서드 호출 성공")
+                                    except Exception as e:
+                                        self.log_error(f"{symbol} send_to_queue 메서드 호출 실패: {e}")
+                            except Exception as e:
+                                self.log_error(f"{symbol} 오더북 데이터 큐 직접 전송 실패: {e}")
                         
                         # 처리 시간 메트릭 기록 - 안전하게 호출
                         try:

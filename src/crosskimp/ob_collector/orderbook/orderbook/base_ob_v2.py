@@ -7,6 +7,7 @@ from collections import defaultdict
 from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
 from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 logger = get_unified_logger()
 
@@ -58,6 +59,9 @@ class OrderBookV2:
             self.last_update_time = timestamp
         if sequence:
             self.last_update_id = sequence
+            
+        # 오더북 업데이트 후 바로 C++로 데이터 전송
+        asyncio.create_task(self.send_to_cpp())
 
     def to_dict(self) -> dict:
         """오더북 데이터를 딕셔너리로 변환"""
@@ -70,10 +74,25 @@ class OrderBookV2:
             "sequence": self.last_update_id
         }
 
+    async def send_to_cpp(self) -> None:
+        """C++로 데이터 직접 전송"""
+        # 오더북 데이터를 딕셔너리로 변환
+        orderbook_data = self.to_dict()
+        
+        # C++로 데이터 전송
+        await send_orderbook_to_cpp(self.exchangename, orderbook_data)
+
     async def send_to_queue(self) -> None:
-        """큐로 데이터 전송"""
+        """큐로 데이터 전송 및 C++로 데이터 전송"""
+        # 오더북 데이터를 딕셔너리로 변환
+        orderbook_data = self.to_dict()
+        
+        # 큐로 데이터 전송
         if self.output_queue:
-            await self.output_queue.put((self.exchangename, self.to_dict()))
+            await self.output_queue.put((self.exchangename, orderbook_data))
+        
+        # C++로 데이터 전송 (비동기 태스크로 실행하여 블로킹하지 않도록 함)
+        asyncio.create_task(send_orderbook_to_cpp(self.exchangename, orderbook_data))
 
 class BaseOrderBookManagerV2:
     """

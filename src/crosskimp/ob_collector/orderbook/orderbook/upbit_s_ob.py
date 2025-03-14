@@ -8,6 +8,7 @@ from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
+from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # ============================
 # 업비트 오더북 관련 상수
@@ -17,6 +18,80 @@ EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
+
+class UpbitOrderBook(OrderBookV2):
+    """
+    업비트 전용 오더북 클래스
+    - 타임스탬프 기반 시퀀스 관리
+    - 전체 스냅샷 방식 처리
+    """
+    def __init__(self, exchangename: str, symbol: str, depth: int = 15):
+        super().__init__(exchangename, symbol, depth)
+        # 업비트 특화 속성
+        self.last_timestamp = 0
+        self.bids_dict = {}  # price -> quantity
+        self.asks_dict = {}  # price -> quantity
+
+    def should_process_update(self, timestamp: Optional[int]) -> bool:
+        """
+        업데이트 처리 여부 결정
+        - 타임스탬프가 이전보다 작거나 같으면 무시
+        """
+        if self.last_timestamp is not None and timestamp:
+            if timestamp <= self.last_timestamp:
+                logger.debug(
+                    f"{EXCHANGE_KR} {self.symbol} 이전 타임스탬프 무시 | "
+                    f"current={timestamp}, last={self.last_timestamp}"
+                )
+                return False
+        return True
+
+    def update_orderbook(self, bids: List[List[float]], asks: List[List[float]], 
+                        timestamp: Optional[int] = None, sequence: Optional[int] = None) -> None:
+        """
+        오더북 데이터 업데이트 (업비트 전용)
+        """
+        try:
+            # 타임스탬프 검증
+            if timestamp and not self.should_process_update(timestamp):
+                return
+                
+            # 딕셔너리 초기화 (업비트는 항상 전체 스냅샷)
+            self.bids_dict.clear()
+            self.asks_dict.clear()
+            
+            # 딕셔너리에 데이터 추가
+            for price, qty in bids:
+                if qty > 0:
+                    self.bids_dict[price] = qty
+                    
+            for price, qty in asks:
+                if qty > 0:
+                    self.asks_dict[price] = qty
+            
+            # 정렬된 리스트 생성
+            sorted_bids = sorted(self.bids_dict.items(), key=lambda x: x[0], reverse=True)
+            sorted_asks = sorted(self.asks_dict.items(), key=lambda x: x[0])
+            
+            # depth 제한 및 리스트 변환
+            self.bids = [[price, qty] for price, qty in sorted_bids[:self.depth]]
+            self.asks = [[price, qty] for price, qty in sorted_asks[:self.depth]]
+            
+            # 메타데이터 업데이트
+            if timestamp:
+                self.last_update_time = timestamp
+                self.last_timestamp = timestamp
+            if sequence:
+                self.last_update_id = sequence
+                
+            # C++로 데이터 직접 전송
+            asyncio.create_task(self.send_to_cpp())
+                
+        except Exception as e:
+            logger.error(
+                f"{EXCHANGE_KR} {self.symbol} 오더북 업데이트 실패: {str(e)}", 
+                exc_info=True
+            )
 
 class UpbitOrderBookManager(BaseOrderBookManagerV2):
     """
@@ -28,6 +103,7 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
     def __init__(self, depth: int = 15):
         super().__init__(depth)
         self.exchangename = EXCHANGE_CODE
+        self.orderbooks: Dict[str, UpbitOrderBook] = {}  # UpbitOrderBook 사용
 
     async def start(self):
         """오더북 매니저 시작"""
@@ -51,11 +127,15 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
         """웹소켓 데이터로 스냅샷으로 오더북 초기화"""
         try:
             if symbol not in self.orderbooks:
-                self.orderbooks[symbol] = OrderBookV2(
+                self.orderbooks[symbol] = UpbitOrderBook(
                     exchangename=self.exchangename,
                     symbol=symbol,
                     depth=self.depth
                 )
+                
+                # 새로 생성된 오더북에 큐 설정
+                if self._output_queue:
+                    self.orderbooks[symbol].set_output_queue(self._output_queue)
             
             # 데이터 변환
             converted = self._convert_upbit_format(data)
@@ -77,12 +157,15 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
                     logger.warning(f"{EXCHANGE_KR} {symbol} {error_messages[0]}")
             
             if is_valid:
+                # UpbitOrderBook 클래스의 update_orderbook 메서드 호출
                 self.orderbooks[symbol].update_orderbook(
                     bids=bids,
                     asks=asks,
                     timestamp=converted["timestamp"],
                     sequence=converted["sequence"]
                 )
+                
+                # 큐로 데이터 전송 (필요한 경우)
                 await self.orderbooks[symbol].send_to_queue()
                 
                 # 오더북 카운트 메트릭 업데이트
@@ -135,7 +218,7 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
             'sequence': data.get('sequence')
         }
 
-    def get_orderbook(self, symbol: str) -> Optional[OrderBookV2]:
+    def get_orderbook(self, symbol: str) -> Optional[UpbitOrderBook]:
         """심볼의 오더북 반환"""
         return self.orderbooks.get(symbol)
 

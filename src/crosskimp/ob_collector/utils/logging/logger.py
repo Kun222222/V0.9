@@ -35,14 +35,8 @@ from crosskimp.ob_collector.utils.config.constants import (
 # ============================
 # 로그 디렉토리 설정
 # ============================
-# 프로젝트 루트 디렉토리 찾기
-PROJECT_ROOT = os.path.abspath(os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))),
-    ""
-))
-
-# 로그 디렉토리 설정
-BASE_LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
+# Docker 컨테이너 내부의 로그 디렉토리 설정
+BASE_LOG_DIR = "/app/src/logs"
 LOG_DIRS = {
     'base': BASE_LOG_DIR,                  # 일반 로그가 저장됨
     # 'raw': os.path.join(BASE_LOG_DIR, 'raw'),  # raw 데이터 로그가 저장됨 - 더 이상 사용하지 않음 (raw_data/{exchange_name}으로 대체)
@@ -310,38 +304,59 @@ def create_logger(
     
     current_time = get_current_time_str()
     
-    # 일반 로그 핸들러 (RotatingFileHandler 사용)
+    # 로그 디렉토리 존재 여부 확인 및 생성
+    if not os.path.exists(log_dir):
+        try:
+            os.makedirs(log_dir, mode=0o755)
+            print(f"{LOG_SYSTEM} 로그 디렉토리 생성: {log_dir}")
+        except Exception as e:
+            print(f"{LOG_SYSTEM} 로그 디렉토리 생성 실패: {log_dir} | {str(e)}")
+            return logger
+    
+    # 일반 로그 핸들러
     log_file = f"{log_dir}/{current_time}_{name}.log"
-    file_handler = SafeRotatingFileHandler(
-        filename=log_file,
-        maxBytes=LOG_MAX_BYTES,
-        backupCount=LOG_BACKUP_COUNT,
-        encoding=LOG_ENCODING,
-        mode=LOG_MODE
-    )
-    file_handler.setLevel(level)
-    
-    # 포맷터 설정 - 수정된 포맷 사용 (밀리초 표시를 위해 datefmt 제거)
-    formatter = logging.Formatter(format_str)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    
-    # 에러 전용 로그 파일 추가 (선택적)
-    if add_error_file:
-        error_log_file = f"{LOG_DIRS['error']}/{current_time}_{name}_error.log"
-        error_handler = SafeRotatingFileHandler(
-            filename=error_log_file,
+    try:
+        file_handler = SafeRotatingFileHandler(
+            filename=log_file,
             maxBytes=LOG_MAX_BYTES,
             backupCount=LOG_BACKUP_COUNT,
             encoding=LOG_ENCODING,
             mode=LOG_MODE
         )
-        error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(formatter)
-        error_handler.addFilter(ErrorFilter())
-        logger.addHandler(error_handler)
+        # 파일 권한 설정
+        os.chmod(log_file, 0o644)
+        
+        file_handler.setLevel(level)
+        formatter = logging.Formatter(format_str)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+        print(f"{LOG_SYSTEM} 로그 파일 생성: {log_file}")
+    except Exception as e:
+        print(f"{LOG_SYSTEM} 로그 파일 생성 실패: {log_file} | {str(e)}")
     
-    # 콘솔 핸들러 추가 (선택적)
+    # 에러 전용 로그 파일 추가
+    if add_error_file:
+        error_log_file = f"{LOG_DIRS['error']}/{current_time}_{name}_error.log"
+        try:
+            error_handler = SafeRotatingFileHandler(
+                filename=error_log_file,
+                maxBytes=LOG_MAX_BYTES,
+                backupCount=LOG_BACKUP_COUNT,
+                encoding=LOG_ENCODING,
+                mode=LOG_MODE
+            )
+            # 파일 권한 설정
+            os.chmod(error_log_file, 0o644)
+            
+            error_handler.setLevel(logging.ERROR)
+            error_handler.setFormatter(formatter)
+            error_handler.addFilter(ErrorFilter())
+            logger.addHandler(error_handler)
+            print(f"{LOG_SYSTEM} 에러 로그 파일 생성: {error_log_file}")
+        except Exception as e:
+            print(f"{LOG_SYSTEM} 에러 로그 파일 생성 실패: {error_log_file} | {str(e)}")
+    
+    # 콘솔 핸들러 추가
     if add_console:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(console_level)
