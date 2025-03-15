@@ -387,16 +387,18 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
         # 초기 연결 시도 중 타임아웃은 정상적인 상황으로 처리
         is_initial_timeout = self.current_retry <= 3
         
-        if not is_initial_timeout:
+        # 로그 및 알림 처리 - 초기 연결 여부에 따라 다르게 처리
+        if is_initial_timeout:
+            # 초기 연결 타임아웃은 정보 로그만 남김
+            self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 중 (시도 횟수: {self.current_retry})")
+        else:
             # 초기 연결 타임아웃이 아닌 경우에만 텔레그램 알림 전송
             reconnect_msg = f"{self.exchange_korean_name} 웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count})"
             self.log_info(reconnect_msg)
             await self._send_telegram_notification("reconnect", reconnect_msg)
-        else:
-            # 초기 연결 타임아웃은 정보 로그만 남김
-            self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 중 (시도 횟수: {self.current_retry})")
         
         try:
+            # 웹소켓 및 태스크 정리
             if self.ws:
                 try:
                     await self.ws.close()
@@ -409,24 +411,23 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
             self.is_connected = False
             self.stats.connected = False
             
-            # 초기 연결 시도 중 타임아웃인 경우 직접 connect 호출
+            # 초기 연결 시도 중 타임아웃인 경우 직접 connect 호출, 그 외에는 부모 클래스의 reconnect 호출
             if is_initial_timeout:
-                # 짧은 대기 후 재연결 시도
-                await asyncio.sleep(1)
+                await asyncio.sleep(1)  # 짧은 대기 후 재연결 시도
                 await self.connect()
             else:
-                # 그 외의 경우 부모 클래스의 reconnect 호출
                 await super().reconnect()
             
         except Exception as e:
-            # 초기 연결 타임아웃이 아닌 경우에만 에러 로그 및 텔레그램 알림
-            if not is_initial_timeout:
+            # 오류 메시지 및 로깅 - 초기 연결 여부에 따라 다르게 처리
+            if is_initial_timeout:
+                # 초기 연결 타임아웃은 정보 로그만 남김
+                self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 실패 (무시됨): {str(e)}")
+            else:
+                # 초기 연결 타임아웃이 아닌 경우에만 에러 로그 및 텔레그램 알림
                 error_msg = f"{self.exchange_korean_name} 웹소켓 재연결 실패: {str(e)}"
                 self.log_error(error_msg)
                 await self._send_telegram_notification("error", error_msg)
-            else:
-                # 초기 연결 타임아웃은 정보 로그만 남김
-                self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 실패 (무시됨): {str(e)}")
             
             delay = min(30, self.retry_delay * (2 ** (self.current_retry - 1)))
             self.log_info(f"재연결 대기 중 ({delay}초) | 시도={self.current_retry}회차")

@@ -152,25 +152,29 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         # 메인 연결 및 메시지 처리 루프
         while not self.stop_event.is_set():
             try:
-                # 연결 상태 확인 및 연결 시도
+                # 1. 연결 상태 확인 및 연결 시도
                 if not self.is_connected:
-                    if not await self._handle_connection_attempt():
+                    connected = await self.connect()
+                    if not connected:
+                        # 연결 실패 시 지수 백오프 적용
+                        delay = self.reconnect_strategy.next_delay()
+                        self.log_error(f"연결 실패, {delay}초 후 재시도")
+                        await asyncio.sleep(delay)
                         continue
                 
-                # 연결 직후 last_message_time 초기화
+                # 2. 연결 직후 last_message_time 초기화
                 self.stats.last_message_time = time.time()
+                last_message_time = self.stats.last_message_time
 
-                # 심볼 구독 (부모 클래스의 start에서 이미 호출되었지만, 재연결 시 다시 호출 필요)
+                # 3. 심볼 구독 (재연결 시 다시 호출 필요)
                 try:
                     await self.subscribe(symbols)
                 except Exception as sub_e:
                     self.log_error(f"구독 실패: {str(sub_e)}")
-                    # 구독 실패 시 연결 재설정
                     self.is_connected = False
                     continue
 
-                # 메시지 수신 루프
-                last_message_time = time.time()
+                # 4. 메시지 수신 루프
                 while not self.stop_event.is_set() and self.is_connected:
                     try:
                         # 웹소켓 연결 상태 확인
@@ -179,159 +183,96 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
                             self.is_connected = False
                             break
                             
-                        # 메시지 수신 및 처리
-                        if not await self._handle_message_reception(last_message_time):
-                            break
+                        # 메시지 수신
+                        message = await asyncio.wait_for(
+                            self.ws.recv(), 
+                            timeout=BITHUMB_CONFIG["message_timeout"]
+                        )
                         
-                        # 마지막 메시지 시간 업데이트
-                        last_message_time = time.time()
+                        # 메시지 지연 측정 및 처리
+                        current_time = time.time()
+                        message_delay = current_time - last_message_time
+                        
+                        # 메시지 지연이 타임아웃보다 크면 연결 재설정
+                        if message_delay > BITHUMB_CONFIG["message_timeout"]:
+                            self.log_error(f"높은 메시지 지연 감지: {message_delay:.1f}초 -> 연결 재설정")
+                            self.is_connected = False
+                            break
+
+                        # 통계 업데이트
+                        self.stats.last_message_time = current_time
+                        self.stats.message_count += 1
+                        self.stats.total_messages += 1
+                        last_message_time = current_time
+
+                        # 디버깅을 위해 메시지 내용 로깅
+                        if self.stats.message_count <= BITHUMB_CONFIG["log_sample_count"]:
+                            self.log_debug(f"수신된 메시지 샘플 (#{self.stats.message_count}): {message[:BITHUMB_CONFIG['log_message_preview_length']]}...")
+
+                        # 메시지 처리 (자식 클래스에서 구현)
+                        await self.process_message(message)
 
                     except asyncio.TimeoutError:
                         # 타임아웃 발생 시 연결 상태 확인
-                        if not await self._handle_timeout(last_message_time):
+                        current_time = time.time()
+                        if current_time - last_message_time > BITHUMB_CONFIG["message_timeout"]:
+                            self.log_error(f"메시지 수신 타임아웃: {current_time - last_message_time:.1f}초 -> 연결 재설정")
+                            self.is_connected = False
                             break
                         continue
+                        
                     except websockets.exceptions.ConnectionClosed as e:
-                        await self._handle_connection_closed(e)
+                        self.log_error(f"웹소켓 연결 끊김: {e}")
+                        await self._send_telegram_notification("error", f"빗썸 웹소켓 연결 끊김: {e}")
+                        self.is_connected = False
                         break
+                        
                     except Exception as e:
                         self.log_error(f"메시지 수신 오류: {e}")
                         self.is_connected = False
                         break
 
-                # 연결이 끊어진 경우 재연결 대기
+                # 5. 연결이 끊어진 경우 재연결 준비
                 if not self.is_connected and not self.stop_event.is_set():
-                    await self._prepare_reconnect()
+                    # 재연결 카운트 증가 및 시간 기록
+                    self.reconnect_count += 1
+                    self.last_reconnect_time = time.time()
+                    
+                    # 재연결 지연 계산
+                    delay = self.reconnect_strategy.next_delay()
+                    self.log_info(f"{delay:.1f}초 후 재연결 시도 (#{self.reconnect_count})")
+                    
+                    # 연결 종료 콜백 호출
+                    if self.connection_status_callback:
+                        self.connection_status_callback(self.exchangename, "disconnect")
+                    
+                    # 웹소켓 객체 정리
+                    if self.ws:
+                        try:
+                            await self.ws.close()
+                        except Exception:
+                            pass
+                        self.ws = None
+                    
+                    # 재연결 대기
+                    await asyncio.sleep(delay)
 
             except Exception as e:
                 self.log_error(f"연결 루프 오류: {str(e)}")
-                await self._handle_loop_error()
-
-    async def _handle_connection_attempt(self) -> bool:
-        """
-        연결 시도 및 실패 처리
-        
-        Returns:
-            bool: 연결 성공 여부
-        """
-        connected = await self.connect()
-        if not connected:
-            # 연결 실패 시 지수 백오프 적용
-            delay = self.reconnect_strategy.next_delay()
-            self.log_error(f"연결 실패, {delay}초 후 재시도")
-            await asyncio.sleep(delay)
-            return False
-        return True
-
-    async def _handle_message_reception(self, last_message_time: float) -> bool:
-        """
-        메시지 수신 및 처리
-        
-        Args:
-            last_message_time: 마지막 메시지 수신 시간
-            
-        Returns:
-            bool: 계속 메시지를 수신해야 하는지 여부
-        """
-        # 메시지 수신
-        message = await asyncio.wait_for(
-            self.ws.recv(), 
-            timeout=BITHUMB_CONFIG["message_timeout"]
-        )
-        
-        # 메시지 지연 측정
-        current_time = time.time()
-        message_delay = current_time - last_message_time
-        
-        # 메시지 지연이 30초 이상이면 연결 재설정
-        if message_delay > BITHUMB_CONFIG["message_timeout"]:
-            self.log_error(f"높은 메시지 지연 감지: {message_delay:.1f}초 -> 연결 재설정")
-            self.is_connected = False
-            return False
-
-        # 통계 업데이트
-        self.stats.last_message_time = current_time
-        self.stats.message_count += 1
-        self.stats.total_messages += 1
-
-        # 디버깅을 위해 메시지 내용 로깅
-        if self.stats.message_count <= BITHUMB_CONFIG["log_sample_count"]:
-            self.log_debug(f"수신된 메시지 샘플 (#{self.stats.message_count}): {message[:BITHUMB_CONFIG['log_message_preview_length']]}...")
-
-        # 메시지 처리 (자식 클래스에서 구현)
-        await self.process_message(message)
-        return True
-
-    async def _handle_timeout(self, last_message_time: float) -> bool:
-        """
-        타임아웃 처리
-        
-        Args:
-            last_message_time: 마지막 메시지 수신 시간
-            
-        Returns:
-            bool: 계속 메시지를 수신해야 하는지 여부
-        """
-        current_time = time.time()
-        if current_time - last_message_time > BITHUMB_CONFIG["message_timeout"]:
-            self.log_error(f"메시지 수신 타임아웃: {current_time - last_message_time:.1f}초 -> 연결 재설정")
-            self.is_connected = False
-            return False
-        return True
-
-    async def _handle_connection_closed(self, exception: Exception) -> None:
-        """
-        연결 종료 처리
-        
-        Args:
-            exception: 연결 종료 예외
-        """
-        self.log_error(f"웹소켓 연결 끊김: {exception}")
-        # 텔레그램 알림 전송
-        await self._send_telegram_notification("error", f"빗썸 웹소켓 연결 끊김: {exception}")
-        self.is_connected = False
-
-    async def _prepare_reconnect(self) -> None:
-        """재연결 준비"""
-        # 재연결 카운트 증가 및 시간 기록
-        self.reconnect_count += 1
-        self.last_reconnect_time = time.time()
-        
-        # 재연결 지연 계산
-        delay = self.reconnect_strategy.next_delay()
-        self.log_info(f"{delay:.1f}초 후 재연결 시도 (#{self.reconnect_count})")
-        
-        # 연결 종료 콜백 호출
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "disconnect")
-        
-        # 웹소켓 객체 정리
-        if self.ws:
-            try:
-                await self.ws.close()
-            except Exception:
-                pass
-            self.ws = None
-        
-        # 재연결 대기
-        await asyncio.sleep(delay)
-
-    async def _handle_loop_error(self) -> None:
-        """연결 루프 오류 처리"""
-        # 재연결 지연
-        delay = self.reconnect_strategy.next_delay()
-        self.log_info(f"{delay:.1f}초 후 재연결 시도...")
-        
-        # 연결 상태 초기화
-        self.is_connected = False
-        if self.ws:
-            try:
-                await self.ws.close()
-            except Exception:
-                pass
-            self.ws = None
-        
-        await asyncio.sleep(delay)
+                
+                # 연결 상태 초기화
+                self.is_connected = False
+                if self.ws:
+                    try:
+                        await self.ws.close()
+                    except Exception:
+                        pass
+                    self.ws = None
+                
+                # 재연결 지연
+                delay = self.reconnect_strategy.next_delay()
+                self.log_info(f"{delay:.1f}초 후 재연결 시도...")
+                await asyncio.sleep(delay)
 
     async def process_message(self, message: str) -> None:
         """
