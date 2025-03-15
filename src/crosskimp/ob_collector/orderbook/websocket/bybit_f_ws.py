@@ -5,24 +5,30 @@ import aiohttp
 from websockets import connect
 from typing import Dict, List, Optional, Any
 
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
+
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bybit_f_ob import BybitFutureOrderBookManager
-from crosskimp.config.constants import Exchange
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 # ============================
 # 바이빗 선물 웹소켓 관련 상수
 # ============================
 # 기본 설정
 EXCHANGE_CODE = Exchange.BYBIT_FUTURE.value  # 거래소 코드
+BYBIT_FUTURE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이빗 선물 설정
 
 # 웹소켓 연결 설정
-WS_URL = "wss://stream.bybit.com/v5/public/linear"  # 웹소켓 URL
-PING_INTERVAL = 20  # 핑 전송 간격 (초) - 공식 문서 권장
-PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+WS_URL = BYBIT_FUTURE_CONFIG["ws_url"]  # 웹소켓 URL
+PING_INTERVAL = BYBIT_FUTURE_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
+PING_TIMEOUT = BYBIT_FUTURE_CONFIG["ping_timeout"]  # 핑 응답 타임아웃 (초)
 
 # 오더북 관련 설정
-DEFAULT_DEPTH = 50  # 기본 오더북 깊이 (10에서 50으로 변경)
-MAX_SYMBOLS_PER_BATCH = 10  # 배치당 최대 심볼 수
+DEFAULT_DEPTH = BYBIT_FUTURE_CONFIG["default_depth"]  # 기본 오더북 깊이
+MAX_SYMBOLS_PER_BATCH = BYBIT_FUTURE_CONFIG["max_symbols_per_batch"]  # 배치당 최대 심볼 수
 
 class BybitFutureWebsocket(BaseWebsocketConnector):
     """
@@ -43,8 +49,9 @@ class BybitFutureWebsocket(BaseWebsocketConnector):
             self.ws_url = "wss://stream-testnet.bybit.com/v5/public/linear"
             
         # 오더북 설정
-        self.depth_level = settings.get("connection", {}).get("websocket", {}).get("depth_level", DEFAULT_DEPTH)
+        self.depth_level = settings.get("depth", DEFAULT_DEPTH)
         self.orderbook_manager = BybitFutureOrderBookManager(self.depth_level)
+        self.orderbook_manager.set_websocket(self)  # 웹소켓 연결 설정
         
         # Bybit 특화 설정 - 상단 상수 사용
         self.ping_interval = PING_INTERVAL
@@ -57,6 +64,7 @@ class BybitFutureWebsocket(BaseWebsocketConnector):
         self.last_pong_time = 0
         self.ping_task = None
         self.health_check_task = None
+        self.ws = None
         
         # 스냅샷 관리
         self.snapshot_received = set()  # 스냅샷을 받은 심볼 목록
@@ -512,3 +520,24 @@ class BybitFutureWebsocket(BaseWebsocketConnector):
                 self.log_error("재연결 실패")
         except Exception as e:
             self.log_error(f"재연결 오류: {str(e)}")
+
+    def set_output_queue(self, queue: asyncio.Queue) -> None:
+        """
+        출력 큐 설정
+        - 부모 클래스의 output_queue 설정
+        - 오더북 매니저의 output_queue 설정
+        """
+        # 부모 클래스의 output_queue 설정
+        super().set_output_queue(queue)
+        
+        # 오더북 매니저의 output_queue 설정
+        self.orderbook_manager.set_output_queue(queue)
+        
+        # 로깅 추가
+        self.log_info(f"웹소켓 출력 큐 설정 완료 (큐 ID: {id(queue)})")
+        
+        # 큐 설정 확인
+        if not hasattr(self.orderbook_manager, '_output_queue') or self.orderbook_manager._output_queue is None:
+            self.log_error("오더북 매니저 큐 설정 실패!")
+        else:
+            self.log_info(f"오더북 매니저 큐 설정 확인 (큐 ID: {id(self.orderbook_manager._output_queue)})")

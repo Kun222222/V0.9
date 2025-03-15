@@ -5,8 +5,10 @@ import time
 from typing import Dict, Optional, List
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
-from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
+
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
+from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
+
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
@@ -15,6 +17,7 @@ from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 # ============================
 EXCHANGE_CODE = Exchange.UPBIT.value  # 거래소 코드
 EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
+UPBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 업비트 설정
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -25,7 +28,7 @@ class UpbitOrderBook(OrderBookV2):
     - 타임스탬프 기반 시퀀스 관리
     - 전체 스냅샷 방식 처리
     """
-    def __init__(self, exchangename: str, symbol: str, depth: int = 15):
+    def __init__(self, exchangename: str, symbol: str, depth: int = UPBIT_CONFIG["default_depth"]):
         super().__init__(exchangename, symbol, depth)
         # 업비트 특화 속성
         self.last_timestamp = 0

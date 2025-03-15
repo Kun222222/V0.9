@@ -5,8 +5,9 @@ from dataclasses import dataclass
 import aiohttp
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
-from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
+
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # 로거 인스턴스 가져오기
@@ -17,25 +18,26 @@ logger = get_unified_logger()
 # ============================
 EXCHANGE_CODE = Exchange.BINANCE_FUTURE.value  # 거래소 코드
 EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
+BINANCE_FUTURE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 선물 설정
 
 # REST API 설정 (스냅샷 요청용)
-REST_BASE_URL = "https://fapi.binance.com/fapi/v1/depth"  # REST API 기본 URL
+REST_BASE_URL = BINANCE_FUTURE_CONFIG["api_urls"]["depth"]  # REST API 기본 URL
 
 # 웹소켓 연결 설정 - 2024년 4월 이후 변경된 URL
-WS_BASE_URL = "wss://fstream.binance.com/stream?streams="  # 웹소켓 기본 URL
+WS_BASE_URL = BINANCE_FUTURE_CONFIG["ws_base_url"]  # 웹소켓 기본 URL
 
 # 오더북 관련 설정
-UPDATE_SPEED = "100ms"  # 웹소켓 업데이트 속도 (100ms, 250ms, 500ms 중 선택)
-DEFAULT_DEPTH = 500     # 기본 오더북 깊이
-MAX_RETRY_COUNT = 3     # 최대 재시도 횟수
+UPDATE_SPEED = BINANCE_FUTURE_CONFIG["update_speed"]  # 웹소켓 업데이트 속도 (100ms, 250ms, 500ms 중 선택)
+DEFAULT_DEPTH = BINANCE_FUTURE_CONFIG["default_depth"]     # 기본 오더북 깊이
+MAX_RETRY_COUNT = BINANCE_FUTURE_CONFIG["max_retry_count"]     # 최대 재시도 횟수
 MAX_BUFFER_SIZE = 1000  # 최대 버퍼 크기
 
 # 스냅샷 요청 설정
-SNAPSHOT_RETRY_DELAY = 1  # 스냅샷 요청 재시도 초기 딜레이 (초)
-SNAPSHOT_REQUEST_TIMEOUT = 10  # 스냅샷 요청 타임아웃 (초)
+SNAPSHOT_RETRY_DELAY = BINANCE_FUTURE_CONFIG["snapshot_retry_delay"]  # 스냅샷 요청 재시도 초기 딜레이 (초)
+SNAPSHOT_REQUEST_TIMEOUT = BINANCE_FUTURE_CONFIG["snapshot_request_timeout"]  # 스냅샷 요청 타임아웃 (초)
 
 # DNS 캐시 설정
-DNS_CACHE_TTL = 300  # DNS 캐시 TTL (초)
+DNS_CACHE_TTL = BINANCE_FUTURE_CONFIG["dns_cache_ttl"]  # DNS 캐시 TTL (초)
 
 # 세션 관리
 GLOBAL_AIOHTTP_SESSION: Optional[aiohttp.ClientSession] = None

@@ -46,7 +46,7 @@ LOG_DIRS = {
     'queue': LOG_SUBDIRS['queue'],         # 큐 데이터 로그가 저장됨
     'error': LOG_SUBDIRS['error'],         # 에러 로그가 저장됨
     'telegram': LOG_SUBDIRS['telegram'],   # 텔레그램 로그가 저장됨
-    'metrics': LOG_SUBDIRS['metrics'],     # 메트릭 데이터가 저장됨
+    'metrics': LOGS_DIR,                   # 메트릭 데이터가 저장됨 (@logs 디렉토리에 직접 저장)
     'archive': LOG_SUBDIRS['archive']      # 압축된 로그 파일이 저장됨
 }
 

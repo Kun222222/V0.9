@@ -6,30 +6,31 @@ import time
 import aiohttp
 from websockets import connect
 from typing import Dict, List, Optional
+from crosskimp.config.ob_constants import Exchange, WebSocketState, STATUS_EMOJIS, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotOrderBookManager
-from crosskimp.config.constants import Exchange, WebSocketState, STATUS_EMOJIS
 
 # ============================
 # 바이낸스 현물 웹소켓 관련 상수
 # ============================
 # 기본 설정
 EXCHANGE_CODE = Exchange.BINANCE.value  # 거래소 코드
+BINANCE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 설정
 
 # 웹소켓 연결 설정
-WS_URL = "wss://stream.binance.com:9443/ws"  # 웹소켓 URL
-PING_INTERVAL = 20  # 핑 전송 간격 (초)
-PING_TIMEOUT = 20    # 핑 응답 타임아웃 (초)
-HEALTH_CHECK_INTERVAL = 30  # 헬스 체크 간격 (초)
+WS_URL = BINANCE_CONFIG["ws_url"]  # 웹소켓 URL
+PING_INTERVAL = BINANCE_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
+PING_TIMEOUT = BINANCE_CONFIG["ping_timeout"]    # 핑 응답 타임아웃 (초)
+HEALTH_CHECK_INTERVAL = BINANCE_CONFIG["health_check_interval"]  # 헬스 체크 간격 (초)
 
 # 오더북 관련 설정
-DEFAULT_DEPTH = 500  # 기본 오더북 깊이
-DEPTH_UPDATE_STREAM = "@depth@100ms"  # 깊이 업데이트 스트림 형식
+DEFAULT_DEPTH = BINANCE_CONFIG["default_depth"]  # 기본 오더북 깊이
+DEPTH_UPDATE_STREAM = BINANCE_CONFIG["depth_update_stream"]  # 깊이 업데이트 스트림 형식
 
 # 구독 관련 설정
-SUBSCRIBE_CHUNK_SIZE = 10  # 한 번에 구독할 심볼 수
-SUBSCRIBE_DELAY = 1  # 구독 요청 간 딜레이 (초)
+SUBSCRIBE_CHUNK_SIZE = BINANCE_CONFIG["subscribe_chunk_size"]  # 한 번에 구독할 심볼 수
+SUBSCRIBE_DELAY = BINANCE_CONFIG["subscribe_delay"]  # 구독 요청 간 딜레이 (초)
 
 def parse_binance_depth_update(msg_data: dict) -> Optional[dict]:
     if msg_data.get("e") != "depthUpdate":
@@ -75,6 +76,7 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
     def __init__(self, settings: dict):
         super().__init__(settings, "binance")
         self.manager = BinanceSpotOrderBookManager(depth=settings.get("depth", DEFAULT_DEPTH))
+        self.manager.set_websocket(self)  # 웹소켓 연결 설정
         self.subscribed_symbols = set()
         self.ws = None
         self.session = None
@@ -82,10 +84,22 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """출력 큐 설정"""
-        self.output_queue = queue
+        # 부모 클래스의 output_queue 설정
+        super().set_output_queue(queue)
+        
+        # 오더북 매니저의 output_queue 설정
         if hasattr(self, 'manager') and self.manager:
             self.manager.set_output_queue(queue)
             
+        # 로깅 추가
+        self.log_info(f"웹소켓 출력 큐 설정 완료 (큐 ID: {id(queue)})")
+        
+        # 큐 설정 확인
+        if not hasattr(self.manager, '_output_queue') or self.manager._output_queue is None:
+            self.log_error("오더북 매니저 큐 설정 실패!")
+        else:
+            self.log_info(f"오더북 매니저 큐 설정 확인 (큐 ID: {id(self.manager._output_queue)})")
+
     def set_connection_status_callback(self, callback):
         """연결 상태 콜백 설정 (오더북 매니저에도 전달)"""
         self.connection_status_callback = callback

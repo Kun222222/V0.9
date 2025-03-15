@@ -2,17 +2,19 @@ import time
 import json
 import logging
 import asyncio
-
 from typing import Dict, Optional, List
+
 from crosskimp.logger.logger import get_unified_logger, get_queue_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
-from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
+
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 
 # ============================
 # 바이빗 오더북 관련 상수
 # ============================
 EXCHANGE_CODE = Exchange.BYBIT.value  # 거래소 코드
 EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
+BYBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이빗 설정
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -25,10 +27,10 @@ class BybitOrderBook(OrderBookV2):
     - 3초 스냅샷 처리
     - 델타 업데이트 처리
     """
-    def __init__(self, exchangename: str, symbol: str, depth: int = 50):
+    def __init__(self, exchangename: str, symbol: str, depth: int = BYBIT_CONFIG["default_depth"]):
         super().__init__(exchangename, symbol, depth)
         self.last_snapshot_time = 0
-        self.snapshot_interval = 3  # 3초마다 스냅샷 체크
+        self.snapshot_interval = BYBIT_CONFIG["snapshot_interval"]  # 스냅샷 간격 (초)
         self.bids_dict = {}  # price -> quantity
         self.asks_dict = {}  # price -> quantity
 
@@ -145,11 +147,17 @@ class BybitOrderBook(OrderBookV2):
             )
 
 class BybitSpotOrderBookManager(BaseOrderBookManagerV2):
-    def __init__(self, depth: int = 50):
+    def __init__(self, depth: int = BYBIT_CONFIG["default_depth"]):
         super().__init__(depth)
         self.exchangename = EXCHANGE_CODE
         self.orderbooks: Dict[str, BybitOrderBook] = {}  # BybitOrderBook 사용
         # output_queue는 부모 클래스의 _output_queue를 사용
+        self.ws = None  # 웹소켓 연결 객체
+        
+    def set_websocket(self, ws):
+        """웹소켓 연결 설정"""
+        self.ws = ws
+        logger.info(f"{EXCHANGE_KR} 웹소켓 연결 설정 완료")
         
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """

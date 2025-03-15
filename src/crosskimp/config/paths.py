@@ -52,7 +52,6 @@ LOG_SUBDIRS = {
     'queue': LOGS_DIR / 'queue',
     'error': LOGS_DIR / 'error',
     'telegram': LOGS_DIR / 'telegram',
-    'metrics': LOGS_DIR / 'metrics',
     'archive': LOGS_DIR / 'archive',
     'raw_data': LOGS_DIR / 'raw_data',
     'serialized_data': LOGS_DIR / 'serialized_data'

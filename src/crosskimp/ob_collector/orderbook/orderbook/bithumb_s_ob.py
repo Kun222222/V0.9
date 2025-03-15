@@ -6,8 +6,9 @@ import aiohttp
 from typing import Dict, List, Set, Optional
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
-from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
+from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
+
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # ============================
@@ -15,6 +16,7 @@ from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 # ============================
 EXCHANGE_CODE = Exchange.BITHUMB.value  # 거래소 코드
 EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
+BITHUMB_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 빗썸 설정
 
 # 로거 인스턴스 가져오기 - 전역 로거 한 번만 초기화
 logger = get_unified_logger()
@@ -25,7 +27,7 @@ class BithumbSpotOrderBook(OrderBookV2):
     - 타임스탬프 기반 시퀀스 관리
     - 가격 역전 감지 및 처리
     """
-    def __init__(self, exchangename: str, symbol: str, depth: int = 100):
+    def __init__(self, exchangename: str, symbol: str, depth: int = BITHUMB_CONFIG["default_depth"]):
         """초기화"""
         super().__init__(exchangename, symbol, depth)
         self.bids_dict = {}  # 매수 주문 (가격 -> 수량)
@@ -153,7 +155,7 @@ class BithumbSpotOrderBookManager(BaseOrderBookManagerV2):
     - 타임스탬프 기반 시퀀스 관리
     - REST API 스냅샷 요청 및 적용
     """
-    def __init__(self, depth: int = 100):
+    def __init__(self, depth: int = BITHUMB_CONFIG["default_depth"]):
         """초기화"""
         super().__init__(depth)
         self.exchangename = EXCHANGE_CODE

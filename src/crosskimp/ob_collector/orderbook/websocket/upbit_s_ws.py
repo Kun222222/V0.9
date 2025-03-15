@@ -7,24 +7,27 @@ from websockets import connect
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
+from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
+
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.upbit_s_ob import UpbitOrderBookManager
-from crosskimp.config.constants import Exchange
+
 
 # ============================
 # 업비트 웹소켓 관련 상수
 # ============================
 # 기본 설정
 EXCHANGE_CODE = Exchange.UPBIT.value  # 거래소 코드
+UPBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 업비트 설정
 
 # 웹소켓 연결 설정
-WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
-PING_INTERVAL = 60  # 핑 전송 간격 (초)
-PING_TIMEOUT = 120   # 핑 응답 타임아웃 (초)
-PONG_RESPONSE = '{"status":"UP"}'  # 업비트 PONG 응답 형식
+WS_URL = UPBIT_CONFIG["ws_url"]  # 웹소켓 URL
+PING_INTERVAL = UPBIT_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
+PING_TIMEOUT = UPBIT_CONFIG["ping_timeout"]  # 핑 응답 타임아웃 (초)
+PONG_RESPONSE = UPBIT_CONFIG["pong_response"]  # 업비트 PONG 응답 형식
 
 # 오더북 관련 설정
-DEFAULT_DEPTH = 10  # 기본 오더북 깊이
+DEFAULT_DEPTH = UPBIT_CONFIG["default_depth"]  # 기본 오더북 깊이
 
 @dataclass
 class UpbitOrderbookUnit:

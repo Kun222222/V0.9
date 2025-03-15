@@ -9,9 +9,10 @@ import websockets
 from websockets import connect
 from typing import Dict, List, Optional
 
+from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
+
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
-from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob_v2 import BinanceFutureOrderBookManagerV2, parse_binance_future_depth_update
-from crosskimp.config.constants import Exchange
+from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutureOrderBookManagerV2, parse_binance_future_depth_update
 
 
 # ============================
@@ -19,26 +20,27 @@ from crosskimp.config.constants import Exchange
 # ============================
 # 기본 설정
 EXCHANGE_CODE = Exchange.BINANCE_FUTURE.value  # 거래소 코드
+BINANCE_FUTURE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 선물 설정
 
 # 웹소켓 연결 설정
-WS_BASE_URL = "wss://fstream.binance.com/stream?streams="  # 웹소켓 기본 URL
-PING_INTERVAL = 20  # 핑 전송 간격 (초)
-PING_TIMEOUT = 20    # 핑 응답 타임아웃 (초)
+WS_BASE_URL = BINANCE_FUTURE_CONFIG["ws_base_url"]  # 웹소켓 기본 URL
+PING_INTERVAL = BINANCE_FUTURE_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
+PING_TIMEOUT = BINANCE_FUTURE_CONFIG["ping_timeout"]    # 핑 응답 타임아웃 (초)
 
 # REST API 설정 (스냅샷 요청용)
-REST_BASE_URL = "https://fapi.binance.com/fapi/v1/depth"  # REST API 기본 URL
+REST_BASE_URL = BINANCE_FUTURE_CONFIG["api_urls"]["depth"]  # REST API 기본 URL
 
 # 오더북 관련 설정
-UPDATE_SPEED = "100ms"  # 웹소켓 업데이트 속도 (100ms, 250ms, 500ms 중 선택)
-DEFAULT_DEPTH = 500     # 기본 오더북 깊이
-MAX_RETRY_COUNT = 3     # 최대 재시도 횟수
+UPDATE_SPEED = BINANCE_FUTURE_CONFIG["update_speed"]  # 웹소켓 업데이트 속도 (100ms, 250ms, 500ms 중 선택)
+DEFAULT_DEPTH = BINANCE_FUTURE_CONFIG["default_depth"]     # 기본 오더북 깊이
+MAX_RETRY_COUNT = BINANCE_FUTURE_CONFIG["max_retry_count"]     # 최대 재시도 횟수
 
 # 스냅샷 요청 설정
-SNAPSHOT_RETRY_DELAY = 1  # 스냅샷 요청 재시도 초기 딜레이 (초)
-SNAPSHOT_REQUEST_TIMEOUT = 10  # 스냅샷 요청 타임아웃 (초)
+SNAPSHOT_RETRY_DELAY = BINANCE_FUTURE_CONFIG["snapshot_retry_delay"]  # 스냅샷 요청 재시도 초기 딜레이 (초)
+SNAPSHOT_REQUEST_TIMEOUT = BINANCE_FUTURE_CONFIG["snapshot_request_timeout"]  # 스냅샷 요청 타임아웃 (초)
 
 # DNS 캐시 설정
-DNS_CACHE_TTL = 300  # DNS 캐시 TTL (초)
+DNS_CACHE_TTL = BINANCE_FUTURE_CONFIG["dns_cache_ttl"]  # DNS 캐시 TTL (초)
 
 class BinanceFutureWebsocket(BaseWebsocketConnector):
     """

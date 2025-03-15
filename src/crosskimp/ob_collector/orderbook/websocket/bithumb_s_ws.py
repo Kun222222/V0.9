@@ -4,99 +4,101 @@ import asyncio
 import json
 import time
 from typing import Dict, List, Optional, Any, Callable, Union
-
 import websockets
 from websockets import connect
 
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
+
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
-from crosskimp.config.constants import Exchange, WEBSOCKET_URLS, WEBSOCKET_CONFIG
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 # ============================
 # 빗썸 웹소켓 관련 상수
 # ============================
 # 기본 설정
 EXCHANGE_CODE = Exchange.BITHUMB.value  # 거래소 코드
+BITHUMB_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 빗썸 설정
 
 # 웹소켓 연결 설정
-WS_URL = WEBSOCKET_URLS[EXCHANGE_CODE]  # 웹소켓 URL
-PING_INTERVAL = 30  # 핑 전송 간격 (초)
-PING_TIMEOUT = 60   # 핑 응답 타임아웃 (초)
+WS_URL = BITHUMB_CONFIG["ws_url"]  # 웹소켓 URL
+PING_INTERVAL = BITHUMB_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
+PING_TIMEOUT = BITHUMB_CONFIG["ping_timeout"]  # 핑 응답 타임아웃 (초)
 
 # 오더북 관련 설정
-DEFAULT_DEPTH = 15  # 기본 오더북 깊이
-SYMBOL_SUFFIX = "_KRW"  # 심볼 접미사
+DEFAULT_DEPTH = BITHUMB_CONFIG["default_depth"]  # 기본 오더북 깊이
+SYMBOL_SUFFIX = BITHUMB_CONFIG["symbol_suffix"]  # 심볼 접미사
 
 # 빗썸 특화 설정
-BITHUMB_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 빗썸 설정
+BITHUMB_MESSAGE_TYPE = BITHUMB_CONFIG["message_type_depth"]  # 오더북 메시지 타입
 
 def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
     """
-    빗썸 웹소켓의 orderbookdepth 메시지를 공통 포맷으로 변환 (바이낸스 현물의 parse_binance_depth_update와 유사)
+    빗썸 오더북 메시지 파싱
     
     Args:
-        msg_data: 빗썸 웹소켓에서 수신한 원본 메시지
+        msg_data: 원본 메시지 데이터
         
     Returns:
-        dict: 공통 포맷으로 변환된 오더북 데이터 또는 None (변환 실패 시)
+        파싱된 오더북 데이터 또는 None
     """
     try:
         # 메시지 타입 확인
-        if msg_data.get("type") != BITHUMB_CONFIG["message_type_depth"]:
+        content_type = msg_data.get("type")
+        if content_type != BITHUMB_MESSAGE_TYPE:
             return None
+            
+        # 심볼 추출
+        symbol_raw = msg_data.get("symbol", "")
+        if not symbol_raw or not symbol_raw.endswith(SYMBOL_SUFFIX):
+            return None
+            
+        # KRW 제거하여 심볼 정규화
+        symbol = symbol_raw.replace(SYMBOL_SUFFIX, "").upper()
         
-        # 컨텐츠 및 주문 목록 추출
-        content = msg_data.get("content", {})
-        order_list = content.get("list", [])
-        if not order_list:
+        # 데이터 추출
+        data = msg_data.get("content", {})
+        if not data:
             return None
-
-        # 심볼 추출 및 변환
-        raw_symbol = order_list[0].get("symbol", "")
-        symbol = raw_symbol.replace(BITHUMB_CONFIG["symbol_suffix"], "").upper()
-
-        # 타임스탬프 추출
-        dt_str = content.get("datetime", str(int(time.time() * 1000)))
-        try:
-            dt_val = int(dt_str)
-        except ValueError:
-            dt_val = int(time.time() * 1000)
-
-        # 호가 데이터 파싱: 숫자형 변환 및 0 필터링
-        bids = []  # 매수 호가
-        asks = []  # 매도 호가
-        for order in order_list:
-            otype = order.get("orderType", "").lower()
-            try:
-                price = float(order["price"])
-                qty = float(order["quantity"])
-                if price <= 0 or qty <= 0:  # 유효하지 않은 가격/수량 필터링
-                    continue
-                if otype == "bid":
-                    bids.append([price, qty])
-                elif otype == "ask":
-                    asks.append([price, qty])
-            except Exception:
-                continue
-
-        # 호가 정렬
-        bids.sort(key=lambda x: x[0], reverse=True)  # 매수 호가는 내림차순
-        asks.sort(key=lambda x: x[0])                # 매도 호가는 오름차순
-
-        # 공통 포맷으로 변환하여 반환
+            
+        # 타임스탬프 추출 (밀리초)
+        timestamp = int(data.get("datetime", 0))
+        
+        # 호가 데이터 추출
+        bids_data = data.get("bids", [])
+        asks_data = data.get("asks", [])
+        
+        # 호가 변환
+        bids = []
+        for bid in bids_data:
+            price = float(bid.get("price", 0))
+            quantity = float(bid.get("quantity", 0))
+            if price > 0 and quantity > 0:
+                bids.append([price, quantity])
+                
+        asks = []
+        for ask in asks_data:
+            price = float(ask.get("price", 0))
+            quantity = float(ask.get("quantity", 0))
+            if price > 0 and quantity > 0:
+                asks.append([price, quantity])
+        
+        # 결과 반환
         return {
             "exchangename": EXCHANGE_CODE,
             "symbol": symbol,
             "bids": bids,
             "asks": asks,
-            "timestamp": dt_val,
-            "sequence": dt_val,  # 빗썸은 timestamp를 sequence로 사용
-            "type": "delta"
+            "timestamp": timestamp,
+            "sequence": timestamp,  # 빗썸은 타임스탬프를 시퀀스로 사용
+            "type": "snapshot"  # 빗썸은 항상 전체 스냅샷 방식
         }
+        
     except Exception as e:
-        # 전역 로거 대신 로깅 헬퍼 함수 사용
-        from crosskimp.logger.logger import log_error
-        log_error(f"메시지 파싱 실패: {str(e)}")
+        logger.error(f"빗썸 오더북 메시지 파싱 오류: {str(e)}", exc_info=True)
         return None
 
 class BithumbSpotWebsocket(BaseWebsocketConnector):
@@ -136,10 +138,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
             self.ws = await connect(
                 self.ws_url,
                 ping_interval=PING_INTERVAL,
-                ping_timeout=PING_TIMEOUT,
-                close_timeout=BITHUMB_CONFIG["close_timeout"],
-                max_size=BITHUMB_CONFIG["max_size"],
-                compression=BITHUMB_CONFIG["compression"]
+                ping_timeout=PING_TIMEOUT
             )
             self.is_connected = True
             self.stats.connection_start_time = time.time()
@@ -194,10 +193,10 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
         if self.subscribed_symbols and self.ws and self.is_connected:
             try:
                 # 빗썸 형식으로 심볼 변환 (예: BTC -> BTC_KRW)
-                symbol_list = [f"{s.upper()}{BITHUMB_CONFIG['symbol_suffix']}" for s in self.subscribed_symbols]
+                symbol_list = [f"{s.upper()}{SYMBOL_SUFFIX}" for s in self.subscribed_symbols]
                 # 구독 메시지 구성
                 sub_msg = {
-                    "type": BITHUMB_CONFIG["message_type_depth"],
+                    "type": BITHUMB_MESSAGE_TYPE,
                     "symbols": symbol_list,
                     "tickTypes": BITHUMB_CONFIG["tick_types"]
                 }
@@ -240,7 +239,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
                 return None
 
             # Delta 메시지 처리 (오더북 업데이트)
-            if data.get("type") == BITHUMB_CONFIG["message_type_depth"]:
+            if data.get("type") == BITHUMB_MESSAGE_TYPE:
                 # 로깅 추가
                 symbol = self._extract_symbol(data)
                 if symbol != "UNKNOWN":
@@ -270,7 +269,7 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
             order_list = content.get("list", [])
             if order_list:
                 raw_symbol = order_list[0].get("symbol", "")
-                return raw_symbol.replace(BITHUMB_CONFIG["symbol_suffix"], "").upper()
+                return raw_symbol.replace(SYMBOL_SUFFIX, "").upper()
         except Exception as e:
             self.log_error(f"심볼 추출 중 오류: {str(e)}")
         return "UNKNOWN"
@@ -447,11 +446,11 @@ class BithumbSpotWebsocket(BaseWebsocketConnector):
             
         try:
             # 빗썸 형식으로 심볼 변환 (예: BTC -> BTC_KRW)
-            symbol_str = f"{symbol.upper()}{BITHUMB_CONFIG['symbol_suffix']}"
+            symbol_str = f"{symbol.upper()}{SYMBOL_SUFFIX}"
             
             # 구독 메시지 구성
             sub_msg = {
-                "type": BITHUMB_CONFIG["message_type_depth"],
+                "type": BITHUMB_MESSAGE_TYPE,
                 "symbols": [symbol_str],
                 "tickTypes": BITHUMB_CONFIG["tick_types"]
             }

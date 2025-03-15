@@ -13,7 +13,7 @@ from crosskimp.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOU
 from crosskimp.ob_collector.orderbook.websocket.base_ws_manager import WebsocketManager
 
 from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_system_status, send_market_status, send_error
-from crosskimp.telegrambot.bot_constants import MessageType, TELEGRAM_START_MESSAGE, TELEGRAM_STOP_MESSAGE
+from crosskimp.config.bot_constants import MessageType, TELEGRAM_START_MESSAGE, TELEGRAM_STOP_MESSAGE
 
 # 시스템 관리 모듈 가져오기
 from crosskimp.system_manager.scheduler import calculate_next_midnight, format_remaining_time, schedule_task

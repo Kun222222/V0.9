@@ -5,8 +5,9 @@ import asyncio
 from collections import defaultdict
 
 from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR
+
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
-from crosskimp.config.constants import EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 logger = get_unified_logger()

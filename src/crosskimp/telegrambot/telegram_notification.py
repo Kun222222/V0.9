@@ -10,7 +10,7 @@ bot_constants.py에 정의된 함수들을 사용하여 텔레그램 메시지�
 """
 
 from crosskimp.config.config_loader import get_settings
-from crosskimp.telegrambot.bot_constants import (
+from crosskimp.config.bot_constants import (
     # 메시지 타입 및 아이콘
     MessageType, MessageIcon,
     

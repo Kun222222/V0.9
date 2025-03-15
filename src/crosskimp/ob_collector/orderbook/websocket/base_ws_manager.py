@@ -15,8 +15,9 @@ import json
 import os
 
 from crosskimp.logger.logger import get_unified_logger, get_queue_logger
-from crosskimp.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS
+from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, EXCHANGE_CLASS_MAP
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
+
 from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutureWebsocket
 from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
@@ -27,9 +28,15 @@ from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
 
 # ============================
-# 상수 정의
+# 로깅 설정
 # ============================
-EXCHANGE_CLASS_MAP = {
+logger = get_unified_logger()
+queue_logger = get_queue_logger()
+
+# ============================
+# 웹소켓 클래스 매핑 (실제 클래스 객체로 변환)
+# ============================
+WEBSOCKET_CLASS_MAP = {
     "binance": BinanceSpotWebsocket,
     "binancefuture": BinanceFutureWebsocket,
     "bybit": BybitSpotWebsocket,
@@ -37,12 +44,6 @@ EXCHANGE_CLASS_MAP = {
     "upbit": UpbitWebsocket,
     "bithumb": BithumbSpotWebsocket
 }
-
-# ============================
-# 로깅 설정
-# ============================
-logger = get_unified_logger()
-queue_logger = get_queue_logger()
 
 class WebsocketManager:
     """
@@ -68,13 +69,13 @@ class WebsocketManager:
 
         # 메트릭 저장 경로 설정 (절대 경로 사용)
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-        self.metrics_dir = os.path.join(self.base_dir, "logs", "metrics")
+        self.metrics_dir = os.path.join(self.base_dir, "logs")  # "@logs"에서 "logs"로 변경
         
         # 시장가격 모니터 초기화
         self.current_usdt_rate = 0.0  # USDT 환율 캐시
 
         # 거래소 초기화
-        for exchange in EXCHANGE_CLASS_MAP.keys():
+        for exchange in WEBSOCKET_CLASS_MAP.keys():
             self.metrics_manager.initialize_exchange(exchange)
 
     async def initialize_metrics_dir(self):
@@ -128,8 +129,8 @@ class WebsocketManager:
             metrics = self.metrics_manager.get_metrics()
             status_lines = []
             
-            # 모든 거래소에 대해 상태 표시 (EXCHANGE_CLASS_MAP의 순서 유지)
-            for exchange in EXCHANGE_CLASS_MAP.keys():
+            # 모든 거래소에 대해 상태 표시 (WEBSOCKET_CLASS_MAP의 순서 유지)
+            for exchange in WEBSOCKET_CLASS_MAP.keys():
                 metric = metrics.get(exchange, {})
                 status_emoji = "🟢" if metric.get('connected', False) else "⚪"
                 msg_rate = metric.get('messages_per_second', 0.0)
@@ -426,41 +427,48 @@ class WebsocketManager:
         }
 
     async def start_exchange_websocket(self, exchange_name: str, symbols: List[str]):
-        try:
-            exchange_name_lower = exchange_name.lower()
-            exchange_kr = EXCHANGE_NAMES_KR.get(exchange_name_lower, exchange_name_lower)
-            ws_class = EXCHANGE_CLASS_MAP.get(exchange_name_lower)
+        """
+        특정 거래소의 웹소켓 연결 시작
+        
+        Args:
+            exchange_name: 거래소 이름
+            symbols: 구독할 심볼 목록
+        """
+        exchange_name_lower = exchange_name.lower()
+        
+        # 이미 실행 중인 경우 중지
+        if exchange_name_lower in self.websockets:
+            logger.info(f"{LOG_SYSTEM} {exchange_name} 웹소켓이 이미 실행 중입니다.")
+            return
             
-            if not ws_class:
-                logger.error(f"{exchange_kr} {STATUS_EMOJIS['ERROR']} 지원하지 않는 거래소")
-                return
+        # 웹소켓 클래스 가져오기
+        ws_class = WEBSOCKET_CLASS_MAP.get(exchange_name_lower)
+        if not ws_class:
+            logger.error(f"{LOG_SYSTEM} {exchange_name}에 대한 웹소켓 클래스를 찾을 수 없습니다.")
+            return
 
-            if not symbols:
-                logger.warning(f"{exchange_kr} {STATUS_EMOJIS['ERROR']} 구독할 심볼이 없음")
-                return
+        if not symbols:
+            logger.warning(f"{exchange_name} {STATUS_EMOJIS['ERROR']} 구독할 심볼이 없음")
+            return
 
-            logger.info(f"{exchange_kr} 웹소켓 초기화 시작 | symbols={len(symbols)}개: {symbols}")
+        logger.info(f"{exchange_name} 웹소켓 초기화 시작 | symbols={len(symbols)}개: {symbols}")
 
-            # 기존 인스턴스가 있다면 정리
-            if exchange_name_lower in self.websockets:
-                if self.websockets[exchange_name_lower]:
-                    await self.websockets[exchange_name_lower].shutdown()
-                self.websockets.pop(exchange_name_lower, None)
-                self.tasks.pop(exchange_name_lower, None)
-            
-            ws_instance = ws_class(self.settings)
-            ws_instance.set_output_queue(self.output_queue)
-            ws_instance.connection_status_callback = self.update_connection_status
-            ws_instance.start_time = time.time()
+        # 기존 인스턴스가 있다면 정리
+        if exchange_name_lower in self.websockets:
+            if self.websockets[exchange_name_lower]:
+                await self.websockets[exchange_name_lower].shutdown()
+            self.websockets.pop(exchange_name_lower, None)
+            self.tasks.pop(exchange_name_lower, None)
+        
+        ws_instance = ws_class(self.settings)
+        ws_instance.set_output_queue(self.output_queue)
+        ws_instance.connection_status_callback = self.update_connection_status
+        ws_instance.start_time = time.time()
 
-            self.websockets[exchange_name_lower] = ws_instance
-            self.tasks[exchange_name_lower] = asyncio.create_task(
-                ws_instance.start({exchange_name_lower: symbols})
-            )
-
-        except Exception as e:
-            self.record_error(exchange_name_lower, str(e))
-            logger.error(f"[{exchange_name}] 시작 실패: {str(e)}", exc_info=True)
+        self.websockets[exchange_name_lower] = ws_instance
+        self.tasks[exchange_name_lower] = asyncio.create_task(
+            ws_instance.start({exchange_name_lower: symbols})
+        )
 
     async def start_all_websockets(self, filtered_data: Dict[str, List[str]]):
         try:

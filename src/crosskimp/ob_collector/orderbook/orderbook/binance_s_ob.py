@@ -8,8 +8,9 @@ import aiohttp
 from dataclasses import dataclass
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
-from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
+
+from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # 로거 인스턴스 가져오기
@@ -20,6 +21,7 @@ logger = get_unified_logger()
 # ============================
 EXCHANGE_CODE = Exchange.BINANCE.value  # 거래소 코드
 EXCHANGE_KR = EXCHANGE_NAMES_KR[EXCHANGE_CODE]  # 거래소 한글 이름
+BINANCE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 설정
 
 GLOBAL_AIOHTTP_SESSION: Optional[ClientSession] = None
 GLOBAL_SESSION_LOCK = asyncio.Lock()
@@ -57,7 +59,7 @@ class BinanceOrderBook(OrderBookV2):
     - 시퀀스 기반 업데이트 관리
     - 가격 역전 감지 및 처리
     """
-    def __init__(self, exchangename: str, symbol: str, depth: int = 500):
+    def __init__(self, exchangename: str, symbol: str, depth: int = BINANCE_CONFIG["default_depth"]):
         """초기화"""
         super().__init__(exchangename, symbol, depth)
         self.bids_dict = {}  # 매수 주문 (가격 -> 수량)
@@ -169,10 +171,10 @@ class BinanceSpotOrderBookManager(BaseOrderBookManagerV2):
     - C++ 직접 전송 지원
     """
 
-    def __init__(self, depth: int = 500):
+    def __init__(self, depth: int = BINANCE_CONFIG["default_depth"]):
         super().__init__(depth)
         self.exchangename = EXCHANGE_CODE
-        self.snapshot_url = "https://api.binance.com/api/v3/depth"
+        self.snapshot_url = BINANCE_CONFIG["api_urls"]["depth"]
         
         # 버퍼 및 시퀀스 관리 초기화
         self.buffer_events: Dict[str, List[dict]] = {}
@@ -190,6 +192,14 @@ class BinanceSpotOrderBookManager(BaseOrderBookManagerV2):
         # 버퍼 크기 제한 설정
         self.max_buffer_size = 1000  # 최대 버퍼 크기
         
+        # 웹소켓 연결 객체
+        self.ws = None
+        
+    def set_websocket(self, ws):
+        """웹소켓 연결 설정"""
+        self.ws = ws
+        logger.info(f"{EXCHANGE_KR} 웹소켓 연결 설정 완료")
+
     async def start(self):
         """오더북 매니저 시작"""
         await self.initialize()  # 메트릭 로깅 시작

@@ -24,7 +24,7 @@ from plotly.subplots import make_subplots
 class MetricAnalyzer:
     """메트릭 데이터 분석 클래스"""
     
-    def __init__(self, log_dir="src/logs/metrics"):
+    def __init__(self, log_dir="logs"):
         """
         초기화 함수
         
@@ -574,7 +574,7 @@ class MetricAnalyzer:
 def main():
     """메인 함수"""
     parser = argparse.ArgumentParser(description="거래소 및 시스템 메트릭 데이터 분석 프로그램")
-    parser.add_argument("--log-dir", type=str, default="src/logs/metrics",
+    parser.add_argument("--log-dir", type=str, default="logs",
                         help="메트릭 로그 파일이 저장된 디렉토리 경로")
     parser.add_argument("--date", type=str, help="분석할 날짜 (YYYYMMDD 형식)")
     parser.add_argument("--output-dir", type=str, default="reports",

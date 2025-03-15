@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
+from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
 from crosskimp.config.paths import LOG_SUBDIRS
 
 # 전역 로거 설정
@@ -116,6 +116,7 @@ class BaseWebsocketConnector:
         self.reconnect_strategy = ReconnectStrategy(
             initial_delay=reconnect_cfg["initial_delay"],
             max_delay=reconnect_cfg["max_delay"],
+            multiplier=reconnect_cfg["multiplier"],
             max_attempts=reconnect_cfg["max_attempts"]
         )
 

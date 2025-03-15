@@ -5,24 +5,30 @@ from websockets import connect
 import websockets  # 전체 websockets 모듈 임포트 추가
 from typing import Dict, List, Optional, Set, Any
 
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
+
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector, WebSocketError
 from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob import BybitSpotOrderBookManager
-from crosskimp.config.constants import Exchange
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 # ============================
 # 바이빗 현물 웹소켓 관련 상수
 # ============================
 # 기본 설정
 EXCHANGE_CODE = Exchange.BYBIT.value  # 거래소 코드
+BYBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이빗 설정
 
 # 웹소켓 연결 설정
-WS_URL = "wss://stream.bybit.com/v5/public/spot"  # 웹소켓 URL
-PING_INTERVAL = 20  # 핑 전송 간격 (초) - 공식 문서 권장
-PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+WS_URL = BYBIT_CONFIG["ws_url"]  # 웹소켓 URL
+PING_INTERVAL = BYBIT_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
+PING_TIMEOUT = BYBIT_CONFIG["ping_timeout"]  # 핑 응답 타임아웃 (초)
 
 # 오더북 관련 설정
-DEFAULT_DEPTH = 50  # 기본 오더북 깊이
-MAX_SYMBOLS_PER_SUBSCRIPTION = 10  # 구독당 최대 심볼 수
+DEFAULT_DEPTH = BYBIT_CONFIG["default_depth"]  # 기본 오더북 깊이
+MAX_SYMBOLS_PER_SUBSCRIPTION = BYBIT_CONFIG["max_symbols_per_subscription"]  # 구독당 최대 심볼 수
 
 def parse_bybit_depth_update(data: dict) -> Optional[dict]:
     """
@@ -58,8 +64,7 @@ def parse_bybit_depth_update(data: dict) -> Optional[dict]:
         
         return result
     except Exception as e:
-        from crosskimp.logger.logger import log_error
-        log_error(f"메시지 파싱 실패: {str(e)}")
+        logger.error(f"메시지 파싱 실패: {str(e)}")
         return None
 
 class BybitSpotWebsocket(BaseWebsocketConnector):
@@ -68,9 +73,10 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
     """
     def __init__(self, settings: dict):
         super().__init__(settings, Exchange.BYBIT.value)
-        self.ws_url = "wss://stream.bybit.com/v5/public/spot"
-        self.depth_level = settings.get("connection", {}).get("websocket", {}).get("depth_level", 50)
+        self.ws_url = WS_URL
+        self.depth_level = settings.get("depth", DEFAULT_DEPTH)
         self.ob_manager = BybitSpotOrderBookManager(self.depth_level)
+        self.ob_manager.set_websocket(self)  # 웹소켓 연결 설정
         
         # Bybit specific settings - 파일 상단에 정의된 상수 사용
         self.ping_interval = PING_INTERVAL
@@ -85,9 +91,8 @@ class BybitSpotWebsocket(BaseWebsocketConnector):
         self.last_pong_time = 0
         self.ping_task = None
         self.health_check_task = None
-
-        # 오더북 관리자 초기화
-        self.ob_manager = BybitSpotOrderBookManager(self.depth_level)
+        self.subscribed_symbols: List[str] = []
+        self.ws = None
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """
