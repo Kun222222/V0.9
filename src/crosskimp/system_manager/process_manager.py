@@ -10,8 +10,8 @@ import logging
 import subprocess
 from typing import Dict, Optional, List, Tuple
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants import LOG_SYSTEM
 
 # 로거 설정
 logger = get_unified_logger()

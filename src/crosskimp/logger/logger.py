@@ -25,10 +25,13 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Optional, List, Union, Any
 
-from crosskimp.ob_collector.utils.config.constants import (
+# 경로 관련 상수는 paths.py에서 직접 임포트
+from crosskimp.config.paths import PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS, ensure_directories
+
+from crosskimp.config.constants import (
     LOG_SYSTEM, LOG_FORMAT, DEBUG_LOG_FORMAT, LOG_ENCODING, LOG_MODE,
     DEFAULT_CONSOLE_LEVEL, DEFAULT_FILE_LEVEL, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    LOG_CLEANUP_DAYS, PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS, ensure_directories
+    LOG_CLEANUP_DAYS
 )
 
 # ============================
@@ -93,7 +96,7 @@ def ensure_log_directories() -> None:
     
     with _lock:
         if not _directories_ensured:
-            # constants.py에 정의된 ensure_directories 함수 호출
+            # paths.py에 정의된 ensure_directories 함수 호출
             ensure_directories()
             _directories_ensured = True
             _get_internal_logger().info(f"{LOG_SYSTEM} 로그 디렉토리 생성 완료")

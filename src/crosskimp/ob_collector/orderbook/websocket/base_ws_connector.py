@@ -9,9 +9,11 @@ from typing import Dict, List, Any, Optional, Callable
 from asyncio import Event
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
+from crosskimp.config.paths import LOG_SUBDIRS
 
 # 전역 로거 설정
 logger = get_unified_logger()
@@ -140,18 +142,18 @@ class BaseWebsocketConnector:
         if self.log_raw_data:
             try:
                 # 로그 디렉토리 설정
-                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-                log_dir = os.path.join(base_dir, "logs", "raw_data", exchangename)
-                os.makedirs(log_dir, exist_ok=True)
+                raw_data_dir = LOG_SUBDIRS['raw_data']
+                log_dir = raw_data_dir / exchangename
+                log_dir.mkdir(exist_ok=True, parents=True)
                 
                 # 로그 파일 경로 설정 - 날짜와 시간 포함
-                current_datetime = time.strftime("%Y%m%d_%H%M%S")
-                self.log_file_path = os.path.join(log_dir, f"{exchangename}_raw_{current_datetime}.log")
+                current_datetime = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.log_file_path = log_dir / f"{exchangename}_raw_{current_datetime}.log"
                 
                 # 로거 설정
                 self.raw_logger = logging.getLogger(f"raw_data.{exchangename}")
                 if not self.raw_logger.handlers:
-                    file_handler = logging.FileHandler(self.log_file_path, encoding="utf-8")
+                    file_handler = logging.FileHandler(str(self.log_file_path), encoding="utf-8")
                     formatter = logging.Formatter('%(asctime)s - %(message)s')
                     file_handler.setFormatter(formatter)
                     self.raw_logger.addHandler(file_handler)
@@ -568,13 +570,14 @@ class BaseWebsocketConnector:
                 try:
                     # 로그 디렉토리 확인
                     if not hasattr(self, 'log_file_path') or not self.log_file_path:
-                        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-                        log_dir = os.path.join(base_dir, "logs", "raw_data", self.exchangename)
-                        os.makedirs(log_dir, exist_ok=True)
+                        # 로그 디렉토리 설정
+                        raw_data_dir = LOG_SUBDIRS['raw_data']
+                        log_dir = raw_data_dir / self.exchangename
+                        log_dir.mkdir(exist_ok=True, parents=True)
                         
                         # 로그 파일 경로 설정
-                        current_datetime = time.strftime("%Y%m%d_%H%M%S")
-                        self.log_file_path = os.path.join(log_dir, f"{self.exchangename}_raw_{current_datetime}.log")
+                        current_datetime = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        self.log_file_path = log_dir / f"{self.exchangename}_raw_{current_datetime}.log"
                     
                     # 파일에 직접 로깅
                     with open(self.log_file_path, "a", encoding="utf-8") as f:

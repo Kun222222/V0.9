@@ -5,8 +5,8 @@ import time
 import aiohttp
 from typing import Dict, List, Set, Optional
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 

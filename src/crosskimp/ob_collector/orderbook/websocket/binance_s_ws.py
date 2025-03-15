@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotOrderBookManager
-from crosskimp.ob_collector.utils.config.constants import Exchange, WebSocketState, STATUS_EMOJIS
+from crosskimp.config.constants import Exchange, WebSocketState, STATUS_EMOJIS
 
 # ============================
 # 바이낸스 현물 웹소켓 관련 상수

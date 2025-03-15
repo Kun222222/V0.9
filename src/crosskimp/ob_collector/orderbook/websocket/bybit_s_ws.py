@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Set, Any
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector, WebSocketError
 from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob import BybitSpotOrderBookManager
-from crosskimp.ob_collector.utils.config.constants import Exchange
+from crosskimp.config.constants import Exchange
 
 # ============================
 # 바이빗 현물 웹소켓 관련 상수
@@ -58,7 +58,7 @@ def parse_bybit_depth_update(data: dict) -> Optional[dict]:
         
         return result
     except Exception as e:
-        from crosskimp.ob_collector.utils.logging.logger import log_error
+        from crosskimp.logger.logger import log_error
         log_error(f"메시지 파싱 실패: {str(e)}")
         return None
 

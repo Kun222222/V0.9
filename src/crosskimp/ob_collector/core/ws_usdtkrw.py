@@ -4,8 +4,8 @@ import websockets
 from typing import Dict, Optional, Callable
 from datetime import datetime
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_URLS, WEBSOCKET_CONFIG
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_URLS, WEBSOCKET_CONFIG
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

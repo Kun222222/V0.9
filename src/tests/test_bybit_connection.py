@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from typing import List, Dict
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
 

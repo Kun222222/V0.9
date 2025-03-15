@@ -5,7 +5,7 @@
 
 import asyncio
 from crosskimp.telegrambot.telegram_notification import send_error
-from crosskimp.ob_collector.utils.config.config_loader import initialize_config, get_settings
+from crosskimp.config.config_loader import initialize_config, get_settings
 
 async def test_telegram():
     """텔레그램 알림 기능 테스트"""

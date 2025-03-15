@@ -3,7 +3,7 @@ import json
 import sys
 import traceback
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger
 
 async def test_bithumb_snapshot():
     try:

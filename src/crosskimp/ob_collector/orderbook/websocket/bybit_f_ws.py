@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Any
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bybit_f_ob import BybitFutureOrderBookManager
-from crosskimp.ob_collector.utils.config.constants import Exchange
+from crosskimp.config.constants import Exchange
 
 # ============================
 # 바이빗 선물 웹소켓 관련 상수

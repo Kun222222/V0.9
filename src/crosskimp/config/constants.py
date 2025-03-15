@@ -16,8 +16,11 @@
 import os
 from enum import Enum
 
-# 텔레그램 관련 상수 가져오기 (순환 참조 방지를 위해 필요한 경우에만 사용)
-# from crosskimp.telegrambot.bot_constants import MessageType, MessageIcon, MESSAGE_TEMPLATES, BotCommands
+# 경로 관련 상수 임포트
+from crosskimp.config.paths import (
+    PROJECT_ROOT, SRC_DIR, LOGS_DIR, DATA_DIR, 
+    LOG_SUBDIRS, ensure_directories, CONFIG_DIR
+)
 
 # ============================
 # 시스템 메시지 상수
@@ -27,57 +30,8 @@ LOG_SYSTEM = "[시스템]"
 # ============================
 # 프로젝트 경로 관련 상수
 # ============================
-# 프로젝트 루트 디렉토리 설정 - 단일 방식으로 통일
-# Docker 환경에서는 /app, 그 외에는 현재 파일 기준 상위 디렉토리 탐색
-if os.environ.get('PYTHONPATH') == '/app':
-    # Docker 환경
-    PROJECT_ROOT = '/app'
-else:
-    # 개발 환경 - 현재 파일 기준으로 상위 디렉토리 탐색
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # src/crosskimp/ob_collector/utils/config에서 5단계 상위로 이동
-    PROJECT_ROOT = os.path.abspath(os.path.join(current_dir, "../../../../../"))
-
-# 주요 디렉토리 경로 설정 - 모든 경로를 여기서 정의
-SRC_DIR = os.path.join(PROJECT_ROOT, 'src')
-CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
-LOGS_DIR = os.path.join(PROJECT_ROOT, 'logs')  # 항상 프로젝트 루트의 logs 디렉토리 사용
+# 백업 디렉토리 경로 설정
 BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
-
-# 로그 하위 디렉토리 경로 설정
-LOG_SUBDIRS = {
-    'queue': os.path.join(LOGS_DIR, 'queue'),
-    'error': os.path.join(LOGS_DIR, 'error'),
-    'telegram': os.path.join(LOGS_DIR, 'telegram'),
-    'metrics': os.path.join(LOGS_DIR, 'metrics'),
-    'archive': os.path.join(LOGS_DIR, 'archive'),
-    'raw_data': os.path.join(LOGS_DIR, 'raw_data')
-}
-
-# 필요한 디렉토리 생성
-def ensure_directories():
-    """필요한 모든 디렉토리가 존재하는지 확인하고, 없으면 생성합니다."""
-    # 기본 디렉토리 생성
-    for dir_path in [DATA_DIR, LOGS_DIR, BACKUP_DIR]:
-        if not os.path.exists(dir_path):
-            try:
-                os.makedirs(dir_path, exist_ok=True)
-                print(f"{LOG_SYSTEM} 디렉토리 생성: {dir_path}")
-            except Exception as e:
-                print(f"{LOG_SYSTEM} 디렉토리 생성 실패: {dir_path} | {str(e)}")
-    
-    # 로그 하위 디렉토리 생성
-    for subdir_name, subdir_path in LOG_SUBDIRS.items():
-        if not os.path.exists(subdir_path):
-            try:
-                os.makedirs(subdir_path, exist_ok=True)
-                print(f"{LOG_SYSTEM} 로그 하위 디렉토리 생성: {subdir_path}")
-            except Exception as e:
-                print(f"{LOG_SYSTEM} 로그 하위 디렉토리 생성 실패: {subdir_path} | {str(e)}")
-
-# 모듈 로드 시 디렉토리 생성 실행
-ensure_directories()
 
 # 설정 파일 전체 경로
 SETTINGS_FILE = "settings.json"
@@ -365,10 +319,7 @@ __all__ = [
     'CONFIG_DIR', 'SETTINGS_FILE',
     'BACKUP_DIR', 'SETTINGS_PATH',
     'LOAD_TIMEOUT', 'SAVE_TIMEOUT', 'RETRY_DELAY', 'MAX_RETRIES',
-    'PROJECT_ROOT', 'ENV_FILE_PATHS', 'API_ENV_VARS',
-    
-    # 프로젝트 경로 관련
-    'SRC_DIR', 'DATA_DIR', 'LOGS_DIR', 'LOG_SUBDIRS', 'ensure_directories',
+    'ENV_FILE_PATHS', 'API_ENV_VARS',
     
     # 거래소 관련
     'Exchange', 'EXCHANGE_NAMES_KR', 'EXCHANGE_GROUPS', 'EXCHANGE_DEFAULTS',

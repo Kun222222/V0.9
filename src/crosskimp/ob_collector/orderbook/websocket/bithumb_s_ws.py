@@ -10,7 +10,7 @@ from websockets import connect
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
-from crosskimp.ob_collector.utils.config.constants import Exchange, WEBSOCKET_URLS, WEBSOCKET_CONFIG
+from crosskimp.config.constants import Exchange, WEBSOCKET_URLS, WEBSOCKET_CONFIG
 
 # ============================
 # 빗썸 웹소켓 관련 상수
@@ -95,7 +95,7 @@ def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
         }
     except Exception as e:
         # 전역 로거 대신 로깅 헬퍼 함수 사용
-        from crosskimp.ob_collector.utils.logging.logger import log_error
+        from crosskimp.logger.logger import log_error
         log_error(f"메시지 파싱 실패: {str(e)}")
         return None
 

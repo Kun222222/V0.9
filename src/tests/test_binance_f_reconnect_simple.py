@@ -21,8 +21,8 @@ import time
 import random
 from typing import Dict, List, Optional
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
 
 # 로깅 설정
 logging.basicConfig(

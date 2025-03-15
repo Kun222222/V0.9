@@ -36,8 +36,8 @@ logger = logging.getLogger("binance_future_reconnect_test")
 
 # 바이낸스 선물 웹소켓 클래스 임포트
 from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutureWebsocket
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
 
 # 테스트 설정
 TEST_SYMBOLS = ["BTC", "ETH"]  # 테스트할 심볼 목록

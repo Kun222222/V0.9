@@ -26,8 +26,11 @@ from watchdog.events import FileSystemEventHandler
 from dotenv import load_dotenv
 import threading
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
-from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM, CONFIG_DIR, SETTINGS_FILE, BACKUP_DIR, SETTINGS_PATH, LOAD_TIMEOUT, SAVE_TIMEOUT, RETRY_DELAY, MAX_RETRIES, PROJECT_ROOT, ENV_FILE_PATHS, API_ENV_VARS
+# 경로 관련 상수는 paths.py에서 직접 임포트
+from crosskimp.config.paths import PROJECT_ROOT, CONFIG_DIR
+
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants import LOG_SYSTEM, SETTINGS_FILE, BACKUP_DIR, SETTINGS_PATH, LOAD_TIMEOUT, SAVE_TIMEOUT, RETRY_DELAY, MAX_RETRIES, ENV_FILE_PATHS, API_ENV_VARS
 
 
 # ============================

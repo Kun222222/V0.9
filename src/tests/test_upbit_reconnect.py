@@ -35,7 +35,7 @@ logger = logging.getLogger("upbit_reconnect_test")
 
 # 업비트 웹소켓 클래스 임포트
 from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger
 
 # 테스트 설정
 TEST_SYMBOLS = ["BTC", "ETH", "XRP", "SOL", "DOGE"]  # 테스트할 심볼 목록

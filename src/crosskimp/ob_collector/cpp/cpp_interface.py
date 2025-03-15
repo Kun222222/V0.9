@@ -8,7 +8,7 @@ import time
 import asyncio
 from typing import Dict, Any, Optional, Callable
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.cpp.shared_memory_manager import get_shared_memory_manager
 from crosskimp.ob_collector.cpp.flatbuffers_serializer import get_orderbook_serializer
 

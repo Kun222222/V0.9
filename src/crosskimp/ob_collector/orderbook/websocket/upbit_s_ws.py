@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.upbit_s_ob import UpbitOrderBookManager
-from crosskimp.ob_collector.utils.config.constants import Exchange
+from crosskimp.config.constants import Exchange
 
 # ============================
 # 업비트 웹소켓 관련 상수

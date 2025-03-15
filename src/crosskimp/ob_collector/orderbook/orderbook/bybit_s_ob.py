@@ -4,9 +4,9 @@ import logging
 import asyncio
 
 from typing import Dict, Optional, List
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_queue_logger
+from crosskimp.logger.logger import get_unified_logger, get_queue_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
-from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
 
 # ============================
 # 바이빗 오더북 관련 상수

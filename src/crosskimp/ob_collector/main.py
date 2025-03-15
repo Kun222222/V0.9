@@ -5,11 +5,11 @@ import logging
 from datetime import datetime, timedelta
 from typing import Tuple, Dict, Optional
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, get_logger
+from crosskimp.logger.logger import get_unified_logger, get_logger
 from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.ob_collector.utils.config.config_loader import get_settings, initialize_config, add_config_observer, shutdown_config
-from crosskimp.ob_collector.utils.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT, Exchange, EXCHANGE_NAMES_KR
+from crosskimp.config.config_loader import get_settings, initialize_config, add_config_observer, shutdown_config
+from crosskimp.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT, Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.websocket.base_ws_manager import WebsocketManager
 
 from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_system_status, send_market_status, send_error

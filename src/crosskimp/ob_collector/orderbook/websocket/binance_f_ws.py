@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob_v2 import BinanceFutureOrderBookManagerV2, parse_binance_future_depth_update
-from crosskimp.ob_collector.utils.config.constants import Exchange
+from crosskimp.config.constants import Exchange
 
 
 # ============================

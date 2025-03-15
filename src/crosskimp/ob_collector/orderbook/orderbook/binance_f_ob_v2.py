@@ -4,9 +4,9 @@ from typing import Dict, Optional, List, Any, Tuple
 from dataclasses import dataclass
 import aiohttp
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
-from crosskimp.ob_collector.utils.config.constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # 로거 인스턴스 가져오기

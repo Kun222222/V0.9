@@ -11,23 +11,18 @@ import base64
 import struct
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from pathlib import Path
 
 import flatbuffers
 from crosskimp.ob_collector.cpp.flatbuffers.OrderBookData import OrderBook, PriceLevel
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.paths import LOGS_DIR, LOG_SUBDIRS
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
-# 프로젝트 루트 디렉토리 찾기
-PROJECT_ROOT = os.path.abspath(os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    ""
-))
-
 # 직렬화 데이터 저장 디렉토리
-SERIALIZED_DATA_DIR = os.path.join(PROJECT_ROOT, "logs", "serialized_data")
-os.makedirs(SERIALIZED_DATA_DIR, exist_ok=True)
+SERIALIZED_DATA_DIR = LOG_SUBDIRS['serialized_data']
 
 # FlatBuffers 파일 식별자 (4바이트)
 FILE_IDENTIFIER = b'ORDB'

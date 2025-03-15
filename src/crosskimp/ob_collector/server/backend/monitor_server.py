@@ -12,7 +12,7 @@ import time
 import os
 import websockets
 
-from crosskimp.ob_collector.utils.logging.logger import get_unified_logger, LOG_DIRS, get_current_time_str
+from crosskimp.logger.logger import get_unified_logger, LOG_DIRS, get_current_time_str
 
 # unified_logger 인스턴스 가져오기
 unified_logger = get_unified_logger()

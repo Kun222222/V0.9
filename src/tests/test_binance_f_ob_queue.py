@@ -20,12 +20,12 @@ from typing import Dict, List, Any, Optional
 # 프로젝트 루트 디렉토리를 Python 경로에 추가
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 
-from src.crosskimp.ob_collector.utils.logging.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger
 from src.crosskimp.ob_collector.cpp.cpp_interface import get_cpp_interface, send_orderbook_to_cpp
-from src.crosskimp.ob_collector.utils.config.config_loader import initialize_config, get_settings
+from crosskimp.config.config_loader import initialize_config, get_settings
 from src.crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutureOrderBookManager, BinanceFutureOrderBook
 from src.crosskimp.ob_collector.orderbook.orderbook.base_ob_v2 import OrderBookV2
-from src.crosskimp.ob_collector.utils.config.constants import Exchange
+from crosskimp.config.constants import Exchange
 from src.crosskimp.ob_collector.cpp.shared_memory_manager import get_shared_memory_manager
 
 # 로거 설정
