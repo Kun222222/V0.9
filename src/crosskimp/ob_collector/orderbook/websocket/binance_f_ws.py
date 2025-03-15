@@ -5,13 +5,11 @@ import asyncio
 import json
 import time
 import aiohttp
-import websockets
-from websockets import connect
 from typing import Dict, List, Optional
 
 from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 
-from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutureOrderBookManagerV2, parse_binance_future_depth_update
 
 
@@ -22,31 +20,17 @@ from crosskimp.ob_collector.orderbook.orderbook.binance_f_ob import BinanceFutur
 EXCHANGE_CODE = Exchange.BINANCE_FUTURE.value  # 거래소 코드
 BINANCE_FUTURE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 선물 설정
 
-# 웹소켓 연결 설정
-WS_BASE_URL = BINANCE_FUTURE_CONFIG["ws_base_url"]  # 웹소켓 기본 URL
-PING_INTERVAL = BINANCE_FUTURE_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
-PING_TIMEOUT = BINANCE_FUTURE_CONFIG["ping_timeout"]    # 핑 응답 타임아웃 (초)
-
-# REST API 설정 (스냅샷 요청용)
-REST_BASE_URL = BINANCE_FUTURE_CONFIG["api_urls"]["depth"]  # REST API 기본 URL
-
 # 오더북 관련 설정
 UPDATE_SPEED = BINANCE_FUTURE_CONFIG["update_speed"]  # 웹소켓 업데이트 속도 (100ms, 250ms, 500ms 중 선택)
 DEFAULT_DEPTH = BINANCE_FUTURE_CONFIG["default_depth"]     # 기본 오더북 깊이
-MAX_RETRY_COUNT = BINANCE_FUTURE_CONFIG["max_retry_count"]     # 최대 재시도 횟수
 
-# 스냅샷 요청 설정
-SNAPSHOT_RETRY_DELAY = BINANCE_FUTURE_CONFIG["snapshot_retry_delay"]  # 스냅샷 요청 재시도 초기 딜레이 (초)
-SNAPSHOT_REQUEST_TIMEOUT = BINANCE_FUTURE_CONFIG["snapshot_request_timeout"]  # 스냅샷 요청 타임아웃 (초)
-
-# DNS 캐시 설정
-DNS_CACHE_TTL = BINANCE_FUTURE_CONFIG["dns_cache_ttl"]  # DNS 캐시 TTL (초)
-
-class BinanceFutureWebsocket(BaseWebsocketConnector):
+class BinanceFutureWebsocket(BinanceFutureWebSocketConnector):
     """
     바이낸스 선물 웹소켓
-    - 바이낸스 현물과 유사한 흐름
-    - orderbook_manager를 통해 오더북 업데이트 & output_queue 전달
+    - 메시지 파싱 및 처리
+    - 오더북 업데이트 관리
+    
+    연결 관리는 BinanceFutureWebSocketConnector 클래스에서 처리합니다.
     """
 
     def __init__(self, settings: dict):
@@ -56,23 +40,9 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
         Args:
             settings: 설정 딕셔너리
         """
-        super().__init__(settings, Exchange.BINANCE_FUTURE.value)
-        self.ws_base = WS_BASE_URL
-        self.snapshot_base = REST_BASE_URL
-
-        self.update_speed = UPDATE_SPEED
-        self.snapshot_depth = settings.get("depth", DEFAULT_DEPTH)
+        super().__init__(settings)
         self.orderbook_manager = BinanceFutureOrderBookManagerV2(self.snapshot_depth)
-
-        self.subscribed_symbols: set = set()
-        self.instance_key: Optional[str] = None
-
-        # 실시간 url
-        self.wsurl = ""
-        self.is_connected = False
-        # Ping/Pong 설정 추가
-        self.ping_interval = PING_INTERVAL
-        self.ping_timeout = PING_TIMEOUT
+        self.set_manager(self.orderbook_manager)  # 부모 클래스에 매니저 설정
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """
@@ -93,53 +63,19 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                     else:
                         self.log_info(f"{symbol} 오더북 객체 출력 큐 확인: {id(orderbook.output_queue)}")
 
-    async def connect(self):
-        """
-        바이낸스 현물과 유사한 로직
-        """
-        try:
-            if not self.wsurl:
-                raise ValueError("WebSocket URL is not set. Call subscribe() first.")
-                
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "connect_attempt")
-                
-            self.session = aiohttp.ClientSession()
-            self.ws = await connect(
-                self.wsurl,
-                ping_interval=self.ping_interval,  # 150초
-                ping_timeout=self.ping_timeout,    # 10초
-                compression=None
-            )
-            self.is_connected = True
-            self.stats.connection_start_time = time.time()
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "connect")
-            self.log_info("웹소켓 연결 성공")
-        except Exception as e:
-            self.log_error(f"connect() 예외: {e}", exc_info=True)
-            raise
-
     async def subscribe(self, symbols: List[str]):
-        if not symbols:
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "warning")
-            return
-
-        streams = []
-        for sym in symbols:
-            sym_lower = sym.lower()
-            if not sym_lower.endswith("usdt"):
-                sym_lower += "usdt"
-            streams.append(f"{sym_lower}@depth@{self.update_speed}")
-            self.subscribed_symbols.add(sym.upper())
-
-        combined = "/".join(streams)
-        self.wsurl = self.ws_base + combined
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "subscribe")
-
-        await self.connect()
+        """
+        지정된 심볼 목록을 구독
+        
+        1. 웹소켓을 통해 실시간 업데이트 구독
+        2. 각 심볼별로 REST API를 통해 스냅샷 요청
+        3. 스냅샷을 오더북 매니저에 적용
+        
+        Args:
+            symbols: 구독할 심볼 목록
+        """
+        # 부모 클래스의 subscribe 호출하여 웹소켓 구독 수행
+        await super().subscribe(symbols)
 
         # 출력 큐가 설정되어 있는지 확인
         if self.output_queue and self.orderbook_manager:
@@ -181,79 +117,6 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                                 self.log_error(f"{sym} 초기 오더북 데이터 큐 전송 실패: {e}")
             else:
                 self.log_error(f"{sym} 스냅샷 요청 실패")
-
-    async def request_snapshot(self, symbol: str) -> Optional[dict]:
-        """
-        바이낸스 현물과 유사한 스냅샷 요청
-        """
-        max_retries = MAX_RETRY_COUNT
-        retry_delay = SNAPSHOT_RETRY_DELAY
-        
-        # 심볼 형식 처리
-        symbol_upper = symbol.upper()
-        if not symbol_upper.endswith("USDT"):
-            symbol_upper += "USDT"
-        
-        for attempt in range(max_retries):
-            try:
-                url = f"{self.snapshot_base}?symbol={symbol_upper}&limit={self.snapshot_depth}"
-                self.log_info(f"스냅샷 요청 URL: {url}")
-                
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "snapshot_request")
-                
-                # TCP 커넥터에 DNS 캐시 설정 추가
-                connector = aiohttp.TCPConnector(
-                    ttl_dns_cache=DNS_CACHE_TTL,  # DNS 캐시 TTL
-                    ssl=False  # SSL 검증 비활성화 (필요한 경우)
-                )
-                
-                async with aiohttp.ClientSession(connector=connector) as sess:
-                    async with sess.get(url, timeout=SNAPSHOT_REQUEST_TIMEOUT) as resp:
-                        if resp.status == 200:
-                            raw_data = await resp.json()
-                            return self.parse_snapshot(raw_data, symbol)
-                        else:
-                            self.log_error(f"{symbol} 스냅샷 status={resp.status}")
-                            
-            except Exception as e:
-                self.log_error(f"스냅샷 요청 실패: {e}", exc_info=True)
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
-                    continue
-                
-        self.log_error(f"{symbol} ME 스냅샷 요청 최대 재시도 횟수 초과")
-        return None
-
-    def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
-        """
-        바이낸스 현물 parse_snapshot과 유사
-        """
-        try:
-            if "lastUpdateId" not in data:
-                self.log_error(f"{symbol} 'lastUpdateId' 없음")
-                return None
-
-            last_id = data["lastUpdateId"]
-            bids = [[float(b[0]), float(b[1])] for b in data.get("bids", []) if float(b[0])>0 and float(b[1])>0]
-            asks = [[float(a[0]), float(a[1])] for a in data.get("asks", []) if float(a[0])>0 and float(a[1])>0]
-
-            snapshot = {
-                "exchangename": "binancefuture",
-                "symbol": symbol,
-                "bids": bids,
-                "asks": asks,
-                "timestamp": int(time.time()*1000),
-                "lastUpdateId": last_id,
-                "type": "snapshot"
-            }
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "snapshot_parsed")
-            return snapshot
-        except Exception as e:
-            self.log_error(f"parse_snapshot() 예외: {e}", exc_info=True)
-            return None
 
     async def parse_message(self, message: str) -> Optional[dict]:
         try:
@@ -440,69 +303,18 @@ class BinanceFutureWebsocket(BaseWebsocketConnector):
                 # 오류 로그를 출력하지 않음
                 pass
 
-    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
-        exchange_symbols = symbols_by_exchange.get(self.exchangename.lower(), [])
-        if not exchange_symbols:
-            self.log_error("구독할 심볼 없음.")
-            return
-
-        # 부모 클래스의 start 메소드를 호출하지 않고 직접 필요한 로직 구현
-        # await super().start(symbols_by_exchange)
+    async def process_message(self, message: str) -> None:
+        """
+        수신된 메시지 처리 (BinanceFutureWebSocketConnector 클래스의 추상 메서드 구현)
         
-        # 1. 초기화 및 설정
-        await self._prepare_start(exchange_symbols)
-
-        while not self.stop_event.is_set():
-            try:
-                # 2. 단일 연결로 모든 심볼 구독 (이 과정에서 wsurl이 설정되고 connect가 호출됨)
-                await self.subscribe(exchange_symbols)
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "connect")
-
-                while not self.stop_event.is_set():
-                    try:
-                        message = await asyncio.wait_for(
-                            self.ws.recv(),
-                            timeout=self.health_check_interval
-                        )
-                        self.stats.last_message_time = time.time()
-                        self.stats.message_count += 1
-                        parsed = await self.parse_message(message)
-                        if parsed and self.connection_status_callback:
-                            self.connection_status_callback(self.exchangename, "message")
-
-                        if parsed:
-                            await self.handle_parsed_message(parsed)
-
-                    except asyncio.TimeoutError:
-                        # 헬스체크 timeout
-                        continue
-                    except Exception as e:
-                        self.log_error(f"메시지 수신 실패: {str(e)}")
-                        break
-
-            except Exception as conn_e:
-                # 연결 실패 시 백오프
-                delay = self.reconnect_strategy.next_delay()
-                self.log_error(f"연결 실패: {conn_e}, 재연결 {delay}s 후 재시도")
-                await asyncio.sleep(delay)
-            finally:
-                if self.ws:
-                    try:
-                        await self.ws.close()
-                    except:
-                        pass
-                self.is_connected = False
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "disconnect")
-
-    async def stop(self) -> None:
+        Args:
+            message: 수신된 웹소켓 메시지
         """
-        웹소켓 연결 종료
-        """
-        self.log_info("웹소켓 연결 종료 중...")
-        await super().stop()
-        self.log_info("웹소켓 연결 종료 완료")
+        parsed = await self.parse_message(message)
+        if parsed and self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "message")
+        if parsed:
+            await self.handle_parsed_message(parsed)
 
     async def record_metric(self, metric_type: str, **kwargs):
         """

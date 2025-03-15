@@ -55,7 +55,7 @@ from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebso
 from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
 from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
-from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR
 

@@ -4,11 +4,11 @@ import asyncio
 import json
 import time
 import aiohttp
-from websockets import connect
 from typing import Dict, List, Optional
+
 from crosskimp.config.ob_constants import Exchange, WebSocketState, STATUS_EMOJIS, WEBSOCKET_CONFIG
 
-from crosskimp.ob_collector.orderbook.websocket.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotOrderBookManager
 
 # ============================
@@ -18,19 +18,9 @@ from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotO
 EXCHANGE_CODE = Exchange.BINANCE.value  # 거래소 코드
 BINANCE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 설정
 
-# 웹소켓 연결 설정
-WS_URL = BINANCE_CONFIG["ws_url"]  # 웹소켓 URL
-PING_INTERVAL = BINANCE_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
-PING_TIMEOUT = BINANCE_CONFIG["ping_timeout"]    # 핑 응답 타임아웃 (초)
-HEALTH_CHECK_INTERVAL = BINANCE_CONFIG["health_check_interval"]  # 헬스 체크 간격 (초)
-
 # 오더북 관련 설정
 DEFAULT_DEPTH = BINANCE_CONFIG["default_depth"]  # 기본 오더북 깊이
 DEPTH_UPDATE_STREAM = BINANCE_CONFIG["depth_update_stream"]  # 깊이 업데이트 스트림 형식
-
-# 구독 관련 설정
-SUBSCRIBE_CHUNK_SIZE = BINANCE_CONFIG["subscribe_chunk_size"]  # 한 번에 구독할 심볼 수
-SUBSCRIBE_DELAY = BINANCE_CONFIG["subscribe_delay"]  # 구독 요청 간 딜레이 (초)
 
 def parse_binance_depth_update(msg_data: dict) -> Optional[dict]:
     if msg_data.get("e") != "depthUpdate":
@@ -66,21 +56,19 @@ def parse_binance_depth_update(msg_data: dict) -> Optional[dict]:
         "type": "delta"
     }
 
-class BinanceSpotWebsocket(BaseWebsocketConnector):
+class BinanceSpotWebsocket(BinanceWebSocketConnector):
     """
     바이낸스 현물 웹소켓
-    - depth=500으로 사용하려면: settings["depth"] = 500
-    - subscribe -> snapshot -> orderbook_manager
-    - gap 발생 시 재스냅샷 X
+    - 메시지 파싱 및 처리
+    - 오더북 업데이트 관리
+    
+    연결 관리는 BinanceWebSocketConnector 클래스에서 처리합니다.
     """
     def __init__(self, settings: dict):
-        super().__init__(settings, "binance")
+        super().__init__(settings)
         self.manager = BinanceSpotOrderBookManager(depth=settings.get("depth", DEFAULT_DEPTH))
         self.manager.set_websocket(self)  # 웹소켓 연결 설정
-        self.subscribed_symbols = set()
-        self.ws = None
-        self.session = None
-        self.ws_url = WS_URL
+        self.set_manager(self.manager)  # 부모 클래스에 매니저 설정
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """출력 큐 설정"""
@@ -106,121 +94,24 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
         if hasattr(self, 'manager') and self.manager:
             self.manager.connection_status_callback = callback
 
-    async def _do_connect(self):
+    async def subscribe(self, symbols: List[str]):
         """
-        실제 연결 로직 (BaseWebsocketConnector 템플릿 메서드 구현)
-        """
-        self.session = aiohttp.ClientSession()
-        self.ws = await connect(
-            self.ws_url,
-            ping_interval=PING_INTERVAL,
-            ping_timeout=PING_TIMEOUT,
-            compression=None
-        )
-        # is_connected와 connection_start_time은 부모 클래스의 connect 메소드에서 설정됨
-
-    async def _after_connect(self):
-        """
-        연결 후 처리 (BaseWebsocketConnector 템플릿 메서드 구현)
-        """
-        # 재연결 성공 알림
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "connect")
-            
-        # 재연결 시 이미 구독된 심볼들에 대해 스냅샷 다시 요청
-        if self.subscribed_symbols:
-            self.log_info(f"재연결 후 스냅샷 다시 요청 (심볼: {len(self.subscribed_symbols)}개)")
-            for sym in self.subscribed_symbols:
-                snapshot = await self.manager.fetch_snapshot(sym)
-                if snapshot:
-                    init_res = await self.manager.initialize_orderbook(sym, snapshot)
-                    if init_res.is_valid:
-                        self.log_info(f"{sym} 재연결 후 스냅샷 초기화 성공")
-                        if self.connection_status_callback:
-                            self.connection_status_callback(self.exchangename, "snapshot")
-                    else:
-                        self.log_error(f"{sym} 재연결 후 스냅샷 초기화 실패: {init_res.error_messages}")
-                else:
-                    self.log_error(f"{sym} 재연결 후 스냅샷 요청 실패")
-
-    async def _prepare_start(self, symbols: List[str]) -> None:
-        """
-        시작 전 초기화 및 설정 (BaseWebsocketConnector 템플릿 메서드 구현)
+        지정된 심볼 목록을 구독
+        
+        1. 웹소켓을 통해 실시간 업데이트 구독
+        2. 각 심볼별로 REST API를 통해 스냅샷 요청
+        3. 스냅샷을 오더북 매니저에 적용
         
         Args:
             symbols: 구독할 심볼 목록
         """
-        # 필요한 초기화 작업 수행
-        pass
-
-    async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
-        """
-        메시지 처리 루프 실행 (BaseWebsocketConnector 템플릿 메서드 구현)
-        
-        Args:
-            symbols: 구독한 심볼 목록
-            tasks: 실행 중인 백그라운드 태스크 목록
-        """
-        while not self.stop_event.is_set() and self.is_connected:
-            try:
-                msg = await asyncio.wait_for(
-                    self.ws.recv(), timeout=HEALTH_CHECK_INTERVAL
-                )
-                self.stats.last_message_time = time.time()
-                self.stats.message_count += 1
-
-                parsed = await self.parse_message(msg)
-                if parsed and self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "message")
-                if parsed:
-                    await self.handle_parsed_message(parsed)
-                    
-            except asyncio.TimeoutError:
-                # 타임아웃은 정상적인 상황일 수 있음 (메시지가 없는 경우)
-                continue
-                
-            except Exception as e:
-                self.log_error(f"메시지 루프 오류: {str(e)}")
-                # 연결 오류 발생 시 루프 종료 (부모 클래스의 start 메소드에서 재연결 처리)
-                break
-
-    async def start(self, symbols_by_exchange: Dict[str, List[str]]) -> None:
-        """
-        웹소켓 연결 시작 및 심볼 구독
-        부모 클래스의 템플릿 메소드 패턴을 활용
-        
-        Args:
-            symbols_by_exchange: 거래소별 구독할 심볼 목록
-        """
-        exchange_symbols = symbols_by_exchange.get("binance", [])
-        if not exchange_symbols:
-            self.log_error(f"{STATUS_EMOJIS['ERROR']} 구독할 심볼이 없습니다.")
-            return
-
-        # 부모 클래스의 start 메소드 호출 (템플릿 메소드 패턴)
-        # 이 메소드는 _prepare_start, connect, subscribe, start_background_tasks, _run_message_loop 순서로 호출
-        await super().start({"binance": exchange_symbols})
-
-    async def subscribe(self, symbols: List[str]):
         if not symbols:
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "warning")
             return
 
-        chunk_size = SUBSCRIBE_CHUNK_SIZE
-        for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i:i+chunk_size]
-            sub_params = [f"{sym.lower()}usdt{DEPTH_UPDATE_STREAM}" for sym in chunk]
-            msg = {
-                "method": "SUBSCRIBE",
-                "params": sub_params,
-                "id": int(time.time() * 1000)
-            }
-            await self.ws.send(json.dumps(msg))
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "subscribe")
-            self.log_info(f"{len(chunk)}개 심볼 구독 요청 전송")
-            await asyncio.sleep(SUBSCRIBE_DELAY)
+        # 부모 클래스의 subscribe 호출하여 웹소켓 구독 수행
+        await super().subscribe(symbols)
 
         # 스냅샷
         for sym in symbols:
@@ -228,8 +119,6 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
             if snapshot:
                 init_res = await self.manager.initialize_orderbook(sym, snapshot)
                 if init_res.is_valid:
-                    # 구독 성공한 심볼 추적을 위해 집합에 추가
-                    self.subscribed_symbols.add(sym)
                     self.log_info(f"{sym} 스냅샷 초기화 성공 {STATUS_EMOJIS['CONNECTED']}")
                     if self.connection_status_callback:
                         self.connection_status_callback(self.exchangename, "snapshot")
@@ -266,10 +155,15 @@ class BinanceSpotWebsocket(BaseWebsocketConnector):
         except Exception as e:
             self.log_error(f"메시지 처리 오류: {e} {STATUS_EMOJIS['ERROR']}")
 
-    async def stop(self) -> None:
+    async def process_message(self, message: str) -> None:
         """
-        웹소켓 연결 종료
+        수신된 메시지 처리 (BinanceWebSocketConnector 클래스의 추상 메서드 구현)
+        
+        Args:
+            message: 수신된 웹소켓 메시지
         """
-        self.log_info(f"웹소켓 연결 종료 중... {STATUS_EMOJIS['DISCONNECTING']}")
-        await super().stop()
-        self.log_info(f"웹소켓 연결 종료 완료 {STATUS_EMOJIS['DISCONNECTED']}")
+        parsed = await self.parse_message(message)
+        if parsed and self.connection_status_callback:
+            self.connection_status_callback(self.exchangename, "message")
+        if parsed:
+            await self.handle_parsed_message(parsed)

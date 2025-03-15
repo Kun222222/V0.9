@@ -14,6 +14,8 @@ from pathlib import Path
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
 from crosskimp.config.paths import LOG_SUBDIRS
+from crosskimp.telegrambot.telegram_notification import send_telegram_message
+from crosskimp.config.bot_constants import MessageType
 
 # 전역 로거 설정
 logger = get_unified_logger()
@@ -254,6 +256,10 @@ class BaseWebsocketConnector:
             self.stats.connection_start_time = time.time()
             self.reconnect_strategy.reset()  # 재연결 전략 리셋
             
+            # 연결 성공 알림 추가
+            connect_msg = f"{self.exchange_korean_name} 웹소켓 연결 성공"
+            await self._send_telegram_notification("connect", connect_msg)
+            
             # 4. 연결 후 처리 (자식 클래스에서 선택적으로 구현)
             await self._after_connect()
             
@@ -265,25 +271,11 @@ class BaseWebsocketConnector:
             return True
             
         except asyncio.TimeoutError as e:
-            # 바이빗 거래소의 경우 타임아웃 에러를 무시하고 재연결 시도
-            if self.exchangename in ["bybitspot", "bybitfuture"]:
-                self.log_warning("연결 타임아웃 발생 (무시됨)")
-                
-                # 연결 중 플래그 해제
-                self.connecting = False
-                
-                # 짧은 대기 후 재연결 시도
-                await asyncio.sleep(1)
-                return await self.connect()  # 재귀적으로 다시 연결 시도
-            else:
-                # 다른 거래소는 기존대로 타임아웃 에러 처리
-                self.log_error(f"연결 타임아웃: {str(e)}")
-                
-                # 연결 중 플래그 해제
-                self.connecting = False
-                
-                # 연결 실패 처리 및 재연결 시도
-                return await self._handle_connection_failure("timeout", e)
+            # 연결 중 플래그 해제
+            self.connecting = False
+            
+            # 타임아웃 처리 (자식 클래스에서 오버라이드 가능)
+            return await self._handle_timeout_error(e)
                 
         except Exception as e:
             self.log_error(f"연결 오류: {str(e)}", exc_info=True)
@@ -296,6 +288,20 @@ class BaseWebsocketConnector:
             
         finally:
             self.connecting = False
+
+    async def _handle_timeout_error(self, exception: asyncio.TimeoutError) -> bool:
+        """
+        타임아웃 에러 처리 (자식 클래스에서 오버라이드 가능)
+        
+        Args:
+            exception: 타임아웃 예외 객체
+            
+        Returns:
+            bool: 재연결 시도 여부
+        """
+        # 기본 구현: 타임아웃 에러 로깅 및 재연결 시도
+        self.log_error(f"연결 타임아웃: {str(exception)}")
+        return await self._handle_connection_failure("timeout", exception)
 
     async def _do_connect(self):
         """
@@ -326,12 +332,17 @@ class BaseWebsocketConnector:
         """
         self.stats.reconnect_count += 1
         
+        error_msg = f"{self.exchange_korean_name} 웹소켓 연결 실패 ({reason}): {str(exception) if exception else '알 수 없는 오류'}"
+        self.log_error(error_msg)
+        await self._send_telegram_notification("error", error_msg)
+        
         if not self.auto_reconnect or self.stop_event.is_set():
             self.log_warning("자동 재연결 비활성화 상태")
             return False
             
         delay = self.reconnect_strategy.next_delay()
-        self.log_info(f"재연결 대기: {delay:.1f}초 (시도: {self.reconnect_strategy.attempt})")
+        wait_msg = f"{self.exchange_korean_name} 재연결 대기: {delay:.1f}초 (시도: {self.reconnect_strategy.attempt})"
+        self.log_info(wait_msg)
         
         if self.connection_status_callback:
             self.connection_status_callback(self.exchangename, "reconnect_wait")
@@ -341,7 +352,10 @@ class BaseWebsocketConnector:
         if self.stop_event.is_set():
             return False
             
-        self.log_info("재연결 시도")
+        reconnect_msg = f"{self.exchange_korean_name} 재연결 시도"
+        self.log_info(reconnect_msg)
+        await self._send_telegram_notification("reconnect", reconnect_msg)
+        
         if self.connection_status_callback:
             self.connection_status_callback(self.exchangename, "reconnect_attempt")
             
@@ -382,16 +396,34 @@ class BaseWebsocketConnector:
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "reconnect_attempt")
                 
-            self.log_info("웹소켓 재연결 시작")
+            reconnect_msg = f"{self.exchange_korean_name} 웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count + 1})"
+            self.log_info(reconnect_msg)
+            
+            # 텔레그램 알림 전송
+            await self._send_telegram_notification("reconnect", reconnect_msg)
+            
             await self.disconnect()
             
             # 잠시 대기 후 재연결
             await asyncio.sleep(1)
             
-            return await self.connect()
+            success = await self.connect()
+            
+            if success:
+                success_msg = f"{self.exchange_korean_name} 웹소켓 재연결 성공"
+                self.log_info(success_msg)
+                await self._send_telegram_notification("connect", success_msg)
+            else:
+                fail_msg = f"{self.exchange_korean_name} 웹소켓 재연결 실패"
+                self.log_error(fail_msg)
+                await self._send_telegram_notification("error", fail_msg)
+            
+            return success
             
         except Exception as e:
-            self.log_error(f"웹소켓 재연결 실패: {str(e)}")
+            error_msg = f"{self.exchange_korean_name} 웹소켓 재연결 실패: {str(e)}"
+            self.log_error(error_msg)
+            await self._send_telegram_notification("error", error_msg)
             return False
 
     async def health_check(self):
@@ -409,7 +441,12 @@ class BaseWebsocketConnector:
                 
                 # 메시지 타임아웃 체크
                 if self.is_connected and self.stats.last_message_time > 0 and (current_time - self.stats.last_message_time) > self.message_timeout:
-                    self.log_error(f"웹소켓 메시지 타임아웃 발생 ({self.message_timeout}초), 마지막 메시지: {current_time - self.stats.last_message_time:.1f}초 전")
+                    error_msg = f"{self.exchange_korean_name} 웹소켓 메시지 타임아웃 발생 ({self.message_timeout}초), 마지막 메시지: {current_time - self.stats.last_message_time:.1f}초 전"
+                    self.log_error(error_msg)
+                    
+                    # 텔레그램 알림 전송
+                    await self._send_telegram_notification("error", error_msg)
+                    
                     await self.reconnect()
                 
                 # 연결 상태 로깅 (디버그)
@@ -547,6 +584,15 @@ class BaseWebsocketConnector:
         """
         # 기본 구현은 아무 작업도 하지 않음
         # 자식 클래스에서 오버라이드하여 실제 메시지 처리 루프를 구현해야 함
+        # 연결 끊김 감지 시 다음과 같은 코드를 추가해야 함:
+        # 
+        # except websockets.exceptions.ConnectionClosed as e:
+        #     error_msg = f"{self.exchange_korean_name} 웹소켓 연결 끊김: {str(e)}"
+        #     self.log_error(error_msg)
+        #     await self._send_telegram_notification("error", error_msg)
+        #     self.is_connected = False
+        #     if not self.stop_event.is_set():
+        #         await self.reconnect()
         pass
 
     def log_raw_message(self, msg_type: str, message: str, symbol: str) -> None:
@@ -595,3 +641,52 @@ class BaseWebsocketConnector:
                 self.raw_logger.info(log_entry)
         except Exception as e:
             self.log_error(f"Raw 로깅 실패: {str(e)}")
+
+    async def _send_telegram_notification(self, event_type: str, message: str) -> None:
+        """
+        텔레그램 알림 전송
+        
+        Args:
+            event_type: 이벤트 타입 (connect, error, subscribe 등)
+            message: 알림 메시지
+        """
+        try:
+            # 이벤트 타입에 따른 MessageType 결정
+            message_type = self._get_message_type_for_event(event_type)
+                
+            # 텔레그램 메시지 전송
+            if isinstance(message, dict):
+                await send_telegram_message(self.settings, message_type, message)
+            else:
+                await send_telegram_message(self.settings, message_type, {"message": message})
+            
+        except Exception as e:
+            self.log_error(f"텔레그램 알림 전송 실패: {str(e)}")
+
+    def _get_message_type_for_event(self, event_type: str) -> MessageType:
+        """
+        웹소켓 이벤트를 메시지 타입으로 변환
+        
+        Args:
+            event_type: 이벤트 타입 (connect, error, subscribe 등)
+            
+        Returns:
+            MessageType: 해당하는 메시지 타입
+        """
+        event_type_mapping = {
+            "error": MessageType.ERROR,
+            "connect": MessageType.CONNECTION,
+            "reconnect": MessageType.RECONNECT,
+            "disconnect": MessageType.DISCONNECT,
+            "subscribe": MessageType.INFO,
+            "unsubscribe": MessageType.INFO,
+            "ping": MessageType.INFO,
+            "pong": MessageType.INFO,
+            "message": MessageType.INFO,
+            "trade": MessageType.TRADE,
+            "orderbook": MessageType.INFO,
+            "market": MessageType.MARKET,
+            "system": MessageType.SYSTEM
+        }
+        
+        return event_type_mapping.get(event_type, MessageType.INFO)

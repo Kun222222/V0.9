@@ -34,17 +34,20 @@ NOTIFICATION_CHAT_IDS = [int(os.getenv("TELEGRAM_CHAT_ID", "0"))]
 # ============================
 # 텔레그램 메시지 타입 및 아이콘
 # ============================
-class MessageType:
-    """메시지 타입 정의"""
-    ERROR = "error"
+class MessageType(Enum):
     INFO = "info"
-    TRADE = "trade"
-    PROFIT = "profit"
+    ERROR = "error"
+    WARNING = "warning"
+    SUCCESS = "success"
     STARTUP = "startup"
     SHUTDOWN = "shutdown"
-    WARNING = "warning"
-    MARKET = "market"
-    SYSTEM = "system"
+    CONNECTION = "connection"  # 웹소켓 연결 상태 메시지
+    RECONNECT = "reconnect"    # 재연결 메시지
+    DISCONNECT = "disconnect"  # 연결 종료 메시지
+    TRADE = "trade"            # 거래 실행 메시지
+    PROFIT = "profit"          # 수익 발생 메시지
+    MARKET = "market"          # 시장 상태 메시지
+    SYSTEM = "system"          # 시스템 상태 메시지
 
 class MessageIcon:
     """메시지 아이콘 정의"""
@@ -72,7 +75,10 @@ MESSAGE_TEMPLATES = {
     MessageType.SHUTDOWN: f"{MessageIcon.SHUTDOWN} <b>시스템 종료</b>\n\n<b>컴포넌트:</b> {{component}}\n<b>사유:</b> {{reason}}",
     MessageType.WARNING: f"{MessageIcon.WARNING} <b>경고</b>\n\n<b>컴포넌트:</b> {{component}}\n<b>메시지:</b> {{message}}",
     MessageType.MARKET: f"{MessageIcon.MARKET} <b>시장 상태</b>\n\n<b>USDT/KRW:</b> {{usdt_price:,.2f}} KRW\n<b>업비트:</b> {{upbit_status}}\n<b>빗썸:</b> {{bithumb_status}}",
-    MessageType.SYSTEM: f"{MessageIcon.SYSTEM} <b>시스템 상태</b>\n\n<b>CPU:</b> {{cpu_usage:.1f}}%\n<b>메모리:</b> {{memory_usage:.1f}}%\n<b>업타임:</b> {{uptime}}"
+    MessageType.SYSTEM: f"{MessageIcon.SYSTEM} <b>시스템 상태</b>\n\n<b>CPU:</b> {{cpu_usage:.1f}}%\n<b>메모리:</b> {{memory_usage:.1f}}%\n<b>업타임:</b> {{uptime}}",
+    MessageType.CONNECTION: f"{MessageIcon.CONNECTION[True]} <b>웹소켓 연결</b>\n\n<b>메시지:</b> {{message}}",
+    MessageType.RECONNECT: f"{MessageIcon.CONNECTION[False]} <b>웹소켓 재연결</b>\n\n<b>메시지:</b> {{message}}",
+    MessageType.DISCONNECT: f"{MessageIcon.CONNECTION[False]} <b>웹소켓 연결 종료</b>\n\n<b>메시지:</b> {{message}}"
 }
 
 # Command settings
@@ -173,7 +179,7 @@ def setup_logger():
     return logger
 
 def format_message(
-    message_type: str,
+    message_type: Union[str, MessageType],
     data: Dict[str, Union[str, int, float]],
     add_time: bool = True
 ) -> str:
@@ -181,7 +187,7 @@ def format_message(
     메시지 포맷팅
     
     Args:
-        message_type: 메시지 타입 (MessageType 클래스 참조)
+        message_type: 메시지 타입 (MessageType 클래스 참조 또는 문자열)
         data: 템플릿에 들어갈 데이터
         add_time: 시간 추가 여부
         
@@ -190,8 +196,19 @@ def format_message(
     """
     logger.debug("[텔레그램] 메시지 포맷팅 시작 (타입: %s)", message_type)
     
+    # MessageType 객체를 받은 경우 처리
+    if isinstance(message_type, MessageType):
+        message_type_key = message_type
+    else:
+        # 문자열을 받은 경우 MessageType으로 변환 시도
+        try:
+            message_type_key = MessageType[message_type.upper()]
+        except (KeyError, AttributeError):
+            logger.error("[텔레그램] 알 수 없는 메시지 타입: %s", message_type)
+            message_type_key = MessageType.INFO
+    
     # 템플릿 가져오기
-    template = MESSAGE_TEMPLATES.get(message_type)
+    template = MESSAGE_TEMPLATES.get(message_type_key)
     if not template:
         logger.error("[텔레그램] 알 수 없는 메시지 타입: %s", message_type)
         return f"알 수 없는 메시지 타입: {message_type}"
@@ -267,8 +284,8 @@ def validate_telegram_config(settings: Dict) -> bool:
 
 async def send_telegram_message(
     settings: Dict,
-    message_type: str,
-    data: Dict[str, Union[str, int, float]],
+    message_type: Union[str, MessageType],
+    data: Union[Dict[str, Union[str, int, float]], str],
     retry_count: int = 0,
     timeout: float = 10.0  # 타임아웃 설정 추가 (기본 10초)
 ) -> bool:
@@ -277,8 +294,8 @@ async def send_telegram_message(
     
     Args:
         settings: 설정 데이터
-        message_type: 메시지 타입 (MessageType 클래스 참조)
-        data: 템플릿에 들어갈 데이터
+        message_type: 메시지 타입 (MessageType 클래스 참조 또는 문자열)
+        data: 템플릿에 들어갈 데이터 또는 메시지 문자열
         retry_count: 현재 재시도 횟수
         timeout: API 요청 타임아웃 (초)
     
@@ -289,6 +306,10 @@ async def send_telegram_message(
     logger.debug("[텔레그램] send_telegram_message 함수 호출 (타입: %s, 재시도: %d, 타임아웃: %.1f초)", 
                 message_type, retry_count, timeout)
     task_id = f"{message_type}_{int(time.time() * 1000)}"
+    
+    # 문자열을 받은 경우 딕셔너리로 변환
+    if isinstance(data, str):
+        data = {"message": data}
     
     # 비동기 태스크로 실행하여 초기화 과정을 블로킹하지 않도록 함
     async def _send_message():
