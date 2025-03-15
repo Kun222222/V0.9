@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from websockets import connect
+import websockets.exceptions
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
@@ -168,7 +169,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             symbols: 구독한 심볼 목록
             tasks: 실행 중인 백그라운드 태스크 목록
         """
-        import websockets
         
         while not self.stop_event.is_set() and self.is_connected:
             try:

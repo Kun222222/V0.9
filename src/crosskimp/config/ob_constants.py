@@ -14,6 +14,23 @@
 from enum import Enum
 
 # ============================
+# 로깅 메시지 타입
+# ============================
+class LogMessageType(Enum):
+    """로깅 메시지 타입 정의"""
+    INFO = "info"
+    ERROR = "error"
+    WARNING = "warning"
+    DEBUG = "debug"
+    CRITICAL = "critical"
+    CONNECTION = "connection"
+    RECONNECT = "reconnect"
+    DISCONNECT = "disconnect"
+    TRADE = "trade"
+    MARKET = "market"
+    SYSTEM = "system"
+
+# ============================
 # 거래소 식별자
 # ============================
 class Exchange(Enum):

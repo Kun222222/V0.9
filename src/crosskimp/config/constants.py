@@ -10,7 +10,7 @@
 - 메트릭 관련 상수
 
 텔레그램 관련 상수는 crosskimp.telegrambot.bot_constants에 정의되어 있습니다.
-
+오더북 관련 상수는 crosskimp.config.ob_constants에 정의되어 있습니다.
 """
 
 import os
@@ -22,10 +22,11 @@ from crosskimp.config.paths import (
     LOG_SUBDIRS, ensure_directories, CONFIG_DIR
 )
 
-# ============================
-# 시스템 메시지 상수
-# ============================
-LOG_SYSTEM = "[시스템]"
+# 오더북 관련 상수 임포트
+from crosskimp.config.ob_constants import (
+    Exchange, WebSocketState, STATUS_EMOJIS, 
+    EXCHANGE_NAMES_KR, LOG_SYSTEM, WEBSOCKET_CONFIG
+)
 
 # ============================
 # 프로젝트 경로 관련 상수
@@ -81,35 +82,8 @@ RETRY_DELAY = 1    # 초
 MAX_RETRIES = 3    # 최대 재시도 횟수
 
 # ============================
-# 거래소 관련 상수
-# ============================
-class Exchange(Enum):
-    """
-    거래소 식별자
-    
-    이 열거형은 지원되는 모든 거래소의 식별자를 정의합니다.
-    코드 전체에서 일관된 거래소 식별을 위해 사용됩니다.
-    """
-    BINANCE = "binance"        # 바이낸스 현물
-    BYBIT = "bybit"            # 바이빗 현물
-    UPBIT = "upbit"            # 업비트 현물
-    BITHUMB = "bithumb"        # 빗썸 현물
-    BINANCE_FUTURE = "binancefuture"  # 바이낸스 선물
-    BYBIT_FUTURE = "bybitfuture"      # 바이빗 선물
-    BYBIT_V2 = "bybit2"               # 바이빗 v2 API
-    BYBIT_FUTURE_V2 = "bybitfuture2"  # 바이빗 선물 v2 API
-
-# 거래소 한글 이름
-EXCHANGE_NAMES_KR = {
-    Exchange.BINANCE.value: "[바이낸스]",
-    Exchange.BYBIT.value: "[바이빗]",
-    Exchange.UPBIT.value: "[업비트]",
-    Exchange.BITHUMB.value: "[빗썸]",
-    Exchange.BINANCE_FUTURE.value: "[바이낸스 선물]",
-    Exchange.BYBIT_FUTURE.value: "[바이빗 선물]",
-}
-
 # 거래소 그룹화
+# ============================
 EXCHANGE_GROUPS = {
     "korean": [Exchange.UPBIT.value, Exchange.BITHUMB.value],
     "global": [Exchange.BINANCE.value, Exchange.BYBIT.value],
@@ -142,32 +116,8 @@ EXCHANGE_DEFAULTS = {
 }
 
 # ============================
-# 웹소켓 관련 상수
-# ============================
-# 웹소켓 상태 코드 및 이모지
-class WebSocketState:
-    """
-    웹소켓 연결 상태 코드
-    
-    웹소켓 연결의 다양한 상태를 정의합니다.
-    """
-    CONNECTING = 0      # 연결 시도 중
-    CONNECTED = 1       # 연결됨
-    DISCONNECTING = 2   # 연결 종료 중
-    DISCONNECTED = 3    # 연결 종료됨
-    ERROR = 4           # 오류 발생
-    RECONNECTING = 5    # 재연결 시도 중
-
-# 웹소켓 상태 이모지
-STATUS_EMOJIS = {
-    "CONNECTED": "🟢",      # 연결됨
-    "CONNECTING": "🟡",     # 연결 시도 중
-    "DISCONNECTED": "⚪",   # 연결 종료됨
-    "ERROR": "🔴",          # 오류 발생
-    "RECONNECTING": "🟠"    # 재연결 시도 중
-}
-
 # 웹소켓 상태 코드 매핑
+# ============================
 WEBSOCKET_STATES = {
     'CONNECTING': WebSocketState.CONNECTING,
     'CONNECTED': WebSocketState.CONNECTED,
@@ -177,7 +127,9 @@ WEBSOCKET_STATES = {
     'RECONNECTING': WebSocketState.RECONNECTING
 }
 
+# ============================
 # 웹소켓 URL
+# ============================
 WEBSOCKET_URLS = {
     Exchange.UPBIT.value: "wss://api.upbit.com/websocket/v1",
     Exchange.BITHUMB.value: "wss://pubwss.bithumb.com/pub/ws",
@@ -212,58 +164,9 @@ API_URLS = {
     }
 }
 
-# 웹소켓 설정 상수
-WEBSOCKET_CONFIG = {
-    Exchange.UPBIT.value: {
-        "depth_levels": 15,
-        "ping_interval": 60,
-        "ping_timeout": 10,
-        "update_speed_ms": 100
-    },
-    Exchange.BITHUMB.value: {
-        "depth_levels": 15,          # 오더북 깊이 레벨 (표시할 호가 수)
-        "ping_interval": 20,         # 핑 전송 간격 (초)
-        "ping_timeout": 10,          # 핑 응답 대기 시간 (초)
-        "update_speed_ms": 100,      # 업데이트 속도 (밀리초)
-        # 빗썸 특화 설정
-        "message_type_depth": "orderbookdepth",  # 오더북 메시지 타입
-        "symbol_suffix": "_KRW",     # 심볼 접미사
-        "default_depth": 500,        # 기본 오더북 깊이
-        "tick_types": ["1M"],        # 틱 타입 (1분)
-        "message_timeout": 30,       # 메시지 타임아웃 (초)
-        "close_timeout": 30,         # 연결 종료 타임아웃 (초)
-        "max_size": None,            # 최대 메시지 크기 제한 없음
-        "compression": None,         # 압축 사용 안함
-        "log_sample_count": 3,       # 로깅할 메시지 샘플 수
-        "log_message_preview_length": 200  # 로깅할 메시지 미리보기 길이
-    },
-    Exchange.BINANCE.value: {
-        "depth_levels": 20,
-        "ping_interval": 150,  # 바이낸스는 더 긴 핑 간격 사용
-        "ping_timeout": 10,
-        "update_speed_ms": 100
-    },
-    Exchange.BINANCE_FUTURE.value: {
-        "depth_levels": 20,
-        "ping_interval": 150,  # 바이낸스는 더 긴 핑 간격 사용
-        "ping_timeout": 10,
-        "update_speed_ms": 100
-    },
-    Exchange.BYBIT.value: {
-        "depth_levels": 25,
-        "ping_interval": 20,
-        "ping_timeout": 10,
-        "update_speed_ms": 100
-    },
-    Exchange.BYBIT_FUTURE.value: {
-        "depth_levels": 25,
-        "ping_interval": 20,
-        "ping_timeout": 10,
-        "update_speed_ms": 100
-    }
-}
-
+# ============================
 # 웹소켓 공통 설정
+# ============================
 WEBSOCKET_COMMON_CONFIG = {
     "health_check_interval": 10,  # 헬스체크 간격 (초)
     "message_timeout": 30,        # 메시지 타임아웃 (초)

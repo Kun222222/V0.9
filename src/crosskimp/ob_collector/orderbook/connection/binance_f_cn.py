@@ -112,6 +112,10 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "connect")
             self.log_info("웹소켓 연결 성공")
+            
+            # 텔레그램 알림 전송
+            await self._send_telegram_notification("connect", f"{self.exchange_korean_name} 웹소켓 연결 성공")
+            
             return True
         except Exception as e:
             self.log_error(f"connect() 예외: {e}", exc_info=True)
@@ -129,19 +133,20 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
                 self.connection_status_callback(self.exchangename, "warning")
             return
 
-        streams = []
-        for sym in symbols:
-            sym_lower = sym.lower()
-            if not sym_lower.endswith("usdt"):
-                sym_lower += "usdt"
-            streams.append(f"{sym_lower}@depth@{self.update_speed}")
-            self.subscribed_symbols.add(sym.upper())
-
-        combined = "/".join(streams)
-        self.wsurl = self.ws_base + combined
+        # wsurl은 이미 _prepare_start에서 설정됨
+        if not self.wsurl:
+            self.log_error("WebSocket URL이 설정되지 않았습니다.")
+            return
+            
+        # 구독 상태 콜백
         if self.connection_status_callback:
             self.connection_status_callback(self.exchangename, "subscribe")
 
+        # 심볼 추적
+        for sym in symbols:
+            self.subscribed_symbols.add(sym.upper())
+            
+        # 연결 시도
         await self.connect()
 
     async def request_snapshot(self, symbol: str) -> Optional[dict]:
@@ -242,52 +247,51 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             self.log_error("구독할 심볼 없음.")
             return
 
-        # 부모 클래스의 start 메소드를 호출하지 않고 직접 필요한 로직 구현
-        # await super().start(symbols_by_exchange)
+        # 부모 클래스의 start 메서드 호출
+        await super().start(symbols_by_exchange)
+
+    async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
+        """
+        메시지 처리 루프 실행 (BaseWebsocketConnector 템플릿 메서드 구현)
         
-        # 1. 초기화 및 설정
-        await self._prepare_start(exchange_symbols)
+        Args:
+            symbols: 구독한 심볼 목록
+            tasks: 실행 중인 백그라운드 태스크 목록
+        """
+        try:
+            while not self.stop_event.is_set() and self.is_connected:
+                try:
+                    message = await asyncio.wait_for(
+                        self.ws.recv(),
+                        timeout=self.health_check_interval
+                    )
+                    self.stats.last_message_time = time.time()
+                    self.stats.message_count += 1
+                    
+                    # 메시지 처리 (자식 클래스에서 구현)
+                    await self.process_message(message)
 
-        while not self.stop_event.is_set():
-            try:
-                # 2. 단일 연결로 모든 심볼 구독 (이 과정에서 wsurl이 설정되고 connect가 호출됨)
-                await self.subscribe(exchange_symbols)
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "connect")
+                except asyncio.TimeoutError:
+                    # 헬스체크 timeout
+                    continue
+                except Exception as e:
+                    self.log_error(f"메시지 수신 실패: {str(e)}")
+                    break
 
-                while not self.stop_event.is_set():
-                    try:
-                        message = await asyncio.wait_for(
-                            self.ws.recv(),
-                            timeout=self.health_check_interval
-                        )
-                        self.stats.last_message_time = time.time()
-                        self.stats.message_count += 1
-                        
-                        # 메시지 처리 (자식 클래스에서 구현)
-                        await self.process_message(message)
-
-                    except asyncio.TimeoutError:
-                        # 헬스체크 timeout
-                        continue
-                    except Exception as e:
-                        self.log_error(f"메시지 수신 실패: {str(e)}")
-                        break
-
-            except Exception as conn_e:
-                # 연결 실패 시 백오프
-                delay = self.reconnect_strategy.next_delay()
-                self.log_error(f"연결 실패: {conn_e}, 재연결 {delay}s 후 재시도")
-                await asyncio.sleep(delay)
-            finally:
-                if self.ws:
-                    try:
-                        await self.ws.close()
-                    except:
-                        pass
-                self.is_connected = False
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "disconnect")
+        except Exception as conn_e:
+            # 연결 실패 시 백오프
+            delay = self.reconnect_strategy.next_delay()
+            self.log_error(f"연결 실패: {conn_e}, 재연결 {delay}s 후 재시도")
+            await asyncio.sleep(delay)
+        finally:
+            if self.ws:
+                try:
+                    await self.ws.close()
+                except:
+                    pass
+            self.is_connected = False
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "disconnect")
 
     async def process_message(self, message: str) -> None:
         """
@@ -307,4 +311,37 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             manager: 오더북 매니저 객체
         """
         self.orderbook_manager = manager
-        self.log_info("오더북 매니저 설정 완료") 
+        self.log_info("오더북 매니저 설정 완료")
+
+    async def _prepare_start(self, symbols: List[str]) -> None:
+        """
+        시작 전 초기화 및 설정 (BaseWebsocketConnector 템플릿 메서드 구현)
+        
+        Args:
+            symbols: 구독할 심볼 목록
+        """
+        # 필요한 초기화 작업 수행
+        self.log_info(f"바이낸스 선물 웹소켓 초기화 시작 (심볼: {len(symbols)}개)")
+        
+        # 구독할 심볼 목록 초기화
+        self.subscribed_symbols = set()
+        
+        # 웹소켓 URL 초기화
+        streams = []
+        for sym in symbols:
+            sym_lower = sym.lower()
+            if not sym_lower.endswith("usdt"):
+                sym_lower += "usdt"
+            streams.append(f"{sym_lower}@depth@{self.update_speed}")
+            
+        combined = "/".join(streams)
+        self.wsurl = self.ws_base + combined
+        self.log_info(f"웹소켓 URL 설정 완료: {self.wsurl[:50]}...")
+        
+        # 세션 초기화
+        if self.session:
+            try:
+                await self.session.close()
+            except:
+                pass
+            self.session = None 

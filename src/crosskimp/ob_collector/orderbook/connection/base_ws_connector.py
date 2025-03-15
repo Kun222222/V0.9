@@ -10,12 +10,12 @@ from asyncio import Event
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from enum import Enum
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState
+from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, Exchange, WebSocketState, LogMessageType
 from crosskimp.config.paths import LOG_SUBDIRS
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
-from crosskimp.config.bot_constants import MessageType
 
 # 전역 로거 설정
 logger = get_unified_logger()
@@ -98,7 +98,7 @@ class BaseWebsocketConnector:
         self.settings = settings
 
         # 거래소 한글 이름 설정
-        self.exchange_korean_name = EXCHANGE_NAMES_KR.get(exchangename, exchangename)
+        self.exchange_korean_name = EXCHANGE_NAMES_KR.get(exchangename, f"[{exchangename}]")
 
         self.ws = None
         self.is_connected = False
@@ -170,29 +170,31 @@ class BaseWebsocketConnector:
 
     # 로깅 헬퍼 메서드들 - 모든 로깅은 이 메서드들을 통해 수행
     def _update_error_stats(self, msg: str):
-        """에러 통계 업데이트 및 콜백 호출"""
+        """오류 통계 업데이트"""
         self.stats.error_count += 1
         self.stats.last_error_time = time.time()
         self.stats.last_error_message = msg
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "error")
 
     def log_error(self, msg: str, exc_info: bool = True):
-        """에러 로깅 공통 메서드 (통계 업데이트 + 로깅 + 콜백)"""
+        """오류 로깅"""
         self._update_error_stats(msg)
-        logger.error(f"{self.exchange_korean_name} {msg}", exc_info=exc_info)
+        error_msg = f"{self.exchange_korean_name} {STATUS_EMOJIS.get('ERROR', '🔴')} {msg}"
+        logger.error(error_msg, exc_info=exc_info)
 
     def log_info(self, msg: str):
-        """정보 로깅 공통 메서드"""
-        logger.info(f"{self.exchange_korean_name} {msg}")
+        """정보 로깅"""
+        info_msg = f"{self.exchange_korean_name} {msg}"
+        logger.info(info_msg)
 
     def log_debug(self, msg: str):
-        """디버그 로깅 공통 메서드"""
-        logger.debug(f"{self.exchange_korean_name} {msg}")
+        """디버그 로깅"""
+        debug_msg = f"{self.exchange_korean_name} {msg}"
+        logger.debug(debug_msg)
 
     def log_warning(self, msg: str):
-        """경고 로깅 공통 메서드"""
-        logger.warning(f"{self.exchange_korean_name} {msg}")
+        """경고 로깅"""
+        warning_msg = f"{self.exchange_korean_name} {STATUS_EMOJIS.get('RECONNECTING', '🟠')} {msg}"
+        logger.warning(warning_msg)
 
     def get_connection_status(self) -> ConnectionStatus:
         """현재 연결 상태 정보 반환"""
@@ -660,33 +662,39 @@ class BaseWebsocketConnector:
             else:
                 await send_telegram_message(self.settings, message_type, {"message": message})
             
+            # 로깅 추가
+            self.log_debug(f"텔레그램 알림 전송 성공: {event_type}")
+            
         except Exception as e:
-            self.log_error(f"텔레그램 알림 전송 실패: {str(e)}")
+            self.log_error(f"텔레그램 알림 전송 실패: {event_type} - {str(e)}")
 
-    def _get_message_type_for_event(self, event_type: str) -> MessageType:
+    def _get_message_type_for_event(self, event_type: str) -> LogMessageType:
         """
-        웹소켓 이벤트를 메시지 타입으로 변환
+        이벤트 타입에 따른 텔레그램 메시지 타입 반환
         
         Args:
-            event_type: 이벤트 타입 (connect, error, subscribe 등)
+            event_type: 이벤트 타입 문자열
             
         Returns:
-            MessageType: 해당하는 메시지 타입
+            LogMessageType: 해당하는 텔레그램 메시지 타입
         """
-        event_type_mapping = {
-            "error": MessageType.ERROR,
-            "connect": MessageType.CONNECTION,
-            "reconnect": MessageType.RECONNECT,
-            "disconnect": MessageType.DISCONNECT,
-            "subscribe": MessageType.INFO,
-            "unsubscribe": MessageType.INFO,
-            "ping": MessageType.INFO,
-            "pong": MessageType.INFO,
-            "message": MessageType.INFO,
-            "trade": MessageType.TRADE,
-            "orderbook": MessageType.INFO,
-            "market": MessageType.MARKET,
-            "system": MessageType.SYSTEM
+        event_map = {
+            "error": LogMessageType.ERROR,
+            "warning": LogMessageType.WARNING,
+            "info": LogMessageType.INFO,
+            "connect": LogMessageType.CONNECTION,
+            "disconnect": LogMessageType.DISCONNECT,
+            "reconnect": LogMessageType.RECONNECT,
+            "subscribe": LogMessageType.INFO,
+            "unsubscribe": LogMessageType.INFO,
+            "ping": LogMessageType.INFO,
+            "pong": LogMessageType.INFO,
+            "snapshot": LogMessageType.INFO,
+            "message": LogMessageType.INFO,
+            "trade": LogMessageType.TRADE,
+            "orderbook": LogMessageType.INFO,
+            "market": LogMessageType.MARKET,
+            "system": LogMessageType.SYSTEM
         }
         
-        return event_type_mapping.get(event_type, MessageType.INFO)
+        return event_map.get(event_type.lower(), LogMessageType.INFO)

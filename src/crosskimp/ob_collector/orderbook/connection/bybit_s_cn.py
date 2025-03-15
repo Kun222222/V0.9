@@ -323,6 +323,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             await self.reconnect()
             
         finally:
+            # 태스크 정리
             for task in tasks:
                 if not task.done():
                     task.cancel()
@@ -331,9 +332,21 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                     except asyncio.CancelledError:
                         pass
             
-            if not self.stop_event.is_set():
-                self.log_info(f"메시지 루프 종료 후 재시작 시도")
-                asyncio.create_task(self.start({self.exchangename.lower(): symbols}))
+            # 재연결 처리 (재귀적 호출 방지)
+            if not self.stop_event.is_set() and not self.is_connected:
+                self.log_info(f"메시지 루프 종료 후 재연결 시도")
+                # 재연결 시도
+                await self.reconnect()
+                
+                # 재연결 성공 시 구독 다시 시도
+                if self.is_connected:
+                    try:
+                        await self.subscribe(symbols)
+                        self.log_info(f"{len(symbols)}개 심볼 재구독 완료")
+                    except Exception as e:
+                        self.log_error(f"심볼 재구독 실패: {str(e)}")
+                        # 구독 실패 시 연결 종료 (다음 재연결 시도는 health_check에서 처리)
+                        await self._cleanup_connection()
 
     async def process_message(self, message: str) -> None:
         """
@@ -380,14 +393,13 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
         # 초기 연결 시도 중 타임아웃은 정상적인 상황으로 처리
         is_initial_timeout = self.current_retry <= 3
         
-        if not is_initial_timeout:
-            # 초기 연결 타임아웃이 아닌 경우에만 텔레그램 알림 전송
+        # 로그 및 알림 처리
+        if is_initial_timeout:
+            self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 중 (시도 횟수: {self.current_retry})")
+        else:
             reconnect_msg = f"{self.exchange_korean_name} 웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count})"
             self.log_info(reconnect_msg)
             await self._send_telegram_notification("reconnect", reconnect_msg)
-        else:
-            # 초기 연결 타임아웃은 정보 로그만 남김
-            self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 중 (시도 횟수: {self.current_retry})")
         
         try:
             if self.ws:
@@ -412,14 +424,14 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                 await super().reconnect()
             
         except Exception as e:
-            # 초기 연결 타임아웃이 아닌 경우에만 에러 로그 및 텔레그램 알림
-            if not is_initial_timeout:
-                error_msg = f"{self.exchange_korean_name} 웹소켓 재연결 실패: {str(e)}"
+            # 오류 메시지 및 로깅 - 초기 연결 여부에 따라 다르게 처리
+            error_msg = f"{self.exchange_korean_name} {'초기 연결 재시도' if is_initial_timeout else '웹소켓 재연결'} 실패: {str(e)}"
+            
+            if is_initial_timeout:
+                self.log_info(f"{error_msg} (무시됨)")
+            else:
                 self.log_error(error_msg)
                 await self._send_telegram_notification("error", error_msg)
-            else:
-                # 초기 연결 타임아웃은 정보 로그만 남김
-                self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 실패 (무시됨): {str(e)}")
             
             delay = min(30, self.retry_delay * (2 ** (self.current_retry - 1)))
             self.log_info(f"재연결 대기 중 ({delay}초) | 시도={self.current_retry}회차")
