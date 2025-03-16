@@ -10,6 +10,7 @@ from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.connection.upbit_s_cn import UpbitWebSocketConnector, PONG_RESPONSE
 from crosskimp.ob_collector.orderbook.orderbook.upbit_s_ob import UpbitOrderBookManager
+from crosskimp.ob_collector.orderbook.parser.upbit_s_pa import UpbitParser
 
 
 # ============================
@@ -52,6 +53,9 @@ class UpbitWebsocket(UpbitWebSocketConnector):
         depth = settings.get("websocket", {}).get("orderbook_depth", DEFAULT_DEPTH)
         self.orderbook_manager = UpbitOrderBookManager(depth=depth)
         
+        # 파서 초기화
+        self.parser = UpbitParser()
+        
         # 초기화된 심볼 추적
         self.initialized_symbols = set()
         
@@ -74,116 +78,14 @@ class UpbitWebsocket(UpbitWebSocketConnector):
             return
             
         # 메시지 파싱 및 처리
-        parsed = await self.parse_message(message)
+        parsed = self.parser.parse_message(message)
         if parsed:
             await self.handle_parsed_message(parsed)
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "message")
-
-    async def parse_message(self, message: str) -> Optional[dict]:
-        """
-        수신된 메시지 파싱
-        
-        Args:
-            message: 수신된 웹소켓 메시지
             
-        Returns:
-            Optional[dict]: 파싱된 오더북 데이터 또는 None
-        """
-        try:
-            # 바이트 메시지 디코딩
-            if isinstance(message, bytes):
-                message = message.decode("utf-8")
-            
-            # PING 응답 처리
-            if message == PONG_RESPONSE:
-                return None
-            
-            # JSON 파싱
-            data = json.loads(message)
-            
-            # 오더북 메시지 타입 확인
-            if data.get("type") != "orderbook":
-                return None
-
-            # 심볼 추출
-            symbol = data.get("code", "").replace("KRW-","")
-            if not symbol:
-                self.log_error("심볼 정보 누락")
-                return None
-
-            # 타임스탬프 추출
-            ts = data.get("timestamp", int(time.time()*1000))
-            
-            # 오더북 데이터 추출 및 변환
-            bids, asks = self._extract_orderbook_data(data.get("orderbook_units", []), symbol)
-
-            # 유효성 검사
-            if not bids or not asks:
-                self.message_stats["invalid_parsed"] += 1
-                return None
-
-            # 파싱 성공 카운트 증가
-            self.message_stats["valid_parsed"] += 1
-            
-            # 로깅 추가
-            parsed_data = {
-                "exchangename": EXCHANGE_CODE,
-                "symbol": symbol.upper(),
-                "bids": bids,
-                "asks": asks,
-                "timestamp": ts,
-                "sequence": ts,
-                "type": "delta"  # 업비트는 항상 전체 오더북 제공
-            }
-            
-            # 원본 메시지만 로깅 (parsedData 로깅 제거)
-            self.log_raw_message("orderbook", message, symbol.upper())
-            
-            # 표준화된 오더북 데이터 반환
-            return parsed_data
-        except json.JSONDecodeError:
-            self.log_error(f"JSON 파싱 실패: {message[:100]}...")
-            return None
-        except Exception as e:
-            self.log_error(f"메시지 파싱 실패: {str(e)}, raw={message[:200]}...")
-            self.message_stats["processing_errors"] += 1
-            return None
-
-    def _extract_orderbook_data(self, units: List[Dict[str, Any]], symbol: str) -> Tuple[List[Dict[str, float]], List[Dict[str, float]]]:
-        """
-        오더북 유닛에서 매수/매도 데이터 추출
-        
-        Args:
-            units: 오더북 유닛 목록
-            symbol: 심볼 이름
-            
-        Returns:
-            Tuple[List[Dict[str, float]], List[Dict[str, float]]]: 매수(bids)와 매도(asks) 데이터
-        """
-        bids = []
-        asks = []
-        
-        for unit in units:
-            # 가격과 수량 추출
-            bid_price = float(unit.get("bid_price", 0))
-            bid_size = float(unit.get("bid_size", 0))
-            ask_price = float(unit.get("ask_price", 0))
-            ask_size = float(unit.get("ask_size", 0))
-            
-            # 유효한 데이터만 추가
-            if bid_price > 0:
-                bids.append({'price': bid_price, 'size': bid_size})
-            if ask_price > 0:
-                asks.append({'price': ask_price, 'size': ask_size})
-
-        # 빈 데이터 로깅
-        if not bids:
-            self.log_error(f"{symbol} bids가 비어 있습니다: {units}")
-        if not asks:
-            self.log_error(f"{symbol} asks가 비어 있습니다: {units}")
-            
-        return bids, asks
+            # 원본 메시지 로깅
+            self.log_raw_message("orderbook", message, parsed["symbol"])
 
     async def handle_parsed_message(self, parsed: dict) -> None:
         """
@@ -231,7 +133,7 @@ class UpbitWebsocket(UpbitWebSocketConnector):
         self.log_info(
             f"웹소켓 종료 | "
             f"총 메시지: {self.message_stats['total_received']}개, "
-            f"유효 파싱: {self.message_stats['valid_parsed']}개, "
+            f"유효 파싱: {self.parser.stats['valid_parsed']}개, "
             f"핑퐁: {self.message_stats['ping_pong']}개, "
-            f"오류: {self.message_stats['processing_errors']}개"
+            f"오류: {self.parser.stats['processing_errors']}개"
         )

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.parser.upbit_s_pa import UpbitParser
 
 # ============================
 # 업비트 웹소켓 연결 관련 상수
@@ -52,6 +53,9 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         self.ping_interval = PING_INTERVAL
         self.ping_timeout = PING_TIMEOUT
         
+        # 파서 초기화
+        self.parser = UpbitParser()
+        
         # 메시지 처리 통계
         self.message_stats = {
             "total_received": 0,
@@ -87,18 +91,8 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                 self.log_error(error_msg)
                 raise ConnectionError(error_msg)
             
-            # 심볼 형식 변환 (KRW-{symbol})
-            markets = [f"KRW-{s.upper()}" for s in symbols]
-            
-            # 구독 메시지 생성
-            sub_message = [
-                {"ticket": f"upbit_orderbook_{int(time.time())}"},
-                {
-                    "type": "orderbook",
-                    "codes": markets,
-                    "isOnlyRealtime": False  # 스냅샷 포함 요청
-                }
-            ]
+            # 파서를 사용하여 구독 메시지 생성
+            sub_message = self.parser.create_subscribe_message(symbols)
             
             # 구독 시작 상태 콜백
             if self.connection_status_callback:
@@ -145,7 +139,8 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             bool: PONG 메시지인 경우 True, 아니면 False
         """
         try:
-            if message == PONG_RESPONSE:
+            # 파서를 사용하여 PONG 메시지 확인
+            if self.parser.is_pong_message(message):
                 now = time.time()
                 self.stats.last_pong_time = now
                 self.message_stats["ping_pong"] += 1

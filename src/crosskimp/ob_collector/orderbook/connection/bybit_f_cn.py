@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Set, Any
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector, WebSocketError
+from crosskimp.ob_collector.orderbook.parser.bybit_f_pa import BybitFutureParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -78,6 +79,9 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
             "total_received": 0,
             "ping_pong": 0
         }
+        
+        # 파서 초기화
+        self.parser = BybitFutureParser()
 
     async def _do_connect(self):
         """
@@ -173,11 +177,8 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
         
         for i, chunk in enumerate(chunks):
             try:
-                # 구독 메시지 생성
-                msg = {
-                    "op": "subscribe",
-                    "args": [f"orderbook.{self.depth_level}.{sym}USDT" for sym in chunk]
-                }
+                # 파서를 사용하여 구독 메시지 생성
+                msg = self.parser.create_subscribe_message(chunk)
                 
                 # 구독 요청 전송
                 if self.ws and self.is_connected:
@@ -225,18 +226,21 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
             bool: PONG 메시지 처리 성공 여부
         """
         try:
-            self.last_pong_time = time.time()
-            self.stats.last_pong_time = self.last_pong_time
-            self.message_stats["ping_pong"] += 1
-            
-            latency = (self.last_pong_time - self.last_ping_time) * 1000
-            self.stats.latency_ms = latency
-            
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "heartbeat")
+            # 파서를 사용하여 PONG 메시지 확인
+            if self.parser.is_pong_message(data):
+                self.last_pong_time = time.time()
+                self.stats.last_pong_time = self.last_pong_time
+                self.message_stats["ping_pong"] += 1
                 
-            self.log_debug(f"PONG 수신 (레이턴시: {latency:.2f}ms)")
-            return True
+                latency = (self.last_pong_time - self.last_ping_time) * 1000
+                self.stats.latency_ms = latency
+                
+                if self.connection_status_callback:
+                    self.connection_status_callback(self.exchangename, "heartbeat")
+                    
+                self.log_debug(f"PONG 수신 (레이턴시: {latency:.2f}ms)")
+                return True
+            return False
         except Exception as e:
             self.log_error(f"PONG 처리 실패: {str(e)}")
             return False

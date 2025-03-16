@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import Exchange, WebSocketState, STATUS_EMOJIS, WEBSOCKET_CONFIG
 from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.parser.binance_s_pa import BinanceParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -62,6 +63,9 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
         
         # 헬스 체크 설정
         self.health_check_interval = HEALTH_CHECK_INTERVAL
+        
+        # 파서 초기화
+        self.parser = BinanceParser()
 
     async def _do_connect(self):
         """
@@ -153,12 +157,8 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
         chunk_size = SUBSCRIBE_CHUNK_SIZE
         for i in range(0, len(symbols), chunk_size):
             chunk = symbols[i:i+chunk_size]
-            sub_params = [f"{sym.lower()}usdt{DEPTH_UPDATE_STREAM}" for sym in chunk]
-            msg = {
-                "method": "SUBSCRIBE",
-                "params": sub_params,
-                "id": int(time.time() * 1000)
-            }
+            # 파서를 사용하여 구독 메시지 생성
+            msg = self.parser.create_subscribe_message(chunk)
             await self.ws.send(json.dumps(msg))
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "subscribe")

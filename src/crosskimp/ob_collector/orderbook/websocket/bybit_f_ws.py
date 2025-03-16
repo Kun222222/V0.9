@@ -10,6 +10,7 @@ from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.connection.bybit_f_cn import BybitFutureWebSocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bybit_f_ob import BybitFutureOrderBookManager
+from crosskimp.ob_collector.orderbook.parser.bybit_f_pa import BybitFutureParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -50,6 +51,9 @@ class BybitFutureWebsocket(BybitFutureWebSocketConnector):
         self.depth_level = settings.get("depth", DEFAULT_DEPTH)
         self.orderbook_manager = BybitFutureOrderBookManager(self.depth_level)
         self.orderbook_manager.set_websocket(self)  # 웹소켓 연결 설정
+        
+        # 파서 초기화
+        self.parser = BybitFutureParser()
         
         # 스냅샷 관리
         self.snapshot_received = set()  # 스냅샷을 받은 심볼 목록
@@ -147,69 +151,41 @@ class BybitFutureWebsocket(BybitFutureWebSocketConnector):
 
             start_time = time.time()
             
+            # 파서를 사용하여 메시지 파싱
+            parsed_data = self.parser.parse_message(json.dumps(parsed))
+            if not parsed_data:
+                self.log_debug("파싱 실패 또는 무시된 메시지")
+                return
+                
             # 심볼 추출
-            symbol_with_suffix = topic.split(".")[-1]
-            symbol = symbol_with_suffix.replace("USDT", "")
+            symbol = parsed_data.get("symbol", "").upper()
             
-            # 메시지 타입 확인
-            msg_type = parsed.get("type", "delta")
+            # 오더북 업데이트
+            if self.orderbook_manager:
+                result = await self.orderbook_manager.update(symbol, parsed_data)
+                
+                # 처리 시간 로깅
+                processing_time = (time.time() - start_time) * 1000  # ms 단위
+                self.log_debug(f"{symbol} 처리 시간: {processing_time:.2f}ms")
+                
+                if not result.is_valid:
+                    self.log_error(f"{symbol} 오더북 업데이트 실패: {result.error_messages}")
             
-            # 원본 데이터 로깅
-            self.log_debug(f"{symbol} 원본 데이터: {str(parsed.get('data', {}))[:200]}")
+            # 통계 업데이트
+            if self.stats:
+                self.stats.message_count += 1
+                if not hasattr(self.stats, 'processing_times'):
+                    self.stats.processing_times = []
+                self.stats.processing_times.append(processing_time)
+                
+                if self.stats.message_count % 1000 == 0:
+                    avg_time = sum(self.stats.processing_times[-1000:]) / min(1000, len(self.stats.processing_times))
+                    self.log_info(
+                        f"{symbol} 처리 성능 | 평균={avg_time:.2f}ms, 총={self.stats.message_count:,}개"
+                    )
             
-            # 데이터 변환
-            try:
-                # 바이낸스 형식으로 변환
-                data = parsed.get("data", {})
-                timestamp = data.get("ts", int(time.time() * 1000))
-                sequence = data.get("u", 0)
-                
-                # 매수/매도 데이터 추출
-                bids_raw = data.get("b", [])
-                asks_raw = data.get("a", [])
-                
-                # 변환된 데이터 생성
-                converted_data = {
-                    "exchangename": self.exchangename,
-                    "symbol": symbol,
-                    "bids": bids_raw,  # 원본 형식 그대로 전달
-                    "asks": asks_raw,  # 원본 형식 그대로 전달
-                    "timestamp": timestamp,
-                    "sequence": sequence,
-                    "type": msg_type
-                }
-                
-                self.log_debug(f"{symbol} 변환 데이터: 매수={len(bids_raw)}건, 매도={len(asks_raw)}건")
-                
-                # 오더북 업데이트
-                if self.orderbook_manager:
-                    result = await self.orderbook_manager.update(symbol, converted_data)
-                    
-                    # 처리 시간 로깅
-                    processing_time = (time.time() - start_time) * 1000  # ms 단위
-                    self.log_debug(f"{symbol} 처리 시간: {processing_time:.2f}ms")
-                    
-                    if not result.is_valid:
-                        self.log_error(f"{symbol} 오더북 업데이트 실패: {result.error_messages}")
-                
-                # 통계 업데이트
-                if self.stats:
-                    self.stats.message_count += 1
-                    if not hasattr(self.stats, 'processing_times'):
-                        self.stats.processing_times = []
-                    self.stats.processing_times.append(processing_time)
-                    
-                    if self.stats.message_count % 1000 == 0:
-                        avg_time = sum(self.stats.processing_times[-1000:]) / min(1000, len(self.stats.processing_times))
-                        self.log_info(
-                            f"{symbol} 처리 성능 | 평균={avg_time:.2f}ms, 총={self.stats.message_count:,}개"
-                        )
-                
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "message")
-                
-            except Exception as e:
-                self.log_error(f"{symbol} 데이터 변환/처리 오류: {e}, 원본={parsed}")
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "message")
                 
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {e}")
@@ -250,7 +226,9 @@ class BybitFutureWebsocket(BybitFutureWebSocketConnector):
                         
                         if self.connection_status_callback:
                             self.connection_status_callback(self.exchangename, "snapshot_received")
-                        return self._parse_snapshot_data(result, market)
+                        
+                        # 파서를 사용하여 스냅샷 데이터 파싱
+                        return self.parser.parse_snapshot_data(result, market)
                     else:
                         self.log_error(f"{market} 스냅샷 응답 에러: {data}")
                 else:
@@ -258,49 +236,6 @@ class BybitFutureWebsocket(BybitFutureWebSocketConnector):
         except Exception as e:
             self.log_error(f"{market} 스냅샷 요청 예외: {e}")
         return None
-
-    def _parse_snapshot_data(self, data: dict, symbol: str) -> dict:
-        """
-        스냅샷 데이터 파싱
-        """
-        try:
-            ts = data.get("ts", int(time.time()*1000))
-            seq = data.get("u", 0)
-            
-            # 원본 데이터 로깅
-            bids_count = len(data.get("b", []))
-            asks_count = len(data.get("a", []))
-            
-            # 심볼에서 USDT 제거
-            clean_symbol = symbol.replace("USDT", "")
-            
-            self.log_info(
-                f"{clean_symbol} 스냅샷 파싱 | "
-                f"원본 매수: {bids_count}건, 원본 매도: {asks_count}건, "
-                f"시퀀스: {seq}"
-            )
-            
-            bids = [[float(b[0]), float(b[1])] for b in data.get("b", [])]
-            asks = [[float(a[0]), float(a[1])] for a in data.get("a", [])]
-            
-            # 파싱 후 데이터 로깅
-            self.log_info(
-                f"{clean_symbol} 스냅샷 파싱 완료 | "
-                f"파싱 후 매수: {len(bids)}건, 파싱 후 매도: {len(asks)}건"
-            )
-            
-            return {
-                "exchangename": "bybitfuture",
-                "symbol": clean_symbol,
-                "bids": bids,
-                "asks": asks,
-                "timestamp": ts,
-                "sequence": seq,
-                "type": "snapshot"
-            }
-        except Exception as e:
-            self.log_error(f"{symbol} 스냅샷 파싱 실패: {e}")
-            return {}
 
     async def process_message(self, message: str) -> None:
         """

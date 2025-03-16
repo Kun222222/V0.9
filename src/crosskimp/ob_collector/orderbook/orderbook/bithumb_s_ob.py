@@ -10,6 +10,7 @@ from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET
 
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
+from crosskimp.ob_collector.orderbook.parser.bithumb_s_pa import BithumbParser
 
 # ============================
 # 빗썸 현물 오더북 관련 상수
@@ -164,6 +165,7 @@ class BithumbSpotOrderBookManager(BaseOrderBookManagerV2):
         self.ws = None  # 웹소켓 연결
         self.last_queue_log_time = {}  # 심볼 -> 마지막 큐 로깅 시간
         self.queue_log_interval = 5.0  # 5초마다 로깅
+        self.parser = BithumbParser()  # 파서 초기화
 
     async def start(self):
         """오더북 매니저 시작"""
@@ -214,69 +216,12 @@ class BithumbSpotOrderBookManager(BaseOrderBookManagerV2):
     def parse_snapshot(self, data: dict, symbol: str) -> dict:
         """스냅샷 데이터 파싱"""
         try:
-            # 데이터 추출
-            bids_data = data.get("bids", [])
-            asks_data = data.get("asks", [])
-            
-            # 유효한 가격/수량만 필터링
-            bids = []
-            for bid_item in bids_data:
-                # 딕셔너리 형태인 경우 (API 응답)
-                if isinstance(bid_item, dict):
-                    price = bid_item.get("price")
-                    quantity = bid_item.get("quantity")
-                # 리스트/튜플 형태인 경우 (이전 코드 호환성)
-                elif isinstance(bid_item, (list, tuple)) and len(bid_item) >= 2:
-                    price, quantity = bid_item
-                else:
-                    continue
-                    
-                try:
-                    price_float = float(price)
-                    quantity_float = float(quantity)
-                    if price_float > 0 and quantity_float > 0:
-                        bids.append([price_float, quantity_float])
-                except (ValueError, TypeError):
-                    logger.warning(f"{EXCHANGE_KR} 유효하지 않은 매수 데이터: {bid_item}")
-                    continue
-            
-            asks = []
-            for ask_item in asks_data:
-                # 딕셔너리 형태인 경우 (API 응답)
-                if isinstance(ask_item, dict):
-                    price = ask_item.get("price")
-                    quantity = ask_item.get("quantity")
-                # 리스트/튜플 형태인 경우 (이전 코드 호환성)
-                elif isinstance(ask_item, (list, tuple)) and len(ask_item) >= 2:
-                    price, quantity = ask_item
-                else:
-                    continue
-                    
-                try:
-                    price_float = float(price)
-                    quantity_float = float(quantity)
-                    if price_float > 0 and quantity_float > 0:
-                        asks.append([price_float, quantity_float])
-                except (ValueError, TypeError):
-                    logger.warning(f"{EXCHANGE_KR} 유효하지 않은 매도 데이터: {ask_item}")
-                    continue
-            
-            # 타임스탬프 추출 (밀리초 단위)
-            timestamp = int(data.get("timestamp", time.time() * 1000))
-            
-            # 결과 포맷팅
-            parsed = {
-                "symbol": symbol,
-                "exchangename": "bithumb",
-                "bids": bids,
-                "asks": asks,
-                "timestamp": timestamp,
-                "sequence": timestamp,  # 빗썸은 타임스탬프를 시퀀스로 사용
-                "type": "snapshot"
-            }
+            # 파서를 사용하여 스냅샷 데이터 파싱
+            parsed = self.parser.parse_snapshot_data(data, symbol)
             
             # 디버깅을 위한 로깅 추가
-            logger.debug(f"{EXCHANGE_KR} {symbol} 스냅샷 파싱 완료: 매수 {len(bids)}개, 매도 {len(asks)}개")
+            if parsed:
+                logger.debug(f"{EXCHANGE_KR} {symbol} 스냅샷 파싱 완료: 매수 {len(parsed.get('bids', []))}개, 매도 {len(parsed.get('asks', []))}개")
             
             return parsed
         except Exception as e:
@@ -322,19 +267,35 @@ class BithumbSpotOrderBookManager(BaseOrderBookManagerV2):
             is_valid = True
             error_messages = []
             
-            bids = snapshot_data.get("bids", [])
-            asks = snapshot_data.get("asks", [])
+            bids = []
+            asks = []
+            
+            # 파서에서 반환된 형식을 OrderBook 클래스에 맞게 변환
+            for bid in snapshot_data.get("bids", []):
+                price = bid.get("price", 0)
+                size = bid.get("size", 0)
+                bids.append([price, size])
+                
+            for ask in snapshot_data.get("asks", []):
+                price = ask.get("price", 0)
+                size = ask.get("size", 0)
+                asks.append([price, size])
             
             if bids and asks:
-                max_bid = max(bid[0] for bid in bids)
-                min_ask = min(ask[0] for ask in asks)
-                if max_bid >= min_ask:
+                best_bid = bids[0][0]
+                best_ask = asks[0][0]
+                
+                # 가격 역전 검사
+                if best_bid >= best_ask:
+                    error_msg = f"{EXCHANGE_KR} {symbol} 스냅샷 가격 역전 감지: 최고매수가({best_bid}) >= 최저매도가({best_ask})"
+                    logger.warning(error_msg)
                     is_valid = False
-                    error_messages.append(f"가격 역전 발생: 최고매수가({max_bid}) >= 최저매도가({min_ask})")
+                    error_messages.append(error_msg)
+                    
                     # 가격 역전 메트릭 기록
                     self.record_metric("error", error_type="price_inversion")
-                    logger.warning(f"{EXCHANGE_KR} {symbol} {error_messages[0]}")
             
+            # 스냅샷 적용
             if is_valid:
                 # 오더북 업데이트
                 ob.update_orderbook(
@@ -345,148 +306,179 @@ class BithumbSpotOrderBookManager(BaseOrderBookManagerV2):
                     is_snapshot=True
                 )
                 
-                # 역전 감지 활성화
-                ob.enable_cross_detection()
-                
-                # 큐로 데이터 전송
+                # 큐로 전송
                 await ob.send_to_queue()
                 
-                # 오더북 카운트 메트릭 업데이트
-                self.record_metric("orderbook", symbol=symbol)
+                # 구독 심볼 목록에 추가
+                self.subscribed_symbols.add(symbol)
                 
-                # 데이터 크기 메트릭 업데이트
-                data_size = len(str(snapshot))  # 간단한 크기 측정
-                self.record_metric("bytes", size=data_size)
+                logger.info(f"{EXCHANGE_KR} {symbol} 스냅샷 적용 완료 | 매수:{len(bids)}건, 매도:{len(asks)}건")
                 
-                logger.info(
-                    f"{EXCHANGE_KR} {symbol} 오더북 초기화 완료 | "
-                    f"seq={sequence}, 매수:{len(bids)}개, 매도:{len(asks)}개"
+                # 메트릭 기록
+                self.record_metric(
+                    event_type="snapshot",
+                    symbol=symbol
                 )
-            
-            return ValidationResult(is_valid, error_messages)
-            
+                
+                return ValidationResult(True)
+            else:
+                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 적용 실패: {error_messages}")
+                return ValidationResult(False, error_messages)
+                
         except Exception as e:
-            logger.error(f"{EXCHANGE_KR} {symbol} 오더북 초기화 오류: {e}", exc_info=True)
-            # 예외 발생 메트릭 기록
-            self.record_metric("error", error_type="exception")
-            return ValidationResult(False, [str(e)])
+            error_msg = f"{EXCHANGE_KR} {symbol} 오더북 초기화 실패: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return ValidationResult(False, [error_msg])
 
     async def update(self, symbol: str, data: dict) -> ValidationResult:
-        """웹소켓 메시지 처리"""
+        """
+        오더북 업데이트
+        
+        Args:
+            symbol: 심볼
+            data: 업데이트 데이터
+            
+        Returns:
+            ValidationResult: 업데이트 결과
+        """
         try:
-            # 오더북이 초기화되지 않은 경우 초기화
+            # 오더북이 없으면 초기화
             if symbol not in self.orderbooks:
-                result = await self.initialize_orderbook(symbol)
-                if not result.is_valid:
-                    return result
+                logger.info(f"{EXCHANGE_KR} {symbol} 오더북 초기화 필요")
+                return ValidationResult(False, ["오더북 초기화 필요"])
             
-            # 타임스탬프 추출 (시퀀스로 사용)
-            timestamp = data.get("timestamp", int(time.time() * 1000))
-            data["sequence"] = timestamp
-            
-            # 메시지 타입 확인
-            msg_type = data.get("type", "delta")
-            is_snapshot = (msg_type == "snapshot")
-            
-            # 오더북 객체 가져오기
             ob = self.orderbooks[symbol]
             
+            # 타임스탬프 및 시퀀스 추출
+            timestamp = data.get("timestamp", int(time.time() * 1000))
+            sequence = data.get("sequence", timestamp)  # 빗썸은 타임스탬프를 시퀀스로 사용
+            
+            # 업데이트 처리 여부 확인
+            if not ob.should_process_update(timestamp):
+                return ValidationResult(True)  # 무시해도 에러는 아님
+            
+            # 메시지 타입 확인
+            msg_type = data.get("type", "")
+            is_snapshot = (msg_type == "snapshot")
+            
+            # 파서에서 반환된 형식을 OrderBook 클래스에 맞게 변환
+            bids = []
+            asks = []
+            
+            for bid in data.get("bids", []):
+                price = bid.get("price", 0)
+                size = bid.get("size", 0)
+                bids.append([price, size])
+                
+            for ask in data.get("asks", []):
+                price = ask.get("price", 0)
+                size = ask.get("size", 0)
+                asks.append([price, size])
+            
+            # 원본 데이터 뎁스 로깅
+            logger.debug(
+                f"{EXCHANGE_KR} {symbol} 원본 데이터 | "
+                f"매수:{len(data.get('bids', []))}건, 매도:{len(data.get('asks', []))}건"
+            )
+            
+            # 오더북 업데이트
+            ob.update_orderbook(
+                bids=bids,
+                asks=asks,
+                timestamp=timestamp,
+                sequence=sequence,
+                is_snapshot=is_snapshot
+            )
+            
             # 빗썸 특화 검증: bid/ask가 모두 있는 경우에만 가격 순서 체크
-            is_valid = True
-            error_messages = []
-            
-            bids = data.get("bids", [])
-            asks = data.get("asks", [])
-            
-            if bids and asks:
-                max_bid = max(bid[0] for bid in bids)
-                min_ask = min(ask[0] for ask in asks)
-                if max_bid >= min_ask:
-                    is_valid = False
-                    error_messages.append(f"가격 역전 발생: 최고매수가({max_bid}) >= 최저매도가({min_ask})")
+            if ob.bids and ob.asks:
+                best_bid = ob.bids[0][0]
+                best_ask = ob.asks[0][0]
+                
+                # 가격 역전 검사
+                if best_bid >= best_ask:
+                    logger.warning(
+                        f"{EXCHANGE_KR} {symbol} 가격 역전 발생: "
+                        f"최고매수가({best_bid}) >= 최저매도가({best_ask})"
+                    )
                     # 가격 역전 메트릭 기록
                     self.record_metric("error", error_type="price_inversion")
-                    logger.warning(f"{EXCHANGE_KR} {symbol} {error_messages[0]}")
             
-            if is_valid:
-                # 오더북 업데이트
-                ob.update_orderbook(
-                    bids=bids,
-                    asks=asks,
-                    timestamp=timestamp,
-                    sequence=timestamp,
-                    is_snapshot=is_snapshot
+            # 메트릭 기록
+            self.record_metric(
+                event_type="orderbook",
+                symbol=symbol
+            )
+            
+            # 큐로 전송
+            await ob.send_to_queue()
+            
+            # 로깅 간격 제한 (5초마다)
+            current_time = time.time()
+            if symbol not in self.last_queue_log_time or (current_time - self.last_queue_log_time[symbol]) >= self.queue_log_interval:
+                logger.debug(
+                    f"{EXCHANGE_KR} {symbol} 오더북 업데이트 | "
+                    f"매수:{len(ob.bids)}건, 매도:{len(ob.asks)}건, "
+                    f"타임스탬프:{timestamp}"
                 )
-                
-                # 큐로 데이터 전송 추가
-                await ob.send_to_queue()
-                
-                # 오더북 카운트 메트릭 업데이트
-                self.record_metric("orderbook", symbol=symbol)
-                
-                # 데이터 크기 메트릭 업데이트
-                data_size = len(str(data))  # 간단한 크기 측정
-                self.record_metric("bytes", size=data_size)
-                
-                # 로깅 주기 체크
-                current_time = time.time()
-                last_log_time = self.last_queue_log_time.get(symbol, 0)
-                if current_time - last_log_time >= self.queue_log_interval:
-                    # 오더북 크기 정보 추가
-                    logger.debug(
-                        f"{EXCHANGE_KR} {symbol} 오더북 업데이트 | "
-                        f"seq={timestamp}, 매수:{len(ob.bids)}개, 매도:{len(ob.asks)}개"
-                    )
-                    self.last_queue_log_time[symbol] = current_time
+                self.last_queue_log_time[symbol] = current_time
             
-            return ValidationResult(is_valid, error_messages)
+            return ValidationResult(True)
             
         except Exception as e:
-            logger.error(f"{EXCHANGE_KR} {symbol} 오더북 업데이트 오류: {e}", exc_info=True)
-            # 예외 발생 메트릭 기록
-            self.record_metric("error", error_type="exception")
-            return ValidationResult(False, [str(e)])
+            logger.error(f"{EXCHANGE_KR} {symbol} 오더북 업데이트 실패: {str(e)}", exc_info=True)
+            return ValidationResult(False, [f"업데이트 실패: {str(e)}"])
 
     async def subscribe(self, symbol: str):
-        """심볼 구독 - 오더북 초기화 및 웹소켓 구독"""
-        if symbol in self.subscribed_symbols:
-            return
-            
-        # 오더북 초기화
-        await self.initialize_orderbook(symbol)
+        """
+        심볼 구독 (스냅샷 요청 및 적용)
         
-        # 웹소켓 구독
-        if self.ws:
-            await self.ws.subscribe_depth(symbol)
-            self.subscribed_symbols.add(symbol)
-            logger.info(f"{EXCHANGE_KR} {symbol} 웹소켓 구독 완료")
-        else:
-            logger.error(f"{EXCHANGE_KR} {symbol} 웹소켓 구독 실패: 웹소켓 연결 없음")
+        Args:
+            symbol: 구독할 심볼
+        """
+        try:
+            # 이미 구독 중인 경우 스킵
+            if symbol in self.subscribed_symbols:
+                logger.debug(f"{EXCHANGE_KR} {symbol} 이미 구독 중")
+                return
+                
+            # 스냅샷 요청 및 적용
+            snapshot = await self.fetch_snapshot(symbol)
+            if snapshot:
+                result = await self.initialize_orderbook(symbol, snapshot)
+                if not result.is_valid:
+                    logger.error(f"{EXCHANGE_KR} {symbol} 구독 실패: {result.error_messages}")
+            else:
+                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 요청 실패")
+                
+        except Exception as e:
+            logger.error(f"{EXCHANGE_KR} {symbol} 구독 중 오류: {str(e)}", exc_info=True)
 
     def set_websocket(self, ws):
         """웹소켓 연결 설정"""
         self.ws = ws
         logger.info(f"{EXCHANGE_KR} 웹소켓 연결 설정 완료")
-        
+
     def is_initialized(self, symbol: str) -> bool:
         """심볼 초기화 여부 확인"""
         return symbol in self.orderbooks
-        
+
     def get_orderbook(self, symbol: str) -> Optional[BithumbSpotOrderBook]:
-        """심볼 오더북 객체 반환"""
+        """심볼 오더북 가져오기"""
         return self.orderbooks.get(symbol)
-        
+
     def clear_symbol(self, symbol: str) -> None:
         """심볼 데이터 제거"""
-        self.orderbooks.pop(symbol, None)
-        self.subscribed_symbols.discard(symbol)
-        self.last_queue_log_time.pop(symbol, None)
-        logger.info(f"{EXCHANGE_KR} {symbol} 심볼 데이터 제거 완료")
-        
+        if symbol in self.orderbooks:
+            self.orderbooks.pop(symbol)
+            self.subscribed_symbols.discard(symbol)
+            logger.info(f"{EXCHANGE_KR} {symbol} 데이터 제거됨")
+        else:
+            logger.warning(f"{EXCHANGE_KR} {symbol} 데이터가 없어 제거할 수 없음")
+
     def clear_all(self) -> None:
-        """모든 심볼 데이터 제거"""
-        syms = list(self.orderbooks.keys())
+        """모든 데이터 제거"""
+        symbols = list(self.orderbooks.keys())
         self.orderbooks.clear()
         self.subscribed_symbols.clear()
-        self.last_queue_log_time.clear()
-        logger.info(f"{EXCHANGE_KR} 전체 심볼 데이터 제거 완료: {syms}")
+        logger.info(f"{EXCHANGE_KR} 전체 데이터 제거됨 | symbols={symbols}")

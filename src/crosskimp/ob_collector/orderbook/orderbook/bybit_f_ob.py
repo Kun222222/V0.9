@@ -2,12 +2,14 @@
 
 import asyncio
 import time
+import json
 from typing import Dict, List, Optional
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import OrderBookV2, ValidationResult, BaseOrderBookManagerV2
+from crosskimp.ob_collector.orderbook.parser.bybit_f_pa import BybitFutureParser
 
 # ============================
 # 바이빗 선물 오더북 관련 상수
@@ -75,6 +77,17 @@ class BybitFutureOrderBook(OrderBookV2):
                     f"{EXCHANGE_KR} {self.symbol} 큐 전송 실패: {str(e)}", 
                     exc_info=True
                 )
+
+    def to_dict(self) -> dict:
+        """오더북 데이터를 딕셔너리로 변환 (부모 클래스 메서드 오버라이드)"""
+        return {
+            "exchangename": self.exchangename,
+            "symbol": self.symbol,
+            "bids": self.bids[:10],  # 상위 10개만
+            "asks": self.asks[:10],  # 상위 10개만
+            "timestamp": self.last_update_time or int(time.time() * 1000),
+            "sequence": self.last_sequence  # last_update_id 대신 last_sequence 사용
+        }
 
     def update_orderbook(self, bids: List[List[float]], asks: List[List[float]], 
                         timestamp: Optional[int] = None, sequence: Optional[int] = None,
@@ -172,6 +185,7 @@ class BybitFutureOrderBookManager(BaseOrderBookManagerV2):
         self.orderbooks: Dict[str, BybitFutureOrderBook] = {}  # BybitFutureOrderBook 사용
         # output_queue는 부모 클래스의 _output_queue를 사용
         self.ws = None  # 웹소켓 연결 객체
+        self.parser = BybitFutureParser()  # 파서 초기화
         
     def set_websocket(self, ws):
         """웹소켓 연결 설정"""
@@ -190,6 +204,20 @@ class BybitFutureOrderBookManager(BaseOrderBookManagerV2):
         
     async def update(self, symbol: str, data: dict) -> ValidationResult:
         try:
+            # 파서를 사용하여 데이터 파싱
+            parsed_data = self.parser.parse_message(json.dumps(data))
+            if not parsed_data:
+                logger.debug(f"{EXCHANGE_KR} {symbol} 파싱 실패 또는 무시된 메시지")
+                return ValidationResult(True)  # 무시해도 에러는 아님
+                
+            # 파싱된 데이터에서 필요한 정보 추출
+            symbol = parsed_data.get("symbol", symbol)
+            bids = parsed_data.get("bids", [])
+            asks = parsed_data.get("asks", [])
+            timestamp = parsed_data.get("timestamp")
+            sequence = parsed_data.get("sequence")
+            msg_type = parsed_data.get("type", "delta")
+            
             # 오더북이 없으면 생성
             if symbol not in self.orderbooks:
                 self.orderbooks[symbol] = BybitFutureOrderBook(
@@ -203,50 +231,20 @@ class BybitFutureOrderBookManager(BaseOrderBookManagerV2):
                 logger.info(f"{EXCHANGE_KR} {symbol} 오더북 초기화")
             
             ob = self.orderbooks[symbol]
-            msg_type = data.get("type", "")
-            
-            # 시퀀스 및 타임스탬프
-            sequence = data.get("sequence")
-            timestamp = data.get("timestamp", int(time.time() * 1000))
             
             # 업데이트 처리 여부 확인
             if not ob.should_process_update(sequence, timestamp):
                 return ValidationResult(True)  # 무시해도 에러는 아님
             
-            # bids 업데이트
-            bids = []
-            for bid_data in data.get("bids", []):
-                try:
-                    if len(bid_data) >= 2:
-                        price = float(bid_data[0])
-                        qty = float(bid_data[1])
-                        if qty > 0:  # qty가 0이면 무시 (삭제)
-                            bids.append([price, qty])
-                except (ValueError, TypeError) as e:
-                    logger.error(f"{EXCHANGE_KR} {symbol} 매수호가 파싱 오류: {bid_data}, 오류: {e}")
-            
-            # asks 업데이트
-            asks = []
-            for ask_data in data.get("asks", []):
-                try:
-                    if len(ask_data) >= 2:
-                        price = float(ask_data[0])
-                        qty = float(ask_data[1])
-                        if qty > 0:  # qty가 0이면 무시 (삭제)
-                            asks.append([price, qty])
-                except (ValueError, TypeError) as e:
-                    logger.error(f"{EXCHANGE_KR} {symbol} 매도호가 파싱 오류: {ask_data}, 오류: {e}")
+            # 정렬
+            bids.sort(key=lambda x: x[0], reverse=True)  # 가격 내림차순
+            asks.sort(key=lambda x: x[0])  # 가격 오름차순
             
             # 원본 데이터 뎁스 로깅
             logger.debug(
                 f"{EXCHANGE_KR} {symbol} 원본 데이터 | "
-                f"매수:{len(data.get('bids', []))}건, 매도:{len(data.get('asks', []))}건, "
-                f"파싱 후 매수:{len(bids)}건, 매도:{len(asks)}건"
+                f"매수:{len(bids)}건, 매도:{len(asks)}건"
             )
-            
-            # 정렬
-            bids.sort(key=lambda x: x[0], reverse=True)  # 가격 내림차순
-            asks.sort(key=lambda x: x[0])  # 가격 오름차순
             
             # 오더북 업데이트 (depth 제한은 update_orderbook 내부에서 처리)
             is_snapshot = (msg_type == "snapshot")
@@ -285,26 +283,8 @@ class BybitFutureOrderBookManager(BaseOrderBookManagerV2):
                 symbol=symbol
             )
             
-            # 큐로 전송 (직접 전송 방식으로 변경)
-            if self._output_queue and not is_snapshot:  # 스냅샷은 이미 위에서 전송했으므로 중복 방지
-                orderbook_data = {
-                    "exchangename": self.exchangename,
-                    "symbol": symbol,
-                    "bids": ob.bids[:10],
-                    "asks": ob.asks[:10],
-                    "timestamp": timestamp,
-                    "sequence": sequence
-                }
-                await self._output_queue.put((self.exchangename, orderbook_data))
-                # 디버그 로깅 추가
-                logger.debug(f"{EXCHANGE_KR} {symbol} 오더북 데이터 큐 전송 완료 (큐 ID: {id(self._output_queue)})")
-            
-            # 뎁스가 10 미만인 경우 경고 로깅
-            if len(ob.bids) < 10 or len(ob.asks) < 10:
-                logger.warning(
-                    f"{EXCHANGE_KR} {symbol} 비정상 뎁스 감지 | "
-                    f"매수:{len(ob.bids)}건, 매도:{len(ob.asks)}건"
-                )
+            # 큐로 전송
+            await ob.send_to_queue()
             
             # DEBUG 레벨로 변경하여 스팸 로깅 감소
             logger.debug(

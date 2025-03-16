@@ -12,6 +12,7 @@ from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET
 
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
+from crosskimp.ob_collector.orderbook.parser.binance_s_pa import BinanceParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -164,23 +165,27 @@ class BinanceOrderBook(OrderBookV2):
 
 class BinanceSpotOrderBookManager(BaseOrderBookManagerV2):
     """
-    바이낸스 현물 오더북 매니저 (V2)
-    - depth=500
-    - 시퀀스 기반 업데이트 관리
+    바이낸스 현물 오더북 매니저
+    - 웹소켓으로부터 스냅샷/델타 데이터 수신
+    - 시퀀스 ID 기반 관리
     - REST API 스냅샷 요청 및 적용
-    - C++ 직접 전송 지원
     """
-
     def __init__(self, depth: int = BINANCE_CONFIG["default_depth"]):
+        """초기화"""
         super().__init__(depth)
         self.exchangename = EXCHANGE_CODE
-        self.snapshot_url = BINANCE_CONFIG["api_urls"]["depth"]
+        self.parser = BinanceParser()  # 파서 초기화
+        self.snapshot_url = self.parser.snapshot_url  # 파서에서 스냅샷 URL 가져오기
+        self.orderbooks: Dict[str, BinanceOrderBook] = {}
+        self.event_buffers: Dict[str, List[Dict]] = {}
+        self.initialized: Dict[str, bool] = {}
+        self.last_update_ids: Dict[str, int] = {}
+        self.ws = None
         
         # 버퍼 및 시퀀스 관리 초기화
         self.buffer_events: Dict[str, List[dict]] = {}
         self.sequence_states: Dict[str, Dict] = {}
         self.initialization_locks: Dict[str, asyncio.Lock] = {}
-        self.orderbooks: Dict[str, BinanceOrderBook] = {}  # BinanceOrderBook 사용
         
         # 로깅 제어를 위한 상태 추가
         self.last_queue_log_time: Dict[str, float] = {}
@@ -191,9 +196,6 @@ class BinanceSpotOrderBookManager(BaseOrderBookManagerV2):
         
         # 버퍼 크기 제한 설정
         self.max_buffer_size = 1000  # 최대 버퍼 크기
-        
-        # 웹소켓 연결 객체
-        self.ws = None
         
     def set_websocket(self, ws):
         """웹소켓 연결 설정"""
@@ -424,39 +426,15 @@ class BinanceSpotOrderBookManager(BaseOrderBookManagerV2):
             # 스냅샷 데이터 로깅
             logger.info(f"{EXCHANGE_KR} {symbol} 스냅샷 데이터 키: {list(data.keys())}")
             
-            if "lastUpdateId" not in data:
-                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷에 lastUpdateId가 없음")
-                # 테스트를 위해 lastUpdateId 추가
-                data["lastUpdateId"] = int(time.time() * 1000)
-                logger.info(f"{EXCHANGE_KR} {symbol} 테스트를 위해 lastUpdateId 추가: {data['lastUpdateId']}")
-
-            last_id = data["lastUpdateId"]
-            bids, asks = [], []
-            for b in data.get("bids", []):
-                try:
-                    px, qty = float(b[0]), float(b[1])
-                    if px > 0 and qty > 0:
-                        bids.append([px, qty])
-                except Exception as e:
-                    logger.error(f"{EXCHANGE_KR} {symbol} 매수 호가 파싱 오류: {e}, 데이터: {b}")
-                    
-            for a in data.get("asks", []):
-                try:
-                    px, qty = float(a[0]), float(a[1])
-                    if px > 0 and qty > 0:
-                        asks.append([px, qty])
-                except Exception as e:
-                    logger.error(f"{EXCHANGE_KR} {symbol} 매도 호가 파싱 오류: {e}, 데이터: {a}")
-
-            if not bids or not asks:
-                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 매수/매도 데이터 없음")
+            # 파서를 사용하여 스냅샷 데이터 파싱
+            parsed = self.parser.parse_snapshot_data(data, symbol)
+            
+            if not parsed:
+                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 파싱 실패")
                 return None
-
-            return {
-                "lastUpdateId": last_id,
-                "bids": bids,
-                "asks": asks
-            }
+                
+            return parsed
+            
         except Exception as e:
             logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 파싱 오류: {e}")
             return None

@@ -228,8 +228,12 @@ class WebsocketManager:
                 # 메시지 타입 판별 및 큐 데이터 로깅
                 msg_type = self._determine_message_type(data)
                 
-                # 큐 로깅 (1000개마다 로깅 상태 출력)
-                queue_logger.info(f"{exchange} {data}")
+                # 큐 로깅 (디버그 모드에서만 로깅하거나 필요한 경우에만 로깅)
+                # 모든 메시지를 로깅하면 로그 파일이 너무 커지고 중복 로깅이 발생할 수 있음
+                if self.settings.get("monitoring", {}).get("debug_logging", False):
+                    queue_logger.info(f"{exchange} {data}")
+                
+                # 처리 개수 로깅 (1000개마다)
                 if processed_count % 1000 == 0:
                     logger.info(f"{LOG_SYSTEM} 큐 처리 진행 상황: {processed_count}개 처리됨")
                 

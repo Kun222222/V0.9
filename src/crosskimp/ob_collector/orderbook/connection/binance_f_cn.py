@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.parser.binance_f_pa import BinanceFutureParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -61,12 +62,15 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
         """
         super().__init__(settings, EXCHANGE_CODE)
         
+        # 파서 초기화
+        self.parser = BinanceFutureParser()
+        
         # 웹소켓 URL 설정
-        self.ws_base = WS_BASE_URL
-        self.snapshot_base = REST_BASE_URL
+        self.ws_base = self.parser.ws_base_url
+        self.snapshot_base = self.parser.snapshot_url
         
         # 오더북 관련 설정
-        self.update_speed = UPDATE_SPEED
+        self.update_speed = self.parser.update_speed
         self.snapshot_depth = settings.get("depth", DEFAULT_DEPTH)
         
         # 연결 관련 설정
@@ -211,26 +215,18 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             Optional[dict]: 파싱된 스냅샷 데이터 또는 None (파싱 실패 시)
         """
         try:
-            if "lastUpdateId" not in data:
-                self.log_error(f"{symbol} 'lastUpdateId' 없음")
+            # 파서를 사용하여 스냅샷 데이터 파싱
+            snapshot = self.parser.parse_snapshot_data(data, symbol)
+            
+            if not snapshot:
+                self.log_error(f"{symbol} 스냅샷 파싱 실패")
                 return None
-
-            last_id = data["lastUpdateId"]
-            bids = [[float(b[0]), float(b[1])] for b in data.get("bids", []) if float(b[0])>0 and float(b[1])>0]
-            asks = [[float(a[0]), float(a[1])] for a in data.get("asks", []) if float(a[0])>0 and float(a[1])>0]
-
-            snapshot = {
-                "exchangename": "binancefuture",
-                "symbol": symbol,
-                "bids": bids,
-                "asks": asks,
-                "timestamp": int(time.time()*1000),
-                "lastUpdateId": last_id,
-                "type": "snapshot"
-            }
+                
             if self.connection_status_callback:
                 self.connection_status_callback(self.exchangename, "snapshot_parsed")
+                
             return snapshot
+            
         except Exception as e:
             self.log_error(f"parse_snapshot() 예외: {e}", exc_info=True)
             return None
@@ -326,16 +322,8 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
         # 구독할 심볼 목록 초기화
         self.subscribed_symbols = set()
         
-        # 웹소켓 URL 초기화
-        streams = []
-        for sym in symbols:
-            sym_lower = sym.lower()
-            if not sym_lower.endswith("usdt"):
-                sym_lower += "usdt"
-            streams.append(f"{sym_lower}@depth@{self.update_speed}")
-            
-        combined = "/".join(streams)
-        self.wsurl = self.ws_base + combined
+        # 웹소켓 URL 초기화 - 파서 사용
+        self.wsurl = self.parser.create_subscribe_message(symbols)
         self.log_info(f"웹소켓 URL 설정 완료: {self.wsurl[:50]}...")
         
         # 세션 초기화

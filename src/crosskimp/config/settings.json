@@ -206,6 +206,7 @@
     "port": 8000,
     "host": "localhost",
     "update_interval_ms": 1000,
+    "debug_logging": true,
     "metrics": {
       "system": true,
       "network": true,

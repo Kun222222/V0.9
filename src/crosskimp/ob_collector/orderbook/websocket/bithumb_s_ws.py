@@ -10,6 +10,7 @@ from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
+from crosskimp.ob_collector.orderbook.parser.bithumb_s_pa import BithumbParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -28,72 +29,6 @@ SYMBOL_SUFFIX = BITHUMB_CONFIG["symbol_suffix"]  # 심볼 접미사
 # 빗썸 특화 설정
 BITHUMB_MESSAGE_TYPE = BITHUMB_CONFIG["message_type_depth"]  # 오더북 메시지 타입
 
-def parse_bithumb_depth_update(msg_data: dict) -> Optional[dict]:
-    """
-    빗썸 오더북 메시지 파싱
-    
-    Args:
-        msg_data: 원본 메시지 데이터
-        
-    Returns:
-        파싱된 오더북 데이터 또는 None
-    """
-    try:
-        # 메시지 타입 확인
-        content_type = msg_data.get("type")
-        if content_type != BITHUMB_MESSAGE_TYPE:
-            return None
-            
-        # 심볼 추출
-        symbol_raw = msg_data.get("symbol", "")
-        if not symbol_raw or not symbol_raw.endswith(SYMBOL_SUFFIX):
-            return None
-            
-        # KRW 제거하여 심볼 정규화
-        symbol = symbol_raw.replace(SYMBOL_SUFFIX, "").upper()
-        
-        # 데이터 추출
-        data = msg_data.get("content", {})
-        if not data:
-            return None
-            
-        # 타임스탬프 추출 (밀리초)
-        timestamp = int(data.get("datetime", 0))
-        
-        # 호가 데이터 추출
-        bids_data = data.get("bids", [])
-        asks_data = data.get("asks", [])
-        
-        # 호가 변환
-        bids = []
-        for bid in bids_data:
-            price = float(bid.get("price", 0))
-            quantity = float(bid.get("quantity", 0))
-            if price > 0 and quantity > 0:
-                bids.append([price, quantity])
-                
-        asks = []
-        for ask in asks_data:
-            price = float(ask.get("price", 0))
-            quantity = float(ask.get("quantity", 0))
-            if price > 0 and quantity > 0:
-                asks.append([price, quantity])
-        
-        # 결과 반환
-        return {
-            "exchangename": EXCHANGE_CODE,
-            "symbol": symbol,
-            "bids": bids,
-            "asks": asks,
-            "timestamp": timestamp,
-            "sequence": timestamp,  # 빗썸은 타임스탬프를 시퀀스로 사용
-            "type": "snapshot"  # 빗썸은 항상 전체 스냅샷 방식
-        }
-        
-    except Exception as e:
-        logger.error(f"빗썸 오더북 메시지 파싱 오류: {str(e)}", exc_info=True)
-        return None
-
 class BithumbSpotWebsocket(BithumbWebSocketConnector):
     """
     빗썸 현물 웹소켓 클라이언트
@@ -106,6 +41,7 @@ class BithumbSpotWebsocket(BithumbWebSocketConnector):
         super().__init__(settings)
         self.manager = BithumbSpotOrderBookManager(depth=self.depth)
         self.manager.set_websocket(self)  # 웹소켓 연결 설정
+        self.parser = BithumbParser()  # 파서 초기화
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)
@@ -195,6 +131,11 @@ class BithumbSpotWebsocket(BithumbWebSocketConnector):
             str: 추출된 심볼명 (KRW 접미사 제거 및 대문자 변환)
         """
         try:
+            symbol_raw = parsed.get("symbol", "")
+            if symbol_raw and symbol_raw.endswith(SYMBOL_SUFFIX):
+                return symbol_raw.replace(SYMBOL_SUFFIX, "").upper()
+                
+            # 이전 방식 호환성 유지
             content = parsed.get("content", {})
             order_list = content.get("list", [])
             if order_list:
@@ -212,8 +153,8 @@ class BithumbSpotWebsocket(BithumbWebSocketConnector):
             parsed: 파싱된 메시지 데이터
         """
         try:
-            # 메시지를 공통 포맷으로 변환
-            evt = parse_bithumb_depth_update(parsed)
+            # 파서를 사용하여 메시지 파싱
+            evt = self.parser.parse_message(json.dumps(parsed))
             if evt:
                 symbol = evt["symbol"]
                 # 오더북 매니저를 통해 업데이트 수행

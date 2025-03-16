@@ -10,6 +10,7 @@ from websockets import connect
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.parser.bithumb_s_pa import BithumbParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -64,6 +65,9 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         # 재연결 관련 속성 추가
         self.reconnect_count = 0
         self.last_reconnect_time = 0
+        
+        # 파서 초기화
+        self.parser = BithumbParser()
 
     async def connect(self):
         """
@@ -116,18 +120,15 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         # 구독 메시지 전송
         if symbols and self.ws and self.is_connected:
             try:
-                # 빗썸 형식으로 심볼 변환 (예: BTC -> BTC_KRW)
-                symbol_list = [f"{s.upper()}{SYMBOL_SUFFIX}" for s in symbols]
-                # 구독 메시지 구성
-                sub_msg = {
-                    "type": BITHUMB_MESSAGE_TYPE,
-                    "symbols": symbol_list,
-                    "tickTypes": BITHUMB_CONFIG["tick_types"]
-                }
+                # 파서를 사용하여 구독 메시지 생성
+                sub_msg = self.parser.create_subscribe_message(symbols)
+                
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "subscribe")
+                    
                 # 웹소켓을 통해 구독 메시지 전송
                 await self.ws.send(json.dumps(sub_msg))
+                
                 if self.connection_status_callback:
                     self.connection_status_callback(self.exchangename, "subscribe_complete")
                 
@@ -304,15 +305,8 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
             return
             
         try:
-            # 빗썸 형식으로 심볼 변환 (예: BTC -> BTC_KRW)
-            symbol_str = f"{symbol.upper()}{SYMBOL_SUFFIX}"
-            
-            # 구독 메시지 구성
-            sub_msg = {
-                "type": BITHUMB_MESSAGE_TYPE,
-                "symbols": [symbol_str],
-                "tickTypes": BITHUMB_CONFIG["tick_types"]
-            }
+            # 파서를 사용하여 구독 메시지 생성
+            sub_msg = self.parser.create_subscribe_message([symbol])
             
             # 웹소켓을 통해 구독 메시지 전송
             await self.ws.send(json.dumps(sub_msg))

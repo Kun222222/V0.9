@@ -8,6 +8,7 @@ from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.connection.bybit_s_cn import BybitWebSocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bybit_s_ob import BybitSpotOrderBookManager
+from crosskimp.ob_collector.orderbook.parser.bybit_s_pa import BybitParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -22,43 +23,6 @@ BYBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이빗 설정
 # 오더북 관련 설정
 DEFAULT_DEPTH = BYBIT_CONFIG["default_depth"]  # 기본 오더북 깊이
 
-def parse_bybit_depth_update(data: dict) -> Optional[dict]:
-    """
-    Bybit에서 온 depth 메시지를 파싱 (바이낸스와 유사한 형태로 리턴)
-    """
-    try:
-        topic = data.get("topic", "")
-        if "orderbook" not in topic:
-            return None
-
-        parts = topic.split(".")
-        if len(parts) < 3:
-            return None
-
-        sym_str = parts[-1]  # 예: "BTCUSDT"
-        symbol = sym_str.replace("USDT", "")  # 예: "BTC"
-        msg_type = data.get("type", "delta").lower()  # "snapshot" or "delta"
-        ob_data = data.get("data", {})
-
-        seq = ob_data.get("u", 0)
-        ts = data.get("ts", int(time.time() * 1000))
-        
-        # 바이낸스 형식으로 변환
-        result = {
-            "e": "depthUpdate",
-            "E": ts,
-            "s": symbol,
-            "U": seq - 1,  # 바이낸스 형식에 맞춰 시작 시퀀스 설정
-            "u": seq,
-            "b": ob_data.get("b", []),  # bids
-            "a": ob_data.get("a", [])   # asks
-        }
-        
-        return result
-    except Exception as e:
-        logger.error(f"메시지 파싱 실패: {str(e)}")
-        return None
-
 class BybitSpotWebsocket(BybitWebSocketConnector):
     """
     Bybit 현물 WebSocket
@@ -71,6 +35,9 @@ class BybitSpotWebsocket(BybitWebSocketConnector):
         self.depth_level = settings.get("depth", DEFAULT_DEPTH)
         self.ob_manager = BybitSpotOrderBookManager(self.depth_level)
         self.ob_manager.set_websocket(self)  # 웹소켓 연결 설정
+        
+        # 파서 초기화
+        self.parser = BybitParser()
         
         # 메시지 처리 통계
         self._raw_log_count = 0
@@ -165,12 +132,6 @@ class BybitSpotWebsocket(BybitWebSocketConnector):
                 return
 
             symbol = topic.split(".")[-1].replace("USDT", "")
-            msg_type = parsed.get("type", "unknown")
-            
-            try:
-                parsed_data = parse_bybit_depth_update(parsed)
-            except Exception as e:
-                self.log_error(f"데이터 파싱 실패: {str(e)}")
             
             start_time = time.time()
             await self.ob_manager.update(symbol, parsed)

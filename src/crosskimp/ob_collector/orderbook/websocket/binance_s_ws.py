@@ -10,6 +10,7 @@ from crosskimp.config.ob_constants import Exchange, WebSocketState, STATUS_EMOJI
 
 from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.binance_s_ob import BinanceSpotOrderBookManager
+from crosskimp.ob_collector.orderbook.parser.binance_s_pa import BinanceParser
 
 # ============================
 # 바이낸스 현물 웹소켓 관련 상수
@@ -21,40 +22,6 @@ BINANCE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 설정
 # 오더북 관련 설정
 DEFAULT_DEPTH = BINANCE_CONFIG["default_depth"]  # 기본 오더북 깊이
 DEPTH_UPDATE_STREAM = BINANCE_CONFIG["depth_update_stream"]  # 깊이 업데이트 스트림 형식
-
-def parse_binance_depth_update(msg_data: dict) -> Optional[dict]:
-    if msg_data.get("e") != "depthUpdate":
-        return None
-    symbol_raw = msg_data.get("s", "")
-    symbol = symbol_raw.replace("USDT", "").upper()
-
-    b_data = msg_data.get("b", [])
-    a_data = msg_data.get("a", [])
-    event_time = msg_data.get("E", 0)
-    first_id = msg_data.get("U", 0)
-    final_id = msg_data.get("u", 0)
-
-    bids, asks = [], []
-    for b in b_data:
-        px, qty = float(b[0]), float(b[1])
-        if px > 0 and qty != 0:
-            bids.append([px, qty])
-    for a in a_data:
-        px, qty = float(a[0]), float(a[1])
-        if px > 0 and qty != 0:
-            asks.append([px, qty])
-
-    return {
-        "exchangename": "binance",
-        "symbol": symbol,
-        "bids": bids,
-        "asks": asks,
-        "timestamp": event_time,
-        "first_update_id": first_id,
-        "final_update_id": final_id,
-        "sequence": final_id,
-        "type": "delta"
-    }
 
 class BinanceSpotWebsocket(BinanceWebSocketConnector):
     """
@@ -69,6 +36,7 @@ class BinanceSpotWebsocket(BinanceWebSocketConnector):
         self.manager = BinanceSpotOrderBookManager(depth=settings.get("depth", DEFAULT_DEPTH))
         self.manager.set_websocket(self)  # 웹소켓 연결 설정
         self.set_manager(self.manager)  # 부모 클래스에 매니저 설정
+        self.parser = BinanceParser()  # 파서 초기화
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """출력 큐 설정"""
@@ -146,7 +114,8 @@ class BinanceSpotWebsocket(BinanceWebSocketConnector):
 
     async def handle_parsed_message(self, parsed: dict) -> None:
         try:
-            evt = parse_binance_depth_update(parsed)
+            # 파서를 사용하여 메시지 파싱
+            evt = self.parser.parse_message(json.dumps(parsed))
             if evt:
                 symbol = evt["symbol"]
                 res = await self.manager.update(symbol, evt)

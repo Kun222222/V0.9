@@ -3,12 +3,14 @@ import time
 from typing import Dict, Optional, List, Any, Tuple
 from dataclasses import dataclass
 import aiohttp
+import json
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
+from crosskimp.ob_collector.orderbook.parser.binance_f_pa import BinanceFutureParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -85,49 +87,7 @@ async def get_global_aiohttp_session() -> aiohttp.ClientSession:
             logger.info(f"{EXCHANGE_KR} 새로운 글로벌 aiohttp 세션 생성")
         return GLOBAL_AIOHTTP_SESSION
 
-def parse_binance_future_depth_update(msg_data: dict) -> Optional[dict]:
-    """
-    Binance Future depthUpdate 메시지를 공통 포맷으로 변환
-    
-    Args:
-        msg_data: 바이낸스 선물 depthUpdate 메시지
-        
-    Returns:
-        dict: 변환된 메시지 (None: 변환 실패)
-    """
-    if msg_data.get("e") != "depthUpdate":
-        return None
-    
-    symbol_raw = msg_data.get("s", "")
-    symbol = symbol_raw.replace("USDT", "").upper()
-
-    b_data = msg_data.get("b", [])
-    a_data = msg_data.get("a", [])
-    event_time = msg_data.get("E", 0)
-    transaction_time = msg_data.get("T", 0)  # 트랜잭션 시간 추가
-    first_id = msg_data.get("U", 0)
-    final_id = msg_data.get("u", 0)
-    prev_final_id = msg_data.get("pu", 0)  # 이전 final_update_id (바이낸스 선물 전용)
-
-    # 숫자 변환 및 0 이상 필터링
-    bids = [[float(b[0]), float(b[1])] for b in b_data if float(b[0]) > 0 and float(b[1]) != 0]
-    asks = [[float(a[0]), float(a[1])] for a in a_data if float(a[0]) > 0 and float(a[1]) != 0]
-
-    return {
-        "exchangename": "binancefuture",
-        "symbol": symbol,
-        "bids": bids,
-        "asks": asks,
-        "timestamp": event_time,
-        "transaction_time": transaction_time,  # 트랜잭션 시간 추가
-        "first_update_id": first_id,
-        "final_update_id": final_id,
-        "prev_final_update_id": prev_final_id,  # 이전 final_update_id 추가
-        "sequence": final_id,
-        "type": "delta"
-    }
-
-class BinanceFutureOrderBookV2(OrderBookV2):
+class BinanceFutureOrderBook(OrderBookV2):
     """
     바이낸스 선물 전용 오더북 클래스 (V2)
     - 시퀀스 기반 업데이트 관리
@@ -246,11 +206,14 @@ class BinanceFutureOrderBookV2(OrderBookV2):
                         f"{spread_pct:.2f}% (매수: {highest_bid}, 매도: {lowest_ask})"
                     )
                 
-            # C++로 데이터 직접 전송
-            asyncio.create_task(self.send_to_cpp())
-            
-            # 큐로 데이터 전송 (추가)
-            asyncio.create_task(self.send_to_queue())
+            # 스냅샷인 경우에만 C++와 큐로 데이터 전송
+            # 델타 업데이트는 update 메서드에서 처리
+            if is_snapshot:
+                # C++로 데이터 직접 전송
+                asyncio.create_task(self.send_to_cpp())
+                
+                # 큐로 데이터 전송 - 중복 로깅 방지를 위해 주석 처리
+                # asyncio.create_task(self.send_to_queue())
                 
         except Exception as e:
             logger.error(
@@ -298,7 +261,7 @@ class BinanceFutureOrderBookV2(OrderBookV2):
             logger.error(f"{EXCHANGE_KR} {self.symbol} C++ 전송 실패: {str(e)}", exc_info=True)
 
     async def send_to_queue(self) -> None:
-        """큐로 데이터 전송 및 C++로 데이터 전송 (속도 제한 적용)"""
+        """큐로 데이터 전송 (속도 제한 적용)"""
         current_time = time.time()
         if current_time - self.last_queue_send_time < self.queue_send_interval:
             return  # 너무 빈번한 전송 방지
@@ -317,8 +280,8 @@ class BinanceFutureOrderBookV2(OrderBookV2):
         else:
             logger.warning(f"{EXCHANGE_KR} {self.symbol} 큐 전송 실패: output_queue가 None입니다 (send_to_queue 메서드)")
         
-        # C++로 데이터 전송 (비동기 태스크로 실행하여 블로킹하지 않도록 함)
-        asyncio.create_task(self.send_to_cpp())
+        # C++로 데이터 전송 호출 제거 (중복 전송 방지)
+        # asyncio.create_task(self.send_to_cpp())
 
     def to_dict(self) -> dict:
         """오더북 데이터를 딕셔너리로 변환"""
@@ -341,6 +304,93 @@ class BinanceFutureOrderBookV2(OrderBookV2):
         """
         self.output_queue = queue
         logger.info(f"{EXCHANGE_KR} {self.symbol} 오더북 출력 큐 설정 완료 (큐 ID: {id(queue)})")
+
+    def update(self, data: dict) -> ValidationResult:
+        """
+        오더북 업데이트
+        
+        Args:
+            data: 업데이트 데이터
+            
+        Returns:
+            ValidationResult: 업데이트 결과
+        """
+        try:
+            # 필수 필드 확인
+            if "bids" not in data or "asks" not in data:
+                return ValidationResult(False, ["필수 필드 누락: bids 또는 asks"])
+                
+            # 데이터 추출
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
+            timestamp = data.get("timestamp", int(time.time() * 1000))
+            sequence = data.get("sequence", 0)
+            transaction_time = data.get("transaction_time", 0)
+            
+            # 오더북 업데이트
+            self.update_orderbook(
+                bids=bids,
+                asks=asks,
+                timestamp=timestamp,
+                sequence=sequence,
+                transaction_time=transaction_time,
+                is_snapshot=False
+            )
+            
+            # 델타 업데이트 후 데이터 전송
+            # C++로 데이터 직접 전송
+            asyncio.create_task(self.send_to_cpp())
+            
+            # 큐로 데이터 전송
+            asyncio.create_task(self.send_to_queue())
+            
+            return ValidationResult(True)
+        except Exception as e:
+            error_msg = f"오더북 업데이트 실패: {e}"
+            logger.error(f"{EXCHANGE_KR} {self.symbol} {error_msg}", exc_info=True)
+            return ValidationResult(False, [error_msg])
+
+    def apply_snapshot(self, snapshot: dict) -> bool:
+        """
+        스냅샷 적용
+        
+        Args:
+            snapshot: 스냅샷 데이터
+            
+        Returns:
+            bool: 스냅샷 적용 성공 여부
+        """
+        try:
+            # 필수 필드 확인
+            if "bids" not in snapshot or "asks" not in snapshot:
+                logger.error(f"{EXCHANGE_KR} {self.symbol} 스냅샷 데이터 형식 오류: 필수 필드 누락")
+                return False
+                
+            # 데이터 추출
+            bids = snapshot.get("bids", [])
+            asks = snapshot.get("asks", [])
+            timestamp = snapshot.get("timestamp", int(time.time() * 1000))
+            last_update_id = snapshot.get("lastUpdateId", 0)
+            
+            # 빈 데이터 확인 (완전히 비어있는 경우만 오류 처리)
+            if bids is None or asks is None:
+                logger.error(f"{EXCHANGE_KR} {self.symbol} 스냅샷 데이터 오류: bids 또는 asks가 None")
+                return False
+            
+            # 오더북 업데이트 (수량이 0인 경우도 포함하여 처리)
+            self.update_orderbook(
+                bids=bids,
+                asks=asks,
+                timestamp=timestamp,
+                sequence=last_update_id,
+                is_snapshot=True
+            )
+            
+            logger.info(f"{EXCHANGE_KR} {self.symbol} 스냅샷 적용 완료 (lastUpdateId: {last_update_id}, bids: {len(bids)}, asks: {len(asks)})")
+            return True
+        except Exception as e:
+            logger.error(f"{EXCHANGE_KR} {self.symbol} 스냅샷 적용 실패: {e}", exc_info=True)
+            return False
 
 class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
     """
@@ -365,11 +415,14 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
         self.queue_send_interval = 0.05  # 큐 전송 간격 (초)
         self.cpp_send_interval = 0.1  # C++ 전송 간격 (초)
         
-        # 스냅샷 URL
-        self.snapshot_url = REST_BASE_URL
+        # 파서 초기화
+        self.parser = BinanceFutureParser()
+        
+        # 스냅샷 URL 설정
+        self.snapshot_url = self.parser.snapshot_url
         
         # 오더북 객체 저장
-        self.orderbooks: Dict[str, BinanceFutureOrderBookV2] = {}
+        self.orderbooks: Dict[str, BinanceFutureOrderBook] = {}
         
         # 이벤트 버퍼
         self.event_buffers: Dict[str, List[Dict[str, Any]]] = {}
@@ -443,7 +496,7 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
             
             # 오더북 객체가 없으면 생성
             if symbol not in self.orderbooks:
-                self.orderbooks[symbol] = BinanceFutureOrderBookV2(
+                self.orderbooks[symbol] = BinanceFutureOrderBook(
                     symbol=symbol,
                     exchangename=EXCHANGE_CODE,
                     depth=self.depth,
@@ -484,17 +537,20 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
             # 초기화 성공 로그
             logger.info(f"{EXCHANGE_KR} {symbol} 오더북 초기화 성공 (lastUpdateId: {last_update_id})")
             
-            # 큐로 초기 데이터 전송
+            # 큐로 초기 데이터 전송 (한 번만 전송) - 중복 로깅 방지를 위해 주석 처리
             if self.output_queue:
                 try:
-                    data = orderbook.to_dict()
-                    await self.output_queue.put((EXCHANGE_CODE, data))
-                    logger.info(f"{EXCHANGE_KR} {symbol} 초기 오더북 데이터 큐 전송 성공")
+                    # data = orderbook.to_dict()
+                    # await self.output_queue.put((EXCHANGE_CODE, data))
+                    # logger.info(f"{EXCHANGE_KR} {symbol} 초기 오더북 데이터 큐 전송 성공")
                     
-                    # 직접 send_to_queue 메서드 호출
-                    await orderbook.send_to_queue()
+                    # 직접 send_to_queue 메서드 호출은 제거 (중복 전송 방지)
+                    # await orderbook.send_to_queue()
+                    
+                    # C++로 데이터 전송 (직접 호출)
+                    await orderbook.send_to_cpp()
                 except Exception as e:
-                    logger.error(f"{EXCHANGE_KR} {symbol} 초기 오더북 데이터 큐 전송 실패: {str(e)}")
+                    logger.error(f"{EXCHANGE_KR} {symbol} C++ 데이터 전송 실패: {str(e)}")
             
             return OrderBookUpdate(is_valid=True)
             
@@ -503,121 +559,61 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
             logger.error(f"{EXCHANGE_KR} {symbol} {error_msg}", exc_info=True)
             return OrderBookUpdate(is_valid=False, error_messages=[error_msg])
 
-    async def _apply_buffered_events(self, symbol: str) -> None:
+    async def apply_buffered_events(self, symbol: str) -> None:
         """
         버퍼된 이벤트 적용
         
         Args:
-            symbol: 심볼
+            symbol: 심볼 (예: BTC)
         """
-        if symbol not in self.buffer_events or not self.buffer_events[symbol]:
-            return
-            
-        if symbol not in self.sequence_states or not self.sequence_states[symbol].get("initialized", False):
-            return
-            
-        last_update_id = self.sequence_states[symbol]["last_update_id"]
-        first_processed = self.sequence_states[symbol].get("first_processed", False)
-        
-        # 버퍼된 이벤트 정렬 (first_update_id 기준)
-        sorted_events = sorted(
-            self.buffer_events[symbol],
-            key=lambda x: x.get("first_update_id", 0)
-        )
-        
-        # 적용된 이벤트 수
-        applied_count = 0
-        
-        # 적용할 이벤트 목록
-        events_to_apply = []
-        
-        for event in sorted_events:
-            first_update_id = event.get("first_update_id", 0)
-            final_update_id = event.get("final_update_id", 0)
-            prev_final_update_id = event.get("prev_final_update_id", 0)
-            
-            # 첫 번째 이벤트 처리 (바이낸스 선물 규칙)
-            if not first_processed:
-                # 첫 번째 이벤트는 U <= lastUpdateId+1 AND u >= lastUpdateId+1 조건을 만족해야 함
-                if first_update_id <= last_update_id + 1 and final_update_id >= last_update_id + 1:
-                    events_to_apply.append(event)
-                    self.sequence_states[symbol]["first_processed"] = True
-                    first_processed = True
-                    applied_count += 1
-                    continue
-                else:
-                    # 조건을 만족하지 않으면 스킵
-                    continue
-            
-            # 이후 이벤트 처리 (바이낸스 선물 규칙)
-            # 이전 이벤트의 final_update_id와 현재 이벤트의 prev_final_update_id가 일치해야 함
-            if prev_final_update_id == last_update_id:
-                events_to_apply.append(event)
-                last_update_id = final_update_id
-                applied_count += 1
-            else:
-                # 시퀀스 불일치 감지
-                gap = prev_final_update_id - last_update_id if prev_final_update_id > last_update_id else last_update_id - prev_final_update_id
-                
-                # 갭이 1인 경우는 허용 (바이낸스 선물 특성)
-                if gap == 1:
-                    events_to_apply.append(event)
-                    last_update_id = final_update_id
-                    applied_count += 1
-                    continue
-                
-                # 갭이 1보다 큰 경우 경고 로깅 (너무 빈번한 로깅 방지)
-                current_time = time.time()
-                if symbol not in self.last_gap_warning_time or current_time - self.last_gap_warning_time[symbol] > 5:
-                    logger.warning(
-                        f"{EXCHANGE_KR} {symbol} 시퀀스 갭 감지: "
-                        f"last_update_id={last_update_id}, "
-                        f"prev_final_update_id={prev_final_update_id}, "
-                        f"gap={gap}"
-                    )
-                    self.last_gap_warning_time[symbol] = current_time
-                
-                # 시퀀스 불일치 시 스냅샷 다시 요청 필요
-                self.sequence_states[symbol]["initialized"] = False
-                self.sequence_states[symbol]["first_processed"] = False
-                
-                # 메트릭 기록
-                self.record_metric("error", error_type="sequence_gap", symbol=symbol, gap=gap)
-                
-                # 버퍼 비우기
-                self.buffer_events[symbol] = []
-                
-                # 스냅샷 다시 요청 (비동기로 실행)
-                asyncio.create_task(self._reinitialize_orderbook(symbol))
-                
+        try:
+            # 버퍼 확인
+            if symbol not in self.event_buffers or not self.event_buffers[symbol]:
+                self.log_info(f"{symbol} 버퍼된 이벤트 없음")
                 return
-        
-        # 적용할 이벤트가 있는 경우
-        if events_to_apply:
+                
+            # 오더북 객체 확인
+            orderbook = self.get_orderbook(symbol)
+            if not orderbook:
+                self.log_error(f"{symbol} 오더북 객체 없음")
+                return
+                
+            # 버퍼된 이벤트 수
+            buffer_size = len(self.event_buffers[symbol])
+            self.log_info(f"{symbol} 버퍼된 이벤트 적용 시작 (개수: {buffer_size})")
+            
+            # 버퍼된 이벤트 적용
+            applied_count = 0
+            error_count = 0
+            
+            # 버퍼 복사 (이벤트 적용 중 버퍼가 변경될 수 있음)
+            buffered_events = self.event_buffers[symbol].copy()
+            self.event_buffers[symbol].clear()
+            
             # 이벤트 적용
-            for event in events_to_apply:
-                await self._apply_event(symbol, event)
+            for event in buffered_events:
+                try:
+                    # 이벤트 적용
+                    result = orderbook.update(event)
+                    
+                    # 결과 처리
+                    if result.is_valid:
+                        applied_count += 1
+                    else:
+                        error_count += 1
+                        self.log_error(f"{symbol} 버퍼된 이벤트 적용 실패: {result.error_messages}")
+                except Exception as e:
+                    error_count += 1
+                    self.log_error(f"{symbol} 버퍼된 이벤트 적용 중 예외 발생: {e}")
             
-            # 시퀀스 상태 업데이트
-            self.sequence_states[symbol]["last_update_id"] = last_update_id
-            
-            # 적용된 이벤트 제거
-            self.buffer_events[symbol] = [
-                event for event in self.buffer_events[symbol]
-                if event.get("final_update_id", 0) > last_update_id
-            ]
-            
-            # 버퍼 크기 로깅 (너무 빈번한 로깅 방지)
-            current_time = time.time()
-            if symbol not in self.last_queue_log_time or current_time - self.last_queue_log_time[symbol] > 5:
-                buffer_size = len(self.buffer_events[symbol])
-                if buffer_size > 100:  # 버퍼 크기가 100 이상인 경우만 로깅
-                    logger.warning(f"{EXCHANGE_KR} {symbol} 버퍼 크기: {buffer_size}")
-                self.last_queue_log_time[symbol] = current_time
-            
-            # 메트릭 기록
-            self.record_metric("orderbook", symbol=symbol, operation="buffer_apply", count=applied_count)
-    
+            # 결과 로깅
+            self.log_info(f"{symbol} 버퍼된 이벤트 적용 완료 (성공: {applied_count}, 실패: {error_count})")
+        except Exception as e:
+            self.log_error(f"{symbol} 버퍼된 이벤트 적용 중 예외 발생: {e}")
+            # 버퍼 초기화 (오류 발생 시 버퍼 초기화)
+            if symbol in self.event_buffers:
+                self.event_buffers[symbol].clear()
+
     async def _apply_event(self, symbol: str, event: dict) -> None:
         """
         단일 이벤트 적용
@@ -674,7 +670,7 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
         except Exception as e:
             logger.error(f"{EXCHANGE_KR} {symbol} 오더북 재초기화 중 오류 발생: {str(e)}", exc_info=True)
     
-    async def update(self, symbol: str, data: dict) -> OrderBookUpdate:
+    async def update(self, symbol: str, data: dict) -> ValidationResult:
         """
         오더북 업데이트
         
@@ -683,142 +679,101 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
             data: 업데이트 데이터
             
         Returns:
-            OrderBookUpdate: 업데이트 결과
+            ValidationResult: 업데이트 결과
         """
         try:
-            # 심볼 대문자 변환
-            symbol = symbol.upper()
-            
-            # 오더북 객체가 없으면 초기화되지 않은 것으로 간주
-            if symbol not in self.orderbooks:
-                error_msg = f"오더북이 초기화되지 않았습니다"
-                logger.error(f"{EXCHANGE_KR} {symbol} {error_msg}")
-                return OrderBookUpdate(is_valid=False, error_messages=[error_msg])
-                
-            # 초기화 상태 확인
+            # 심볼 초기화 확인
             if not self.is_initialized(symbol):
-                # 초기화되지 않은 경우 이벤트 버퍼에 추가
+                # 스냅샷 요청 여부 확인
+                if not self.snapshot_requested.get(symbol, False):
+                    # 스냅샷 요청
+                    self.snapshot_requested[symbol] = True
+                    self.snapshot_request_time[symbol] = time.time()
+                    asyncio.create_task(self.request_snapshot(symbol))
+                    self.log_info(f"{symbol} 스냅샷 요청 시작")
+                
+                # 스냅샷 타임아웃 확인
+                if symbol in self.snapshot_request_time:
+                    elapsed = time.time() - self.snapshot_request_time[symbol]
+                    if elapsed > self.snapshot_timeout:
+                        # 타임아웃 발생 - 스냅샷 재요청
+                        self.log_warning(f"{symbol} 스냅샷 타임아웃 ({elapsed:.1f}초) - 재요청")
+                        self.snapshot_requested[symbol] = True
+                        self.snapshot_request_time[symbol] = time.time()
+                        asyncio.create_task(self.request_snapshot(symbol))
+                
+                # 이벤트 버퍼링
                 if symbol not in self.event_buffers:
                     self.event_buffers[symbol] = []
-                    
-                # 업데이트 파싱
-                update = parse_binance_future_depth_update(data)
-                if not update:
-                    error_msg = f"업데이트 파싱 실패"
-                    logger.error(f"{EXCHANGE_KR} {symbol} {error_msg}")
-                    return OrderBookUpdate(is_valid=False, error_messages=[error_msg])
-                    
+                
                 # 버퍼 크기 제한
-                if len(self.event_buffers[symbol]) >= MAX_BUFFER_SIZE:
-                    logger.warning(f"{EXCHANGE_KR} {symbol} 버퍼 크기 초과 ({len(self.event_buffers[symbol])})")
-                    # 가장 오래된 이벤트 제거
+                if len(self.event_buffers[symbol]) >= self.max_buffer_size:
+                    # 버퍼가 가득 찬 경우 가장 오래된 이벤트 제거
                     self.event_buffers[symbol].pop(0)
-                    
-                # 이벤트 버퍼에 추가 (딕셔너리 형태로)
-                self.event_buffers[symbol].append({
-                    "first_update_id": update.get("first_update_id", 0),
-                    "final_update_id": update.get("sequence", 0),
-                    "prev_final_update_id": update.get("prev_final_update_id", 0),
-                    "bids": update.get("bids", []),
-                    "asks": update.get("asks", []),
-                    "timestamp": update.get("timestamp", 0),
-                    "transaction_time": update.get("transaction_time", 0)
-                })
+                    self.log_warning(f"{symbol} 이벤트 버퍼 가득 참 - 이벤트 제거")
                 
-                # 버퍼 크기 로깅
-                buffer_size = len(self.event_buffers[symbol])
-                if buffer_size % 10 == 0:  # 10개 단위로 로깅
-                    logger.info(f"{EXCHANGE_KR} {symbol} 버퍼 크기: {buffer_size}")
-                    
-                return OrderBookUpdate(is_valid=True, buffered=True)
+                # 이벤트 버퍼에 추가 (이미 파싱된 데이터)
+                self.event_buffers[symbol].append(data)
+                self.log_debug(f"{symbol} 이벤트 버퍼링 (크기: {len(self.event_buffers[symbol])})")
                 
-            # 업데이트 파싱
-            update = parse_binance_future_depth_update(data)
-            if not update:
-                error_msg = f"업데이트 파싱 실패"
-                logger.error(f"{EXCHANGE_KR} {symbol} {error_msg}")
-                return OrderBookUpdate(is_valid=False, error_messages=[error_msg])
-                
-            # 오더북 업데이트
-            orderbook = self.orderbooks[symbol]
+                # 초기화 대기 중
+                return ValidationResult(False, ["초기화 대기 중"])
             
-            # 업데이트 적용
-            orderbook.update_orderbook(
-                bids=update["bids"],
-                asks=update["asks"],
-                timestamp=update["timestamp"],
-                sequence=update["sequence"],
-                transaction_time=update["transaction_time"]
-            )
+            # 오더북 객체 가져오기
+            orderbook = self.get_orderbook(symbol)
+            if not orderbook:
+                error_msg = f"오더북 객체 없음"
+                self.log_error(f"{symbol} {error_msg}")
+                return ValidationResult(False, [error_msg])
             
-            # 버퍼된 이벤트 적용 시도
-            await self._apply_buffered_events(symbol)
+            # 오더북 업데이트 (이미 파싱된 데이터 사용)
+            result = orderbook.update(data)
             
-            # 큐로 데이터 전송
-            if self.output_queue:
-                try:
-                    # 오더북 객체에 큐가 설정되어 있는지 확인
-                    if orderbook.output_queue is None:
-                        orderbook.output_queue = self.output_queue
-                        logger.info(f"{EXCHANGE_KR} {symbol} 오더북 객체에 출력 큐 설정 (update 메서드 내)")
-                    
-                    # send_to_queue 메서드 호출
-                    await orderbook.send_to_queue()
-                    logger.info(f"{EXCHANGE_KR} {symbol} send_to_queue 메서드 호출 성공 (update 메서드 내)")
-                except Exception as e:
-                    logger.error(f"{EXCHANGE_KR} {symbol} 큐 전송 실패: {str(e)}")
+            # 업데이트 결과 로깅
+            if not result.is_valid:
+                self.log_error(f"{symbol} 오더북 업데이트 실패: {result.error_messages}")
             
-            return OrderBookUpdate(is_valid=True)
-            
+            return result
         except Exception as e:
-            error_msg = f"오더북 업데이트 실패: {str(e)}"
-            logger.error(f"{EXCHANGE_KR} {symbol} {error_msg}", exc_info=True)
-            return OrderBookUpdate(is_valid=False, error_messages=[error_msg])
+            error_msg = f"업데이트 중 예외 발생: {e}"
+            self.log_error(f"{symbol} {error_msg}")
+            return ValidationResult(False, [error_msg])
     
     async def fetch_snapshot(self, symbol: str) -> Optional[dict]:
         """
-        REST API로 스냅샷 요청
+        스냅샷 데이터 가져오기
         
         Args:
-            symbol: 심볼
+            symbol: 심볼 (예: BTC)
             
         Returns:
-            dict: 스냅샷 데이터 (None: 요청 실패)
+            Optional[dict]: 스냅샷 데이터 (None: 실패)
         """
-        # 세마포어로 동시 요청 제한
-        async with SNAPSHOT_SEMAPHORE:
-            try:
-                # 심볼 형식 처리
-                symbol_upper = symbol.upper()
-                if not symbol_upper.endswith("USDT"):
-                    symbol_upper += "USDT"
-                
-                # URL 생성
-                url = f"{self.snapshot_url}?symbol={symbol_upper}&limit={self.depth}"
-                
-                # 세션 가져오기
-                session = await get_global_aiohttp_session()
-                
-                # 스냅샷 요청
-                async with session.get(url, timeout=SNAPSHOT_REQUEST_TIMEOUT) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return self.parse_snapshot(data, symbol)
-                    else:
-                        error_text = await resp.text()
-                        logger.error(
-                            f"{EXCHANGE_KR} {symbol} 스냅샷 요청 실패: "
-                            f"status={resp.status}, error={error_text}"
-                        )
-                        return None
-                        
-            except asyncio.TimeoutError:
-                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 요청 타임아웃")
-                return None
-                
-            except Exception as e:
-                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 요청 중 오류 발생: {str(e)}", exc_info=True)
-                return None
+        try:
+            # 심볼 형식 변환 (BTC -> BTCUSDT)
+            formatted_symbol = f"{symbol.upper()}USDT"
+            
+            # 스냅샷 URL 생성
+            url = f"{self.snapshot_url}?symbol={formatted_symbol}&limit=1000"
+            self.log_info(f"{symbol} 스냅샷 요청 URL: {url}")
+            
+            # HTTP 세션 가져오기
+            session = get_global_aiohttp_session()
+            
+            # 스냅샷 요청
+            async with session.get(url) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    self.log_error(f"{symbol} 스냅샷 요청 실패 (상태 코드: {response.status}): {error_text}")
+                    return None
+                    
+                # 응답 데이터 파싱
+                data = await response.json()
+                self.log_info(f"{symbol} 스냅샷 데이터 수신 성공")
+                return data
+        except Exception as e:
+            self.log_error(f"{symbol} 스냅샷 요청 중 예외 발생: {e}")
+            return None
     
     def parse_snapshot(self, data: dict, symbol: str) -> Optional[dict]:
         """
@@ -829,33 +784,20 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
             symbol: 심볼
             
         Returns:
-            dict: 파싱된 스냅샷 데이터 (None: 파싱 실패)
+            Optional[dict]: 파싱된 스냅샷 데이터 또는 None (파싱 실패 시)
         """
         try:
-            if "lastUpdateId" not in data:
-                logger.error(f"{EXCHANGE_KR} {symbol} 'lastUpdateId' 없음")
+            # 파서를 사용하여 스냅샷 데이터 파싱
+            snapshot = self.parser.parse_snapshot_data(data, symbol)
+            
+            if not snapshot:
+                logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 파싱 실패")
                 return None
-
-            last_id = data["lastUpdateId"]
-            
-            # 숫자 변환 및 0 이상 필터링
-            bids = [[float(b[0]), float(b[1])] for b in data.get("bids", []) if float(b[0]) > 0 and float(b[1]) > 0]
-            asks = [[float(a[0]), float(a[1])] for a in data.get("asks", []) if float(a[0]) > 0 and float(a[1]) > 0]
-
-            snapshot = {
-                "exchangename": "binancefuture",
-                "symbol": symbol,
-                "bids": bids,
-                "asks": asks,
-                "timestamp": int(time.time() * 1000),
-                "lastUpdateId": last_id,
-                "type": "snapshot"
-            }
-            
+                
             return snapshot
             
         except Exception as e:
-            logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 파싱 실패: {str(e)}", exc_info=True)
+            logger.error(f"{EXCHANGE_KR} {symbol} 스냅샷 파싱 실패: {e}")
             return None
     
     def is_initialized(self, symbol: str) -> bool:
@@ -870,7 +812,7 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
         """
         return symbol in self.initialized and self.initialized[symbol]
     
-    def get_orderbook(self, symbol: str) -> Optional[BinanceFutureOrderBookV2]:
+    def get_orderbook(self, symbol: str) -> Optional[BinanceFutureOrderBook]:
         """
         심볼의 오더북 객체 반환
         
@@ -878,7 +820,7 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
             symbol: 심볼
             
         Returns:
-            BinanceFutureOrderBookV2: 오더북 객체 (None: 없음)
+            BinanceFutureOrderBook: 오더북 객체 (None: 없음)
         """
         return self.orderbooks.get(symbol)
     
@@ -925,3 +867,112 @@ class BinanceFutureOrderBookManagerV2(BaseOrderBookManagerV2):
         for symbol, orderbook in self.orderbooks.items():
             orderbook.output_queue = queue
             logger.info(f"{EXCHANGE_KR} {symbol} 오더북 출력 큐 설정 완료 (큐 ID: {id(queue)})")
+
+    async def request_snapshot(self, symbol: str) -> bool:
+        """
+        스냅샷 요청 및 처리
+        
+        Args:
+            symbol: 심볼 (예: BTC)
+            
+        Returns:
+            bool: 스냅샷 처리 성공 여부
+        """
+        try:
+            # 스냅샷 요청
+            snapshot_data = await self.fetch_snapshot(symbol)
+            if not snapshot_data:
+                self.log_error(f"{symbol} 스냅샷 데이터 없음")
+                return False
+                
+            # 스냅샷 파싱
+            parsed_snapshot = self.parser.parse_snapshot_data(snapshot_data, symbol)
+            if not parsed_snapshot:
+                self.log_error(f"{symbol} 스냅샷 파싱 실패")
+                return False
+                
+            # 오더북 객체 가져오기 또는 생성
+            orderbook = self.get_orderbook(symbol)
+            if not orderbook:
+                # 오더북 객체 생성
+                orderbook = self.create_orderbook(symbol)
+                self.orderbooks[symbol] = orderbook
+                self.log_info(f"{symbol} 오더북 객체 생성")
+                
+            # 스냅샷 적용
+            if not orderbook.apply_snapshot(parsed_snapshot):
+                self.log_error(f"{symbol} 스냅샷 적용 실패")
+                return False
+                
+            # 버퍼된 이벤트 적용
+            await self.apply_buffered_events(symbol)
+            
+            # 초기화 완료
+            self.initialized[symbol] = True
+            self.log_info(f"{symbol} 오더북 초기화 완료")
+            
+            return True
+        except Exception as e:
+            self.log_error(f"{symbol} 스냅샷 요청 및 처리 실패: {e}")
+            return False
+
+    # 로깅 메서드 추가
+    def log_info(self, message: str) -> None:
+        """
+        정보 로깅
+        
+        Args:
+            message: 로그 메시지
+        """
+        logger.info(f"{EXCHANGE_KR} {message}")
+        
+    def log_error(self, message: str) -> None:
+        """
+        오류 로깅
+        
+        Args:
+            message: 로그 메시지
+        """
+        logger.error(f"{EXCHANGE_KR} {message}")
+        
+    def log_warning(self, message: str) -> None:
+        """
+        경고 로깅
+        
+        Args:
+            message: 로그 메시지
+        """
+        logger.warning(f"{EXCHANGE_KR} {message}")
+        
+    def log_debug(self, message: str) -> None:
+        """
+        디버그 로깅
+        
+        Args:
+            message: 로그 메시지
+        """
+        logger.debug(f"{EXCHANGE_KR} {message}")
+
+    def create_orderbook(self, symbol: str) -> BinanceFutureOrderBook:
+        """
+        오더북 객체 생성
+        
+        Args:
+            symbol: 심볼 (예: BTC)
+            
+        Returns:
+            BinanceFutureOrderBook: 오더북 객체
+        """
+        orderbook = BinanceFutureOrderBook(
+            exchangename=EXCHANGE_CODE,
+            symbol=symbol,
+            depth=self.depth,
+            inversion_detection=self.cross_detection_enabled
+        )
+        
+        # 출력 큐 설정
+        if self.output_queue:
+            orderbook.output_queue = self.output_queue
+            self.log_info(f"{symbol} 오더북 객체 생성 및 출력 큐 설정 완료")
+            
+        return orderbook
