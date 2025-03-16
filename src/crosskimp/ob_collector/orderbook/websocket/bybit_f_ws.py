@@ -84,111 +84,64 @@ class BybitFutureWebsocket(BybitFutureWebSocketConnector):
         else:
             self.log_info(f"오더북 매니저 큐 설정 확인 (큐 ID: {id(self.orderbook_manager._output_queue)})")
 
-    async def parse_message(self, message: str) -> Optional[dict]:
-        """
-        메시지 파싱
-        """
-        try:
-            try:
-                data = json.loads(message)
-            except json.JSONDecodeError as e:
-                self.log_error(f"JSON 파싱 실패: {str(e)}, 메시지: {message[:100]}...")
-                return None
+    # 이 메서드는 더 이상 사용되지 않습니다.
+    # async def parse_message(self, message: str) -> Optional[dict]:
+    #     """
+    #     수신된 메시지 파싱
+        
+    #     Args:
+    #         message: 수신된 웹소켓 메시지
+            
+    #     Returns:
+    #         Optional[dict]: 파싱된 메시지 또는 None
+    #     """
+    #     try:
+    #         data = json.loads(message)
+            
+    #         # 구독 응답 처리
+    #         if data.get("op") == "subscribe":
+    #             if self.connection_status_callback:
+    #                 self.connection_status_callback(self.exchangename, "subscribe_response")
+    #             self.log_debug(f"구독 응답 수신: {data}")
+    #             return None
 
-            if data.get("op") == "subscribe":
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "subscribe_response")
-                self.log_debug(f"구독 응답 수신: {data}")
-                return None
+    #         if data.get("op") == "pong" or (data.get("ret_msg") == "pong" and data.get("op") == "ping"):
+    #             self._handle_pong(data)
+    #             return None
 
-            if data.get("op") == "pong" or (data.get("ret_msg") == "pong" and data.get("op") == "ping"):
-                self._handle_pong(data)
-                return None
-
-            if "topic" in data and "data" in data:
-                topic = data.get("topic", "")
-                if "orderbook" in topic:
-                    parts = topic.split(".")
-                    if len(parts) >= 3:
-                        symbol = parts[-1].replace("USDT", "")
-                        msg_type = data.get("type", "delta")
+    #         if "topic" in data and "data" in data:
+    #             topic = data.get("topic", "")
+    #             if "orderbook" in topic:
+    #                 parts = topic.split(".")
+    #                 if len(parts) >= 3:
+    #                     symbol = parts[-1].replace("USDT", "")
+    #                     msg_type = data.get("type", "delta")
                         
-                        # 원본 메시지 로깅
-                        self.log_raw_message(msg_type, message, symbol)
+    #                     # 원본 메시지 로깅
+    #                     self.log_raw_message(msg_type, message, symbol)
                         
-                        # ELX 코인에 대해 추가 로깅
-                        if symbol == "ELX":
-                            ob_data = data.get("data", {})
-                            bids_count = len(ob_data.get("b", []))
-                            asks_count = len(ob_data.get("a", []))
-                            self.log_info(
-                                f"ELX 메시지 수신 | "
-                                f"타입: {msg_type}, 매수: {bids_count}건, 매도: {asks_count}건, "
-                                f"시퀀스: {ob_data.get('u', 'N/A')}"
-                            )
+    #                     # ELX 코인에 대해 추가 로깅
+    #                     if symbol == "ELX":
+    #                         ob_data = data.get("data", {})
+    #                         bids_count = len(ob_data.get("b", []))
+    #                         asks_count = len(ob_data.get("a", []))
+    #                         self.log_info(
+    #                             f"ELX 메시지 수신 | "
+    #                             f"타입: {msg_type}, 매수: {bids_count}건, 매도: {asks_count}건, "
+    #                             f"시퀀스: {ob_data.get('u', 'N/A')}"
+    #                         )
                         
-                        if msg_type == "snapshot":
-                            self.log_info(f"스냅샷 메시지 수신: {symbol}")
-                            self.snapshot_received.add(symbol)
-                            self.snapshot_pending.discard(symbol)
-                            if self.connection_status_callback:
-                                self.connection_status_callback(self.exchangename, "snapshot_received")
-                        return data
-            return None
-        except Exception as e:
-            self.log_error(f"메시지 파싱 실패: {str(e)}")
-            return None
-
-    async def handle_parsed_message(self, parsed: dict) -> None:
-        """파싱된 메시지 처리"""
-        try:
-            if not parsed or "topic" not in parsed:
-                return
-
-            topic = parsed["topic"]
-            if not topic.startswith("orderbook."):
-                return
-
-            start_time = time.time()
-            
-            # 파서를 사용하여 메시지 파싱
-            parsed_data = self.parser.parse_message(json.dumps(parsed))
-            if not parsed_data:
-                self.log_debug("파싱 실패 또는 무시된 메시지")
-                return
-                
-            # 심볼 추출
-            symbol = parsed_data.get("symbol", "").upper()
-            
-            # 오더북 업데이트
-            if self.orderbook_manager:
-                result = await self.orderbook_manager.update(symbol, parsed_data)
-                
-                # 처리 시간 로깅
-                processing_time = (time.time() - start_time) * 1000  # ms 단위
-                self.log_debug(f"{symbol} 처리 시간: {processing_time:.2f}ms")
-                
-                if not result.is_valid:
-                    self.log_error(f"{symbol} 오더북 업데이트 실패: {result.error_messages}")
-            
-            # 통계 업데이트
-            if self.stats:
-                self.stats.message_count += 1
-                if not hasattr(self.stats, 'processing_times'):
-                    self.stats.processing_times = []
-                self.stats.processing_times.append(processing_time)
-                
-                if self.stats.message_count % 1000 == 0:
-                    avg_time = sum(self.stats.processing_times[-1000:]) / min(1000, len(self.stats.processing_times))
-                    self.log_info(
-                        f"{symbol} 처리 성능 | 평균={avg_time:.2f}ms, 총={self.stats.message_count:,}개"
-                    )
-            
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "message")
-                
-        except Exception as e:
-            self.log_error(f"메시지 처리 중 오류: {e}")
+    #                     if msg_type == "snapshot":
+    #                         self.log_info(f"스냅샷 메시지 수신: {symbol}")
+    #                         self.snapshot_received.add(symbol)
+    #                         self.snapshot_pending.discard(symbol)
+    #                         if self.connection_status_callback:
+    #                             self.connection_status_callback(self.exchangename, "snapshot_received")
+    #                     return data
+    #         return None
+    #     except Exception as e:
+    #         self.log_error(f"메시지 파싱 실패: {str(e)}")
+    #         return None
 
     async def request_snapshot(self, market: str) -> Optional[dict]:
         """
@@ -244,9 +197,11 @@ class BybitFutureWebsocket(BybitFutureWebSocketConnector):
         Args:
             message: 수신된 웹소켓 메시지
         """
-        parsed = await self.parse_message(message)
-        if parsed:
-            await self.handle_parsed_message(parsed)
+        # 메시지 수신 로깅
+        self.log_debug(f"메시지 수신: {message[:100]}...")
+        
+        # 부모 클래스의 process_message 메서드 호출
+        await super().process_message(message)
 
     async def _prepare_start(self, symbols: List[str]) -> None:
         """

@@ -303,6 +303,10 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
                     self.stats.message_count += 1
                     self.message_stats["total_received"] += 1
                     
+                    # 메시지 수신 로깅 (1000개마다)
+                    if self.message_stats["total_received"] % 1000 == 0:
+                        self.log_info(f"메시지 수신 중 | 총 {self.message_stats['total_received']:,}개")
+                    
                     # 메시지 처리 (자식 클래스에서 구현)
                     await self.process_message(message)
                         
@@ -348,13 +352,57 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
 
     async def process_message(self, message: str) -> None:
         """
-        수신된 메시지 처리 (자식 클래스에서 구현)
+        수신된 메시지 처리
         
         Args:
             message: 수신된 웹소켓 메시지
         """
-        # 이 메서드는 자식 클래스에서 구현해야 함
-        pass
+        try:
+            # 메시지 파싱
+            data = json.loads(message)
+            
+            # 핑/퐁 메시지 처리
+            if data.get("op") == "pong" or (data.get("ret_msg") == "pong" and data.get("op") == "ping"):
+                self._handle_pong(data)
+                return
+                
+            # 구독 응답 처리
+            if data.get("op") == "subscribe":
+                self.log_debug(f"구독 응답 수신: {data}")
+                return
+                
+            # 오더북 메시지 처리
+            if "topic" in data and "data" in data:
+                topic = data.get("topic", "")
+                if "orderbook" in topic:
+                    parts = topic.split(".")
+                    if len(parts) >= 3:
+                        symbol = parts[-1].replace("USDT", "")
+                        
+                        # 파서를 사용하여 메시지 파싱
+                        parsed_data = self.parser.parse_message(message)
+                        if not parsed_data:
+                            self.log_debug(f"{symbol} 파싱 실패 또는 무시된 메시지")
+                            return
+                            
+                        # 오더북 업데이트
+                        if self.orderbook_manager:
+                            result = await self.orderbook_manager.update(symbol, parsed_data)
+                            if not result.is_valid:
+                                self.log_error(f"{symbol} 오더북 업데이트 실패: {result.error_messages}")
+                        else:
+                            self.log_warning(f"{symbol} 오더북 매니저가 설정되지 않았습니다")
+                        
+                        # 로깅 (1000개마다)
+                        if self.message_stats["total_received"] % 1000 == 0:
+                            self.log_info(
+                                f"메시지 처리 통계 | 총 수신={self.message_stats['total_received']:,}개, "
+                                f"핑퐁={self.message_stats['ping_pong']:,}개"
+                            )
+        except json.JSONDecodeError:
+            self.log_error(f"JSON 파싱 실패: {message[:100]}...")
+        except Exception as e:
+            self.log_error(f"메시지 처리 중 오류: {str(e)}", exc_info=True)
 
     async def start_background_tasks(self) -> List[asyncio.Task]:
         """

@@ -165,6 +165,9 @@ class BybitFutureOrderBook(OrderBookV2):
                 self.last_update_time = timestamp
             if sequence:
                 self.last_sequence = sequence
+                
+            # 큐로 데이터 전송
+            asyncio.create_task(self.send_to_queue())
 
         except Exception as e:
             logger.error(
@@ -204,19 +207,21 @@ class BybitFutureOrderBookManager(BaseOrderBookManagerV2):
         
     async def update(self, symbol: str, data: dict) -> ValidationResult:
         try:
-            # 파서를 사용하여 데이터 파싱
-            parsed_data = self.parser.parse_message(json.dumps(data))
-            if not parsed_data:
-                logger.debug(f"{EXCHANGE_KR} {symbol} 파싱 실패 또는 무시된 메시지")
+            # 데이터 유효성 검사
+            if not data:
+                logger.debug(f"{EXCHANGE_KR} {symbol} 데이터 없음")
                 return ValidationResult(True)  # 무시해도 에러는 아님
                 
-            # 파싱된 데이터에서 필요한 정보 추출
-            symbol = parsed_data.get("symbol", symbol)
-            bids = parsed_data.get("bids", [])
-            asks = parsed_data.get("asks", [])
-            timestamp = parsed_data.get("timestamp")
-            sequence = parsed_data.get("sequence")
-            msg_type = parsed_data.get("type", "delta")
+            # 데이터에서 필요한 정보 추출
+            symbol = data.get("symbol", symbol)
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
+            timestamp = data.get("timestamp")
+            sequence = data.get("sequence")
+            msg_type = data.get("type", "delta")
+            
+            # 로깅 추가
+            logger.debug(f"{EXCHANGE_KR} {symbol} 업데이트 | 타입: {msg_type}, 시퀀스: {sequence}, 타임스탬프: {timestamp}")
             
             # 오더북이 없으면 생성
             if symbol not in self.orderbooks:
@@ -283,8 +288,8 @@ class BybitFutureOrderBookManager(BaseOrderBookManagerV2):
                 symbol=symbol
             )
             
-            # 큐로 전송
-            await ob.send_to_queue()
+            # 큐로 전송은 update_orderbook 메서드에서 이미 수행됨
+            # await ob.send_to_queue()
             
             # DEBUG 레벨로 변경하여 스팸 로깅 감소
             logger.debug(
