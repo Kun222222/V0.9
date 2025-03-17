@@ -186,7 +186,7 @@ class SharedMemoryManager:
         try:
             # 데이터 크기 검증
             data_size = len(data)
-            logger.debug(f"공유 메모리 쓰기 시작: 데이터 크기={data_size} 바이트, 최대 버퍼 크기={self.size} 바이트")
+            # logger.debug(f"공유 메모리 쓰기 시작: 데이터 크기={data_size} 바이트, 최대 버퍼 크기={self.size} 바이트")
             
             if data_size > self.size:
                 logger.error(f"데이터 크기가 버퍼 크기를 초과: {data_size} > {self.size}")
@@ -216,7 +216,7 @@ class SharedMemoryManager:
                     return False
             
             # 세마포어 획득
-            logger.debug(f"세마포어 획득 시도")
+            # logger.debug(f"세마포어 획득 시도")
             try:
                 self.semaphore.acquire(timeout=0.5)  # 타임아웃 추가 (0.5초)
             except posix_ipc.BusyError:
@@ -224,7 +224,7 @@ class SharedMemoryManager:
                 self.metrics["write_errors"] += 1
                 return False
                 
-            logger.debug(f"세마포어 획득 성공")
+            # logger.debug(f"세마포어 획득 성공")
             
             try:
                 with self.lock:
@@ -233,17 +233,17 @@ class SharedMemoryManager:
                     
                     # 버퍼 오프셋 계산
                     buffer_offset = HEADER_SIZE + (next_buffer_index * self.size)
-                    logger.debug(f"버퍼 인덱스={next_buffer_index}, 오프셋={buffer_offset}")
+                    # logger.debug(f"버퍼 인덱스={next_buffer_index}, 오프셋={buffer_offset}")
                     
                     # 데이터 쓰기
                     self.mmap.seek(buffer_offset)
                     self.mmap.write(data)
                     self.mmap.flush()  # 전체 메모리 플러시
-                    logger.debug(f"데이터 쓰기 완료: 오프셋={buffer_offset}, 크기={data_size}")
+                    # logger.debug(f"데이터 쓰기 완료: 오프셋={buffer_offset}, 크기={data_size}")
                     
                     # 데이터 헤더 디버깅
                     data_header = ' '.join([f'{b:02x}' for b in data[:16]])
-                    logger.debug(f"데이터 헤더: {data_header}")
+                    # logger.debug(f"데이터 헤더: {data_header}")
                     
                     # 헤더 업데이트
                     self.mmap.seek(0)
@@ -262,7 +262,7 @@ class SharedMemoryManager:
                     
                     # 헤더 디버깅
                     header_hex = ' '.join([f'{b:02x}' for b in header[:16]])
-                    logger.debug(f"헤더 업데이트 완료: {header_hex}")
+                    # logger.debug(f"헤더 업데이트 완료: {header_hex}")
                     
                     # 현재 버퍼 인덱스 업데이트
                     self.current_buffer_index = next_buffer_index
@@ -274,7 +274,7 @@ class SharedMemoryManager:
                     self.metrics["max_data_size"] = max(self.metrics["max_data_size"], data_size)
                     self.metrics["buffer_utilization"] = data_size / self.size
                     
-                    logger.info(f"공유 메모리 쓰기 성공: 크기={data_size} 바이트, 버퍼 인덱스={next_buffer_index}, 버퍼 사용률={self.metrics['buffer_utilization']:.2%}")
+                    # logger.info(f"공유 메모리 쓰기 성공: 크기={data_size} 바이트, 버퍼 인덱스={next_buffer_index}, 버퍼 사용률={self.metrics['buffer_utilization']:.2%}")
                     return True
                     
             finally:

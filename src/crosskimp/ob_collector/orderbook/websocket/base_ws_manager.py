@@ -23,7 +23,7 @@ from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotW
 from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebsocket
-from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
+# from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
 
@@ -41,7 +41,7 @@ WEBSOCKET_CLASS_MAP = {
     "binancefuture": BinanceFutureWebsocket,
     "bybit": BybitSpotWebsocket,
     "bybitfuture": BybitFutureWebsocket,
-    "upbit": UpbitWebsocket,
+    # "upbit": UpbitWebsocket,
     "bithumb": BithumbSpotWebsocket
 }
 

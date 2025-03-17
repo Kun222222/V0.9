@@ -4,6 +4,8 @@ import os, asyncio, time
 import logging
 from datetime import datetime, timedelta
 from typing import Tuple, Dict, Optional
+import signal
+import sys
 
 from crosskimp.logger.logger import get_unified_logger, get_logger
 from crosskimp.ob_collector.core.aggregator import Aggregator
@@ -11,6 +13,7 @@ from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.config.config_loader import get_settings, initialize_config, add_config_observer, shutdown_config
 from crosskimp.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT, Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.websocket.base_ws_manager import WebsocketManager
+from crosskimp.ob_collector.orderbook.order_manager import integrate_with_websocket_manager
 
 from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_system_status, send_market_status, send_error
 from crosskimp.config.bot_constants import MessageType, TELEGRAM_START_MESSAGE, TELEGRAM_STOP_MESSAGE
@@ -22,11 +25,15 @@ from crosskimp.system_manager.scheduler import calculate_next_midnight, format_r
 logger = get_unified_logger()
 
 # 환경에 따른 로깅 설정
+# 디버깅을 위해 항상 DEBUG 레벨로 설정
+logger.setLevel(logging.DEBUG)
+logger.info(f"{LOG_SYSTEM} 디버깅을 위해 로그 레벨을 DEBUG로 설정했습니다.")
+
 if os.getenv("CROSSKIMP_ENV") == "production":
-    logger.setLevel(logging.INFO)
+    # 프로덕션 환경 로그
     logger.info(f"{LOG_SYSTEM} 배포 환경에서 실행 중입니다.")
 else:
-    logger.setLevel(logging.DEBUG)
+    # 개발 환경 로그
     logger.warning(f"{LOG_SYSTEM} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
 
 # 거래소별 로거 초기화
@@ -62,6 +69,11 @@ async def reset_websockets(aggregator, ws_manager, settings):
             await ws_manager.start_all_websockets(filtered_data)
             logger.info(f"{LOG_SYSTEM} 웹소켓 재시작 완료")
             
+            # 업비트 OrderManager 통합
+            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 시작")
+            await integrate_with_websocket_manager(ws_manager, settings, filtered_data)
+            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 완료")
+            
             # 다음 자정에 다시 실행되도록 예약
             tomorrow = calculate_next_midnight()
             await schedule_task(
@@ -89,126 +101,168 @@ async def on_settings_changed(new_settings: dict):
     # 여기에 설정 변경 시 필요한 작업 추가
     # 예: 웹소켓 재연결, 필터링 재실행 등
 
-async def cleanup(settings: Optional[Dict] = None, ws_manager: Optional[WebsocketManager] = None, 
-                 usdt_monitor: Optional[WsUsdtKrwMonitor] = None):
-    """시스템 종료 처리"""
+async def shutdown():
+    """종료 처리"""
     try:
-        # 텔레그램 종료 메시지 전송 (설정이 있는 경우에만)
+        logger.info(f"{LOG_SYSTEM} 프로그램 종료 처리 시작")
+        
+        # 텔레그램 종료 메시지 전송
+        settings = get_settings()
         if settings:
             await send_telegram_message(settings, MessageType.SHUTDOWN, TELEGRAM_STOP_MESSAGE)
         
-        # 종료 처리
-        if ws_manager:
-            await ws_manager.shutdown()
-        if usdt_monitor:
-            await usdt_monitor.stop()
-        shutdown_config()
-        logger.info(f"{LOG_SYSTEM} 프로그램 종료")
-
+        logger.info(f"{LOG_SYSTEM} 프로그램 종료 처리 완료")
+        
     except Exception as e:
-        # 에러 메시지 전송 (설정이 있는 경우에만)
-        if settings:
-            await send_error(settings, "OrderBook Collector", f"종료 처리 중 오류 발생: {str(e)}")
-        logger.error(f"{LOG_SYSTEM} 종료 처리 중 오류 발생: {e}")
+        logger.error(f"{LOG_SYSTEM} 종료 처리 중 오류 발생: {str(e)}")
+        
+    finally:
+        # 로거 종료
+        logging.shutdown()
+
+class OrderbookCollector:
+    """
+    오더북 수집기 클래스
+    
+    OrderManager와 WebsocketManager를 함께 사용하여 오더북 데이터를 수집합니다.
+    """
+    
+    def __init__(self, settings: dict):
+        """
+        초기화
+        
+        Args:
+            settings: 설정 딕셔너리
+        """
+        self.settings = settings
+        self.ws_manager = None
+        self.aggregator = None
+        self.stop_event = asyncio.Event()
+        
+        # 시그널 핸들러 설정
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        logger.info(f"{LOG_SYSTEM} 오더북 수집기 초기화 완료")
+    
+    def _signal_handler(self, sig, frame):
+        """시그널 핸들러"""
+        logger.info(f"{LOG_SYSTEM} 종료 시그널 수신: {sig}")
+        if not self.stop_event.is_set():
+            self.stop_event.set()
+        else:
+            logger.info(f"{LOG_SYSTEM} 강제 종료")
+            sys.exit(1)
+    
+    async def initialize(self):
+        """초기화"""
+        try:
+            # Aggregator 초기화
+            self.aggregator = Aggregator(self.settings)
+            
+            # WebsocketManager 초기화
+            self.ws_manager = WebsocketManager(self.settings)
+            
+            logger.info(f"{LOG_SYSTEM} 오더북 수집기 초기화 완료")
+            return True
+            
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 초기화 실패: {str(e)}")
+            return False
+    
+    async def start(self):
+        """시작"""
+        try:
+            # 심볼 필터링
+            filtered_data = await self.aggregator.run_filtering()
+            if not filtered_data:
+                logger.error(f"{LOG_SYSTEM} 필터링된 심볼이 없습니다.")
+                return False
+            
+            # 업비트를 제외한 데이터 (기존 WebsocketManager용)
+            non_upbit_data = {k: v for k, v in filtered_data.items() if k != "upbit"}
+            
+            # 기존 WebsocketManager 시작 (업비트 제외)
+            await self.ws_manager.start_all_websockets(non_upbit_data)
+            
+            # 업비트 OrderManager 통합
+            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 시작")
+            await integrate_with_websocket_manager(self.ws_manager, self.settings, filtered_data)
+            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 완료")
+            
+            logger.info(f"{LOG_SYSTEM} 오더북 수집기 시작 완료")
+            return True
+            
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 시작 실패: {str(e)}")
+            return False
+    
+    async def stop(self):
+        """중지"""
+        try:
+            # WebsocketManager 중지
+            if self.ws_manager:
+                await self.ws_manager.shutdown()
+            
+            # OrderManager 중지 (WebsocketManager에 저장된 경우)
+            if hasattr(self.ws_manager, "order_managers"):
+                for manager in self.ws_manager.order_managers.values():
+                    await manager.stop()
+            
+            logger.info(f"{LOG_SYSTEM} 오더북 수집기 중지 완료")
+            
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 중지 실패: {str(e)}")
+    
+    async def run(self):
+        """실행"""
+        try:
+            # 초기화
+            if not await self.initialize():
+                return
+            
+            # 시작
+            if not await self.start():
+                await self.stop()
+                return
+            
+            # 종료 이벤트 대기
+            logger.info(f"{LOG_SYSTEM} 프로그램을 종료하려면 Ctrl+C를 누르세요")
+            await self.stop_event.wait()
+            
+            # 중지
+            await self.stop()
+            
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 실행 중 오류 발생: {str(e)}")
+            await self.stop()
 
 async def async_main():
     """비동기 메인 함수"""
-    settings = None
-    ws_manager = None
-    usdt_monitor = None
-    aggregator = None
-    
     try:
-        # 다음 자정 시간 계산
-        now = datetime.now()
-        tomorrow = calculate_next_midnight()
-        next_restart = tomorrow.timestamp()
-        
-        # 남은 시간 계산
-        remaining_time = format_remaining_time(tomorrow)
-        logger.info(f"{LOG_SYSTEM} 프로그램 시작 | 다음 재시작까지 {remaining_time} 남음")
-
-        # 설정 초기화 및 로드
-        await initialize_config()
+        # 설정 로드
+        logger.info(f"{LOG_SYSTEM} 설정 로드 시작")
+        start_time = time.time()
         settings = get_settings()
-        if not settings:
-            logger.error(f"{LOG_SYSTEM} 설정 로드 실패")
-            return
-
-        # 텔레그램 시작 메시지 전송 (비동기 태스크로 실행)
-        logger.info(f"{LOG_SYSTEM} 텔레그램 시작 메시지 전송 시작")
+        elapsed = time.time() - start_time
+        logger.info(f"{LOG_SYSTEM} 설정 로드 완료 (소요 시간: {elapsed:.3f}초)")
+        
+        # 텔레그램 시작 메시지 전송
         asyncio.create_task(send_telegram_message(settings, MessageType.STARTUP, TELEGRAM_START_MESSAGE))
         
-        # 웹소켓 매니저 초기화
-        logger.info(f"{LOG_SYSTEM} 웹소켓 매니저 초기화 시작")
-        start_time = time.time()
-        ws_manager = WebsocketManager(settings)
-        ws_manager.register_callback(websocket_callback)
-        elapsed = time.time() - start_time
-        logger.info(f"{LOG_SYSTEM} 웹소켓 매니저 초기화 완료 (소요 시간: {elapsed:.3f}초)")
-        
-        # Aggregator 초기화
-        logger.info(f"{LOG_SYSTEM} Aggregator 초기화 시작")
-        start_time = time.time()
-        aggregator = Aggregator(settings)
-        elapsed = time.time() - start_time
-        logger.info(f"{LOG_SYSTEM} Aggregator 초기화 완료 (소요 시간: {elapsed:.3f}초)")
-        
-        # USDT/KRW 모니터 초기화
-        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터 초기화 시작")
-        usdt_monitor = WsUsdtKrwMonitor()
-        usdt_monitor.add_price_callback(ws_manager.update_usdt_rate)
-        ws_manager.usdt_monitor = usdt_monitor
-        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터 초기화 완료")
-        
-        # 설정 변경 옵저버 등록
-        add_config_observer(on_settings_changed)
-        
-        # 심볼 필터링
-        logger.info(f"{LOG_SYSTEM} 심볼 필터링 시작")
-        start_time = time.time()
-        filtered_data = await aggregator.run_filtering()
-        elapsed = time.time() - start_time
-        logger.info(f"{LOG_SYSTEM} 심볼 필터링 완료 (소요 시간: {elapsed:.3f}초)")
-        
-        # 웹소켓 시작
-        logger.info(f"{LOG_SYSTEM} 웹소켓 연결 시작")
-        await ws_manager.start_all_websockets(filtered_data)
-        
-        # USDT/KRW 모니터링 시작 (비동기 태스크로 실행)
-        logger.info(f"{LOG_SYSTEM} USDT/KRW 모니터링 시작")
-        asyncio.create_task(usdt_monitor.start())
-        
-        # 다음 자정에 웹소켓 재시작 예약
-        await schedule_task(
-            "daily_websocket_reset",
-            tomorrow,
-            reset_websockets,
-            aggregator, ws_manager, settings
-        )
-        logger.info(f"{LOG_SYSTEM} 웹소켓 재시작 예약됨: {tomorrow.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # 백그라운드 태스크 시작
-        background_tasks = [
-            # 웹소켓 상태 확인 태스크
-            asyncio.create_task(ws_manager.check_message_delays()),
-            asyncio.create_task(ws_manager.check_alerts())
-        ]
-        logger.info(f"{LOG_SYSTEM} 백그라운드 태스크 시작됨")
-        logger.info(f"{LOG_SYSTEM} 프로그램을 종료하려면 Ctrl+C를 누르세요")
-        
-        # 태스크 완료 대기
-        await asyncio.gather(*background_tasks)
+        # 오더북 수집기 생성 및 실행
+        collector = OrderbookCollector(settings)
+        await collector.run()
         
     except KeyboardInterrupt:
-        logger.info(f"{LOG_SYSTEM} Ctrl+C 감지됨, 프로그램 종료 중...")
+        logger.info(f"{LOG_SYSTEM} 키보드 인터럽트 수신")
+        
     except Exception as e:
-        logger.error(f"{LOG_SYSTEM} 메인 루프 오류: {str(e)}", exc_info=True)
-        if settings:
-            await send_error(settings, "OrderBook Collector", f"실행 중 오류 발생: {str(e)}")
+        logger.error(f"{LOG_SYSTEM} 메인 함수 오류: {str(e)}")
+        
     finally:
-        # 종료 처리 통합
-        await cleanup(settings, ws_manager, usdt_monitor)
+        # 종료 처리
+        await shutdown()
 
 def main():
     """동기 메인 함수"""

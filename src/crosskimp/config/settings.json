@@ -133,7 +133,7 @@
     "filters": {
       "min_price_krw": 1000,
       "max_price_krw": 100000000,
-      "min_daily_volume_krw": 10000000000,
+      "min_daily_volume_krw": 1000000000,
       "min_market_cap_krw": 100000000000,
       "max_spread_pct": 1,
       "min_orderbook_depth_krw": 500000000,

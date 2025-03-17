@@ -28,6 +28,10 @@ logger = get_unified_logger()
 # ============================
 # 상수 정의
 # ============================
+# 최소 거래량 (KRW) - 이 값을 수정하여 필터링 기준 변경
+MIN_VOLUME_KRW = 10_000_000_000  # 100억원
+
+# API URL 정의
 UPBIT_URLS = {
     "market": "https://api.upbit.com/v1/market/all",
     "ticker": "https://api.upbit.com/v1/ticker"
@@ -606,10 +610,8 @@ class Aggregator:
             "bithumb"
         ]
         
-        # 최소 거래량
-        self.min_volume = settings.get("trading", {}).get("general", {}).get(
-            "min_volume_krw", 100_000_000_000  # 1천억원
-        )
+        # 최소 거래량 - 상수 사용
+        self.min_volume = MIN_VOLUME_KRW
         
         # 심볼 캐시
         self._binance_symbols_cache: Optional[List[str]] = None

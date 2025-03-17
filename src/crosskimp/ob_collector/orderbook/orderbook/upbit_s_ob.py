@@ -2,15 +2,17 @@
 
 import asyncio
 import time
+import json
+import datetime
 from typing import Dict, Optional, List
 
-from crosskimp.logger.logger import get_unified_logger
+from crosskimp.logger.logger import get_unified_logger, create_raw_logger
 
 from crosskimp.ob_collector.orderbook.orderbook.base_ob import BaseOrderBookManagerV2, OrderBookV2, ValidationResult
 from crosskimp.config.ob_constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
-from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
+# from crosskimp.ob_collector.cpp.cpp_interface import send_orderbook_to_cpp
 
 # ============================
 # 업비트 오더북 관련 상수
@@ -21,6 +23,7 @@ UPBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 업비트 설정
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
+raw_logger = create_raw_logger(EXCHANGE_CODE)
 
 class UpbitOrderBook(OrderBookV2):
     """
@@ -87,14 +90,50 @@ class UpbitOrderBook(OrderBookV2):
             if sequence:
                 self.last_update_id = sequence
                 
-            # C++로 데이터 직접 전송
-            asyncio.create_task(self.send_to_cpp())
+            # raw_data에 로깅
+            self.log_to_raw_data()
+                
+            # C++로 데이터 직접 전송 (주석 처리)
+            # asyncio.create_task(self.send_to_cpp())
                 
         except Exception as e:
             logger.error(
                 f"{EXCHANGE_KR} {self.symbol} 오더북 업데이트 실패: {str(e)}", 
                 exc_info=True
             )
+
+    def log_to_raw_data(self) -> None:
+        """
+        가공된 오더북 데이터를 raw_data 디렉토리에 로깅
+        """
+        try:
+            # 딕셔너리로 변환
+            orderbook_dict = self.to_dict()
+            
+            # 타임스탬프 추가
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            
+            # 로깅
+            raw_logger.debug(f"[{timestamp}] {json.dumps(orderbook_dict)}")
+            logger.debug(f"{EXCHANGE_KR} {self.symbol} 오더북 데이터 raw_data 디렉토리에 로깅 완료")
+        except Exception as e:
+            logger.error(f"{EXCHANGE_KR} {self.symbol} 오더북 데이터 로깅 실패: {str(e)}")
+
+    def to_dict(self) -> dict:
+        """
+        오더북 데이터를 딕셔너리로 변환
+        
+        None 값을 적절한 기본값으로 대체하여 C++ 직렬화 오류를 방지합니다.
+        """
+        current_time = int(time.time() * 1000)
+        return {
+            "exchangename": self.exchangename,
+            "symbol": self.symbol,
+            "bids": self.bids[:10] if self.bids else [],  # 상위 10개만
+            "asks": self.asks[:10] if self.asks else [],  # 상위 10개만
+            "timestamp": self.last_update_time or current_time,
+            "sequence": self.last_update_id or 0  # None인 경우 0으로 대체
+        }
 
 class UpbitOrderBookManager(BaseOrderBookManagerV2):
     """
@@ -136,14 +175,16 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
                     depth=self.depth
                 )
                 
-                # 새로 생성된 오더북에 큐 설정
-                if self._output_queue:
-                    self.orderbooks[symbol].set_output_queue(self._output_queue)
+                # 새로 생성된 오더북에 큐 설정 (주석 처리)
+                # if self._output_queue:
+                #     self.orderbooks[symbol].set_output_queue(self._output_queue)
             
-            # 데이터 변환
-            converted = self._convert_upbit_format(data)
-            bids = converted["bids"]
-            asks = converted["asks"]
+            # 파서에서 파싱된 데이터 사용 (항상 [[price, qty], ...] 형식으로 가정)
+            logger.debug(f"파서에서 파싱된 데이터 사용: {len(data['bids'])}개 매수, {len(data['asks'])}개 매도")
+            
+            # 데이터 추출
+            bids = data["bids"]
+            asks = data["asks"]
             
             # 업비트 특화 검증: bid/ask가 모두 있는 경우에만 가격 순서 체크
             is_valid = True
@@ -164,12 +205,12 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
                 self.orderbooks[symbol].update_orderbook(
                     bids=bids,
                     asks=asks,
-                    timestamp=converted["timestamp"],
-                    sequence=converted["sequence"]
+                    timestamp=data.get("timestamp"),
+                    sequence=data.get("sequence")
                 )
                 
-                # 큐로 데이터 전송 (필요한 경우)
-                await self.orderbooks[symbol].send_to_queue()
+                # 큐로 데이터 전송 (주석 처리)
+                # await self.orderbooks[symbol].send_to_queue()
                 
                 # 오더북 카운트 메트릭 업데이트
                 self.record_metric("orderbook", symbol=symbol)
@@ -181,7 +222,7 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
                 # DEBUG 레벨로 변경하여 스팸 로깅 감소
                 logger.debug(f"{EXCHANGE_KR} {symbol} 오더북 업데이트 | "
                            f"매수:{len(bids)}건, 매도:{len(asks)}건, "
-                           f"시퀀스:{converted['sequence']}")
+                           f"시퀀스:{data.get('sequence')}")
             else:
                 # 검증 실패 메트릭 기록
                 self.record_metric("error", error_type="validation_failed")
@@ -199,27 +240,20 @@ class UpbitOrderBookManager(BaseOrderBookManagerV2):
             return ValidationResult(False, [str(e)])
 
     async def update(self, symbol: str, data: dict) -> ValidationResult:
-        """실시간 오더북 업데이트 - 업비트는 모든 메시지가 스냅샷이므로 initialize_orderbook과 동일하게 처리"""
-        return await self.initialize_orderbook(symbol, data)
-
-    def _convert_upbit_format(self, data: dict) -> dict:
-        """업비트 데이터 형식으로 변환"""
-        # 이미 변환된 형식인지 확인
-        if isinstance(data.get('bids', []), list) and isinstance(data.get('asks', []), list):
-            bids = [[item['price'], item['size']] for item in data['bids']]
-            asks = [[item['price'], item['size']] for item in data['asks']]
-        else:
-            # 원본 데이터에서 변환
-            orderbook_units = data.get('orderbook_units', [])
-            bids = [[float(unit['bid_price']), float(unit['bid_size'])] for unit in orderbook_units]
-            asks = [[float(unit['ask_price']), float(unit['ask_size'])] for unit in orderbook_units]
+        """
+        오더북 업데이트 메서드
         
-        return {
-            'bids': bids,
-            'asks': asks,
-            'timestamp': data.get('timestamp'),
-            'sequence': data.get('sequence')
-        }
+        업비트는 모든 메시지가 스냅샷이므로 initialize_orderbook과 동일하게 처리합니다.
+        다른 거래소와의 인터페이스 일관성을 위해 제공됩니다.
+        
+        Args:
+            symbol: 심볼
+            data: 오더북 데이터
+            
+        Returns:
+            ValidationResult: 검증 결과
+        """
+        return await self.initialize_orderbook(symbol, data)
 
     def get_orderbook(self, symbol: str) -> Optional[UpbitOrderBook]:
         """심볼의 오더북 반환"""

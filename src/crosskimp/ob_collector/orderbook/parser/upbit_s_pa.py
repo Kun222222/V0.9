@@ -18,9 +18,6 @@ from crosskimp.ob_collector.orderbook.parser.base_parser import BaseParser
 EXCHANGE_CODE = Exchange.UPBIT.value  # 거래소 코드
 UPBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 업비트 설정
 
-# 응답 관련 상수
-PONG_RESPONSE = UPBIT_CONFIG["pong_response"]  # 업비트 PONG 응답 형식
-
 class UpbitParser(BaseParser):
     """
     업비트 파서 클래스
@@ -54,10 +51,6 @@ class UpbitParser(BaseParser):
             if isinstance(raw_message, bytes):
                 raw_message = raw_message.decode("utf-8")
             
-            # PING 응답 처리
-            if raw_message == PONG_RESPONSE:
-                return None
-            
             # JSON 파싱
             data = json.loads(raw_message)
             
@@ -76,12 +69,16 @@ class UpbitParser(BaseParser):
             ts = data.get("timestamp", int(time.time()*1000))
             
             # 오더북 데이터 추출 및 변환
-            bids, asks = self._extract_orderbook_data(data.get("orderbook_units", []), symbol)
+            bids_dict, asks_dict = self._extract_orderbook_data(data.get("orderbook_units", []), symbol)
 
             # 유효성 검사
-            if not bids or not asks:
+            if not bids_dict or not asks_dict:
                 self.stats["invalid_parsed"] += 1
                 return None
+                
+            # 딕셔너리 형식에서 리스트 형식으로 변환 ({'price': p, 'size': s} -> [p, s])
+            bids = [[item['price'], item['size']] for item in bids_dict]
+            asks = [[item['price'], item['size']] for item in asks_dict]
 
             # 파싱 성공 카운트 증가
             self.stats["valid_parsed"] += 1
@@ -94,7 +91,7 @@ class UpbitParser(BaseParser):
                 "asks": asks,
                 "timestamp": ts,
                 "sequence": ts,
-                "type": "delta"  # 업비트는 항상 전체 오더북 제공
+                "type": "snapshot"  # 업비트는 항상 전체 오더북 제공
             }
         except json.JSONDecodeError:
             self.log_error(f"JSON 파싱 실패: {raw_message[:100]}...")
@@ -160,18 +157,7 @@ class UpbitParser(BaseParser):
             {
                 "type": "orderbook",
                 "codes": markets,
-                "isOnlyRealtime": False  # 스냅샷 포함 요청
-            }
-        ]
-
-    def is_pong_message(self, message: str) -> bool:
-        """
-        PONG 메시지 여부 확인
-        
-        Args:
-            message: 수신된 메시지
-            
-        Returns:
-            bool: PONG 메시지인 경우 True, 아니면 False
-        """
-        return message == PONG_RESPONSE 
+                "is_only_realtime": False  # 스냅샷 포함 요청
+            },
+            {"format": "DEFAULT"}
+        ] 
