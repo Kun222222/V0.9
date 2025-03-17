@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 
+from crosskimp.logger.logger import get_unified_logger
+
 class ValidationError(Enum):
     """검증 오류 유형"""
     PRICE_INVERSION = "price_inversion"  # 가격 역전
@@ -22,9 +24,10 @@ class ValidationError(Enum):
 @dataclass
 class ValidationResult:
     """검증 결과"""
-    is_valid: bool
+    is_valid: bool = False
     errors: List[str] = None
     error_types: List[ValidationError] = None
+    warnings: List[str] = None
     limited_bids: List[List[float]] = None  # 뎁스 제한된 매수 호가
     limited_asks: List[List[float]] = None  # 뎁스 제한된 매도 호가
 
@@ -33,39 +36,84 @@ class ValidationResult:
             self.errors = []
         if self.error_types is None:
             self.error_types = []
+        if self.warnings is None:
+            self.warnings = []
 
 class BaseOrderBookValidator:
-    """
-    기본 오더북 검증 클래스
+    """기본 오더북 검증기"""
     
-    거래소별 오더북 데이터의 유효성을 검증합니다.
-    - 가격 역전 검증
-    - 뎁스 검증
-    - 순서 검증
-    - 가격/수량 유효성 검증
-    - 시퀀스/타임스탬프 검증
-    - 내부 뎁스 관리 (100개 이상) 및 출력 뎁스 제한 (10개)
-    """
-    
-    def __init__(self, exchange_code: str, depth: int = 10):
+    def __init__(self, exchange_code: str):
         """
         초기화
         
         Args:
             exchange_code: 거래소 코드
-            depth: 출력 뎁스 (기본값: 10)
         """
-        self.exchange_code = exchange_code
-        self.depth = depth
+        # 거래소 코드는 소문자로 통일
+        self.exchange_code = exchange_code.lower()
+        
+        # 오더북 상태 관리
+        self.orderbooks = {}  # symbol -> orderbook
+        self.sequences = {}   # symbol -> sequence
+        self.logger = get_unified_logger()
+        
+        # 제한적인 오더북 깊이 (일반적으로 20-50개 사용)
+        self.max_orderbook_depth = 50
+        
+        # 출력용 깊이 제한 (로그 및 출력용)
+        self.output_depth = 10
+        
         self.last_sequence = {}  # symbol -> sequence
         self.last_timestamp = {}  # symbol -> timestamp
-        self.orderbooks = {}  # symbol -> (bids, asks, timestamp, sequence)
+        self.orderbooks_dict = {}  # symbol -> {"bids": {price: size}, "asks": {price: size}}
+        
+    async def initialize_orderbook(self, symbol: str, data: Dict) -> ValidationResult:
+        """
+        오더북 초기화 (스냅샷)
+        
+        Args:
+            symbol: 심볼
+            data: 오더북 데이터
+            
+        Returns:
+            ValidationResult: 검증 결과
+        """
+        # 스냅샷 데이터 검증
+        return self.validate_orderbook(
+            symbol=symbol,
+            bids=data.get("bids", []),
+            asks=data.get("asks", []),
+            timestamp=data.get("timestamp"),
+            sequence=data.get("sequence"),
+            is_snapshot=True
+        )
+        
+    async def update(self, symbol: str, data: Dict) -> ValidationResult:
+        """
+        오더북 업데이트 (델타)
+        
+        Args:
+            symbol: 심볼
+            data: 오더북 데이터
+            
+        Returns:
+            ValidationResult: 검증 결과
+        """
+        # 델타 업데이트 데이터 검증
+        return self.validate_orderbook(
+            symbol=symbol,
+            bids=data.get("bids", []),
+            asks=data.get("asks", []),
+            timestamp=data.get("timestamp"),
+            sequence=data.get("sequence"),
+            is_snapshot=False
+        )
         
     def validate_orderbook(self, symbol: str, bids: List[List[float]], 
                           asks: List[List[float]], timestamp: Optional[int] = None,
-                          sequence: Optional[int] = None) -> ValidationResult:
+                          sequence: Optional[int] = None, is_snapshot: bool = False) -> ValidationResult:
         """
-        오더북 데이터 검증 (델타 업데이트용)
+        오더북 데이터 검증
         
         Args:
             symbol: 심볼
@@ -73,67 +121,91 @@ class BaseOrderBookValidator:
             asks: 매도 호가 목록 [[price, size], ...]
             timestamp: 타임스탬프
             sequence: 시퀀스 번호
+            is_snapshot: 스냅샷 여부
             
         Returns:
             ValidationResult: 검증 결과
         """
         errors = []
         error_types = []
+        warnings = []  # 경고 메시지 추가
         
-        # 1. 기본 검증
-        if not bids and not asks:
+        # 1. 기본 검증 (스냅샷인 경우에만 빈 오더북 검증)
+        if is_snapshot and not bids and not asks:
             errors.append("빈 오더북")
             error_types.append(ValidationError.EMPTY_ORDERBOOK)
-            return ValidationResult(False, errors, error_types)
+            return ValidationResult(
+                is_valid=False,
+                errors=errors,
+                error_types=error_types
+            )
             
-        # 2. 가격/수량 유효성 검증
-        price_errors = self._validate_prices_and_sizes(bids, asks)
+        # 2. 가격/수량 유효성 검증 (0 크기는 삭제 명령이므로 허용)
+        price_errors = self._validate_prices_and_sizes(bids, asks, allow_zero_size=not is_snapshot)
         if price_errors:
             errors.extend(price_errors)
             error_types.extend([ValidationError.INVALID_PRICE] * len(price_errors))
             
-        # 3. 가격 역전 검증
-        if bids and asks:
-            max_bid = max(bid[0] for bid in bids)
-            min_ask = min(ask[0] for ask in asks)
-            if max_bid >= min_ask:
-                errors.append(f"가격 역전: {max_bid} >= {min_ask}")
-                error_types.append(ValidationError.PRICE_INVERSION)
-                
-        # 4. 순서 검증
-        if not self._validate_order(bids, reverse=True):
-            errors.append("매수 호가 순서 오류")
-            error_types.append(ValidationError.ORDER_INVALID)
-        if not self._validate_order(asks, reverse=False):
-            errors.append("매도 호가 순서 오류")
-            error_types.append(ValidationError.ORDER_INVALID)
-            
-        # 5. 시퀀스/타임스탬프 검증
+        # 3. 시퀀스 검증
         if sequence is not None:
             seq_errors = self._validate_sequence(symbol, sequence)
             if seq_errors:
                 errors.extend(seq_errors)
                 error_types.extend([ValidationError.SEQUENCE_GAP] * len(seq_errors))
                 
+        # 4. 타임스탬프 검증
         if timestamp is not None:
             ts_errors = self._validate_timestamp(symbol, timestamp)
             if ts_errors:
                 errors.extend(ts_errors)
                 error_types.extend([ValidationError.TIMESTAMP_INVALID] * len(ts_errors))
         
-        # 6. 오더북 업데이트
+        # 5. 오더북 업데이트
         if len(errors) == 0:  # 검증 통과한 경우에만 업데이트
-            self._update_orderbook(symbol, bids, asks, timestamp, sequence)
+            self._update_orderbook_delta(symbol, bids, asks, timestamp, sequence, is_snapshot)
+            
+            # 업데이트 후 가격 역전 검증 (경고만 추가하고 오류로 처리하지 않음)
+            if symbol in self.orderbooks_dict:
+                sorted_bids = sorted(self.orderbooks_dict[symbol]["bids"].items(), key=lambda x: x[0], reverse=True)
+                sorted_asks = sorted(self.orderbooks_dict[symbol]["asks"].items(), key=lambda x: x[0])
+                
+                if sorted_bids and sorted_asks:
+                    max_bid = sorted_bids[0][0]
+                    min_ask = sorted_asks[0][0]
+                    if max_bid >= min_ask:
+                        warnings.append(f"가격 역전: {max_bid} >= {min_ask}")
+                        # 경고로만 처리하고 error_types에 추가하지 않음
+            
+            # 정렬된 오더북 생성 및 저장
+            self._update_sorted_orderbook(symbol)
         
-        # 7. 출력용 뎁스 제한 적용
+        # 6. 출력용 뎁스 제한 적용
         limited_bids = self._limit_depth(self.orderbooks[symbol]["bids"])
         limited_asks = self._limit_depth(self.orderbooks[symbol]["asks"])
                 
-        return ValidationResult(len(errors) == 0, errors, error_types, limited_bids, limited_asks)
+        # 경고가 있어도 검증은 통과한 것으로 처리
+        return ValidationResult(
+            is_valid=len(errors) == 0,
+            errors=errors,
+            error_types=error_types,
+            warnings=warnings,
+            limited_bids=limited_bids,
+            limited_asks=limited_asks
+        )
         
     def _validate_prices_and_sizes(self, bids: List[List[float]], 
-                                 asks: List[List[float]]) -> List[str]:
-        """가격과 수량의 유효성 검증"""
+                                 asks: List[List[float]], allow_zero_size: bool = False) -> List[str]:
+        """
+        가격과 수량의 유효성 검증
+        
+        Args:
+            bids: 매수 호가 목록
+            asks: 매도 호가 목록
+            allow_zero_size: 0 크기 허용 여부 (델타 업데이트에서는 허용)
+            
+        Returns:
+            List[str]: 오류 메시지 목록
+        """
         errors = []
         
         # 매수 호가 검증
@@ -145,7 +217,7 @@ class BaseOrderBookValidator:
             price, size = bid
             if price <= 0:
                 errors.append(f"유효하지 않은 매수가: {price}")
-            if size <= 0:
+            if size < 0 or (size == 0 and not allow_zero_size):
                 errors.append(f"유효하지 않은 매수량: {size}")
                 
         # 매도 호가 검증
@@ -157,7 +229,7 @@ class BaseOrderBookValidator:
             price, size = ask
             if price <= 0:
                 errors.append(f"유효하지 않은 매도가: {price}")
-            if size <= 0:
+            if size < 0 or (size == 0 and not allow_zero_size):
                 errors.append(f"유효하지 않은 매도량: {size}")
                 
         return errors
@@ -173,12 +245,12 @@ class BaseOrderBookValidator:
         """시퀀스 검증"""
         errors = []
         
-        if symbol in self.last_sequence:
-            last_seq = self.last_sequence[symbol]
+        if symbol in self.sequences:
+            last_seq = self.sequences[symbol]
             if sequence <= last_seq:
                 errors.append(f"시퀀스 갭: last={last_seq}, current={sequence}")
                 
-        self.last_sequence[symbol] = sequence
+        self.sequences[symbol] = sequence
         return errors
         
     def _validate_timestamp(self, symbol: str, timestamp: int) -> List[str]:
@@ -197,13 +269,13 @@ class BaseOrderBookValidator:
         """호가 뎁스 제한"""
         if not orders:
             return []
-        return orders[:self.depth]
+        return orders[:self.output_depth]
         
-    def _update_orderbook(self, symbol: str, bids: List[List[float]], 
-                         asks: List[List[float]], timestamp: Optional[int] = None,
-                         sequence: Optional[int] = None) -> None:
+    def _update_orderbook_delta(self, symbol: str, bids: List[List[float]], 
+                               asks: List[List[float]], timestamp: Optional[int] = None,
+                               sequence: Optional[int] = None, is_snapshot: bool = False) -> None:
         """
-        오더북 데이터 업데이트
+        오더북 데이터 업데이트 (델타 방식)
         
         Args:
             symbol: 심볼
@@ -211,8 +283,13 @@ class BaseOrderBookValidator:
             asks: 매도 호가 목록
             timestamp: 타임스탬프
             sequence: 시퀀스 번호
+            is_snapshot: 스냅샷 여부
         """
         # 심볼별 오더북 데이터 초기화
+        if symbol not in self.orderbooks_dict:
+            self.orderbooks_dict[symbol] = {"bids": {}, "asks": {}}
+            
+        # 심볼별 정렬된 오더북 데이터 초기화
         if symbol not in self.orderbooks:
             self.orderbooks[symbol] = {
                 "bids": [],
@@ -221,13 +298,88 @@ class BaseOrderBookValidator:
                 "sequence": None
             }
         
-        # 데이터 업데이트
-        self.orderbooks[symbol].update({
-            "bids": bids,
-            "asks": asks,
-            "timestamp": timestamp,
-            "sequence": sequence
-        })
+        # 스냅샷인 경우 오더북 초기화
+        if is_snapshot:
+            self.orderbooks_dict[symbol]["bids"] = {float(bid[0]): float(bid[1]) for bid in bids}
+            self.orderbooks_dict[symbol]["asks"] = {float(ask[0]): float(ask[1]) for ask in asks}
+        # 델타인 경우 오더북 업데이트
+        else:
+            # 매수 호가 업데이트
+            for bid in bids:
+                price = float(bid[0])
+                size = float(bid[1])
+                if size == 0:  # 삭제
+                    self.orderbooks_dict[symbol]["bids"].pop(price, None)
+                else:  # 추가 또는 수정
+                    self.orderbooks_dict[symbol]["bids"][price] = size
+            
+            # 매도 호가 업데이트
+            for ask in asks:
+                price = float(ask[0])
+                size = float(ask[1])
+                if size == 0:  # 삭제
+                    self.orderbooks_dict[symbol]["asks"].pop(price, None)
+                else:  # 추가 또는 수정
+                    self.orderbooks_dict[symbol]["asks"][price] = size
+        
+        # 가격 역전 해결: 매수가가 매도가보다 높은 경우 충돌하는 주문 제거
+        if symbol in self.orderbooks_dict and self.orderbooks_dict[symbol]["bids"] and self.orderbooks_dict[symbol]["asks"]:
+            max_bid = max(self.orderbooks_dict[symbol]["bids"].keys())
+            min_ask = min(self.orderbooks_dict[symbol]["asks"].keys())
+            
+            if max_bid >= min_ask:
+                # 가격 역전 발생 - 충돌하는 주문 제거
+                # 매수 주문 중 매도 최저가 이상인 주문 제거
+                bids_to_remove = [p for p in self.orderbooks_dict[symbol]["bids"].keys() if p >= min_ask]
+                for p in bids_to_remove:
+                    self.orderbooks_dict[symbol]["bids"].pop(p, None)
+                
+                # 매도 주문 중 매수 최고가 이하인 주문 제거
+                asks_to_remove = [p for p in self.orderbooks_dict[symbol]["asks"].keys() if p <= max_bid]
+                for p in asks_to_remove:
+                    self.orderbooks_dict[symbol]["asks"].pop(p, None)
+        
+        # 타임스탬프 및 시퀀스 업데이트
+        self.orderbooks[symbol]["timestamp"] = timestamp
+        self.orderbooks[symbol]["sequence"] = sequence
+        
+    def _update_sorted_orderbook(self, symbol: str) -> None:
+        """
+        정렬된 오더북 생성 및 저장
+        
+        Args:
+            symbol: 심볼
+        """
+        if symbol not in self.orderbooks_dict:
+            return
+            
+        # 정렬된 오더북 생성
+        sorted_bids = sorted(self.orderbooks_dict[symbol]["bids"].items(), key=lambda x: x[0], reverse=True)
+        sorted_asks = sorted(self.orderbooks_dict[symbol]["asks"].items(), key=lambda x: x[0])
+        
+        # 리스트 형태로 변환
+        bids_list = [[price, size] for price, size in sorted_bids]
+        asks_list = [[price, size] for price, size in sorted_asks]
+        
+        # 정렬된 오더북 저장
+        self.orderbooks[symbol]["bids"] = bids_list
+        self.orderbooks[symbol]["asks"] = asks_list
+        
+    def _update_orderbook(self, symbol: str, bids: List[List[float]], 
+                         asks: List[List[float]], timestamp: Optional[int] = None,
+                         sequence: Optional[int] = None) -> None:
+        """
+        오더북 데이터 업데이트 (기존 메서드, 호환성 유지)
+        
+        Args:
+            symbol: 심볼
+            bids: 매수 호가 목록
+            asks: 매도 호가 목록
+            timestamp: 타임스탬프
+            sequence: 시퀀스 번호
+        """
+        # 델타 업데이트 메서드 호출 (스냅샷 모드)
+        self._update_orderbook_delta(symbol, bids, asks, timestamp, sequence, is_snapshot=True)
         
     def get_orderbook(self, symbol: str) -> Optional[Dict]:
         """
@@ -242,10 +394,10 @@ class BaseOrderBookValidator:
         if symbol not in self.orderbooks:
             return None
             
-        # 출력용 뎁스 제한 적용
+        # 출력용 뎁스 제한 적용 (self.output_depth 사용)
         return {
-            "bids": self._limit_depth(self.orderbooks[symbol]["bids"]),
-            "asks": self._limit_depth(self.orderbooks[symbol]["asks"]),
+            "bids": self.orderbooks[symbol]["bids"][:self.output_depth],
+            "asks": self.orderbooks[symbol]["asks"][:self.output_depth],
             "timestamp": self.orderbooks[symbol]["timestamp"],
             "sequence": self.orderbooks[symbol]["sequence"]
         }
@@ -253,155 +405,9 @@ class BaseOrderBookValidator:
     def clear_symbol(self, symbol: str) -> None:
         """심볼 데이터 제거"""
         self.orderbooks.pop(symbol, None)
+        self.orderbooks_dict.pop(symbol, None)
         
     def clear_all(self) -> None:
         """전체 데이터 제거"""
         self.orderbooks.clear()
-
-class UpbitOrderBookValidator(BaseOrderBookValidator):
-    """
-    업비트 전용 오더북 검증 클래스
-    
-    업비트의 스냅샷 형태 오더북 데이터를 검증합니다.
-    - 타임스탬프 기반 시퀀스 관리
-    - 전체 스냅샷 검증
-    """
-    
-    def __init__(self, exchange_code: str = "upbit", depth: int = 10):
-        super().__init__(exchange_code, depth)
-        self.last_timestamp = {}  # symbol -> timestamp
-        
-    async def initialize_orderbook(self, symbol: str, data: Dict) -> ValidationResult:
-        """
-        오더북 초기화 (업비트 전용)
-        
-        Args:
-            symbol: 심볼
-            data: 오더북 데이터
-            
-        Returns:
-            ValidationResult: 검증 결과
-        """
-        # 스냅샷 데이터 검증
-        return self.validate_orderbook(
-            symbol=symbol,
-            bids=data.get("bids", []),
-            asks=data.get("asks", []),
-            timestamp=data.get("timestamp")
-        )
-        
-    async def update(self, symbol: str, data: Dict) -> ValidationResult:
-        """
-        오더북 업데이트 (업비트 전용)
-        
-        업비트는 항상 스냅샷을 받으므로, update도 initialize와 동일하게 처리합니다.
-        
-        Args:
-            symbol: 심볼
-            data: 오더북 데이터
-            
-        Returns:
-            ValidationResult: 검증 결과
-        """
-        return await self.initialize_orderbook(symbol, data)
-        
-    def validate_orderbook(self, symbol: str, bids: List[List[float]], 
-                          asks: List[List[float]], timestamp: Optional[int] = None,
-                          sequence: Optional[int] = None) -> ValidationResult:
-        """
-        업비트 오더북 데이터 검증 (스냅샷)
-        
-        Args:
-            symbol: 심볼
-            bids: 매수 호가 목록 [[price, size], ...]
-            asks: 매도 호가 목록 [[price, size], ...]
-            timestamp: 타임스탬프
-            sequence: 시퀀스 번호 (업비트에서는 사용하지 않음)
-            
-        Returns:
-            ValidationResult: 검증 결과
-        """
-        errors = []
-        error_types = []
-        
-        # 1. 기본 검증
-        if not bids and not asks:
-            errors.append("빈 오더북")
-            error_types.append(ValidationError.EMPTY_ORDERBOOK)
-            return ValidationResult(False, errors, error_types)
-            
-        # 2. 타임스탬프 검증 (업비트는 타임스탬프 기반)
-        if timestamp is not None:
-            ts_errors = self._validate_timestamp(symbol, timestamp)
-            if ts_errors:
-                errors.extend(ts_errors)
-                error_types.extend([ValidationError.TIMESTAMP_INVALID] * len(ts_errors))
-                return ValidationResult(False, errors, error_types)  # 타임스탬프 오류는 즉시 반환
-        
-        # 3. 가격/수량 유효성 검증
-        price_errors = self._validate_prices_and_sizes(bids, asks)
-        if price_errors:
-            errors.extend(price_errors)
-            error_types.extend([ValidationError.INVALID_PRICE] * len(price_errors))
-            
-        # 4. 가격 역전 검증
-        if bids and asks:
-            max_bid = max(bid[0] for bid in bids)
-            min_ask = min(ask[0] for ask in asks)
-            if max_bid >= min_ask:
-                errors.append(f"가격 역전: {max_bid} >= {min_ask}")
-                error_types.append(ValidationError.PRICE_INVERSION)
-                
-        # 5. 순서 검증
-        if not self._validate_order(bids, reverse=True):
-            errors.append("매수 호가 순서 오류")
-            error_types.append(ValidationError.ORDER_INVALID)
-        if not self._validate_order(asks, reverse=False):
-            errors.append("매도 호가 순서 오류")
-            error_types.append(ValidationError.ORDER_INVALID)
-        
-        # 6. 오더북 업데이트 (스냅샷 방식)
-        if len(errors) == 0:  # 검증 통과한 경우에만 업데이트
-            self._update_orderbook(symbol, bids, asks, timestamp)
-        
-        # 7. 출력용 뎁스 제한 적용
-        limited_bids = self._limit_depth(self.orderbooks[symbol]["bids"])
-        limited_asks = self._limit_depth(self.orderbooks[symbol]["asks"])
-                
-        return ValidationResult(len(errors) == 0, errors, error_types, limited_bids, limited_asks)
-        
-    def _validate_timestamp(self, symbol: str, timestamp: int) -> List[str]:
-        """
-        타임스탬프 검증 (업비트 전용)
-        - 타임스탬프가 이전보다 작거나 같으면 오류
-        """
-        errors = []
-        
-        if symbol in self.last_timestamp:
-            last_ts = self.last_timestamp[symbol]
-            if timestamp <= last_ts:
-                errors.append(f"타임스탬프 역전: last={last_ts}, current={timestamp}")
-                
-        self.last_timestamp[symbol] = timestamp
-        return errors
-        
-    def _update_orderbook(self, symbol: str, bids: List[List[float]], 
-                         asks: List[List[float]], timestamp: Optional[int] = None) -> None:
-        """
-        오더북 데이터 업데이트 (업비트 전용)
-        - 스냅샷 방식으로 전체 데이터 교체
-        """
-        # 심볼별 오더북 데이터 초기화
-        if symbol not in self.orderbooks:
-            self.orderbooks[symbol] = {
-                "bids": [],
-                "asks": [],
-                "timestamp": None
-            }
-        
-        # 데이터 업데이트 (스냅샷 방식)
-        self.orderbooks[symbol].update({
-            "bids": bids,
-            "asks": asks,
-            "timestamp": timestamp
-        }) 
+        self.orderbooks_dict.clear() 
