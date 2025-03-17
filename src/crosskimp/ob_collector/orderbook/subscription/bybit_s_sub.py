@@ -15,23 +15,22 @@ import websockets.exceptions
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import (
     BaseSubscription, 
     SnapshotMethod, 
-    DeltaMethod,
-    SubscriptionStatus
+    DeltaMethod
 )
 from crosskimp.logger.logger import get_unified_logger, create_raw_logger
-from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
+from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 
 # ============================
 # 바이빗 현물 구독 관련 상수
 # ============================
 # 거래소 코드
-EXCHANGE_CODE = Exchange.BYBIT.value  # 거래소 코드
-BYBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이빗 설정
+EXCHANGE_CODE = "bybit"  # 거래소 코드 (소문자로 통일)
 
 # 웹소켓 설정
-REST_URL = BYBIT_CONFIG.get("api_urls", {}).get("depth", "")  # REST API URL
-WS_URL = BYBIT_CONFIG["ws_url"]  # 웹소켓 URL
-MAX_SYMBOLS_PER_SUBSCRIPTION = BYBIT_CONFIG["max_symbols_per_subscription"]  # 구독당 최대 심볼 수
+REST_URL = "https://api.bybit.com/v5/market/orderbook"  # REST API URL
+WS_URL = "wss://stream.bybit.com/v5/public/spot"  # 웹소켓 URL
+MAX_SYMBOLS_PER_SUBSCRIPTION = 10  # 구독당 최대 심볼 수
+DEFAULT_DEPTH = 50  # 기본 오더북 깊이
 
 class BybitSubscription(BaseSubscription):
     """
@@ -52,32 +51,20 @@ class BybitSubscription(BaseSubscription):
             connection: 웹소켓 연결 객체
             parser: 메시지 파싱 객체 (선택적)
         """
-        super().__init__(connection, parser)
+        super().__init__(connection, EXCHANGE_CODE, parser)
         
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
-        self.subscribed_symbols = []
-        
-        # 메시지 처리 통계
-        self.message_stats = {
-            "total_received": 0,
-            "snapshot": 0,
-            "delta": 0,
-            "errors": 0
-        }
         
         # 로깅 설정
         self.logger = get_unified_logger()
         self.raw_logger = create_raw_logger(EXCHANGE_CODE)
         
-        # 메시지 루프 태스크
-        self.message_loop_task = None
-        self.stop_event = asyncio.Event()
+        # 원시 데이터 로깅 비활성화 (필요시에만 활성화)
+        self.log_raw_data = False
         
-        # 콜백 함수
-        self.on_snapshot_callbacks = {}  # symbol -> callback
-        self.on_delta_callbacks = {}     # symbol -> callback
-        self.on_error_callbacks = {}     # symbol -> callback
+        # 바이빗 오더북 검증기 초기화
+        self.validator = BaseOrderBookValidator(EXCHANGE_CODE)
     
     def _get_snapshot_method(self) -> SnapshotMethod:
         """
@@ -121,7 +108,7 @@ class BybitSubscription(BaseSubscription):
         args = []
         for sym in symbols:
             market = f"{sym}USDT"
-            args.append(f"orderbook.{BYBIT_CONFIG.get('default_depth', 50)}.{market}")
+            args.append(f"orderbook.{DEFAULT_DEPTH}.{market}")
         
         # 구독 메시지 생성
         return {
@@ -142,7 +129,7 @@ class BybitSubscription(BaseSubscription):
         market = f"{symbol}USDT"
         return {
             "op": "unsubscribe",
-            "args": [f"orderbook.{BYBIT_CONFIG.get('default_depth', 50)}.{market}"]
+            "args": [f"orderbook.{DEFAULT_DEPTH}.{market}"]
         }
     
     def is_snapshot_message(self, message: str) -> bool:
@@ -177,6 +164,31 @@ class BybitSubscription(BaseSubscription):
         except (json.JSONDecodeError, KeyError):
             return False
     
+    def log_raw_message(self, message: str) -> None:
+        """
+        원시 메시지 로깅
+        
+        Args:
+            message: 원시 메시지
+        """
+        # log_raw_data가 True인 경우에만 로깅
+        if self.log_raw_data and self.raw_logger:
+            try:
+                # 바이트 메시지 디코딩
+                if isinstance(message, bytes):
+                    message = message.decode('utf-8')
+                
+                # JSON 형태로 파싱하여 필요한 정보만 로깅
+                data = json.loads(message)
+                topic = data.get('topic', 'unknown')
+                
+                # 타임스탬프 추가하여 간소화된 형태로 로깅
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                self.raw_logger.debug(f"[{timestamp}] Raw message received for topic: {topic}")
+            except Exception as e:
+                self.logger.error(f"원본 메시지 로깅 실패: {str(e)}")
+        # 로깅 비활성화 상태면 아무것도 하지 않음
+    
     async def get_rest_snapshot(self, symbol: str) -> Dict:
         """
         REST API를 통해 스냅샷 요청 (REST 방식인 경우)
@@ -193,127 +205,103 @@ class BybitSubscription(BaseSubscription):
         self.logger.warning(f"바이빗은 REST API 스냅샷을 지원하지 않습니다. 웹소켓을 통해 스냅샷을 수신하세요.")
         return {}
     
-    async def _run_message_loop(self):
+    async def _on_message(self, message: str) -> None:
         """
-        메시지 수신 루프 실행
-        
-        웹소켓으로부터 메시지를 수신하고 처리합니다.
-        """
-        try:
-            self.logger.info(f"바이빗 메시지 수신 루프 시작")
-            
-            while not self.stop_event.is_set():
-                try:
-                    # 메시지 수신
-                    message = await self.connection.receive_raw()
-                    
-                    if message is None:
-                        # 연결이 끊어진 경우
-                        self.logger.warning(f"바이빗 웹소켓 연결이 끊어졌습니다. 메시지 루프를 종료합니다.")
-                        break
-                    
-                    # 메시지 처리
-                    await self._process_message(message)
-                    
-                except websockets.exceptions.ConnectionClosed as e:
-                    self.logger.error(f"바이빗 웹소켓 연결이 닫혔습니다: {e}")
-                    break
-                    
-                except asyncio.CancelledError:
-                    self.logger.info(f"바이빗 메시지 루프가 취소되었습니다.")
-                    break
-                    
-                except Exception as e:
-                    self.logger.error(f"바이빗 메시지 처리 중 오류 발생: {e}")
-                    self.message_stats["errors"] += 1
-                    continue
-                    
-        except Exception as e:
-            self.logger.error(f"바이빗 메시지 루프 실행 중 오류 발생: {e}")
-            
-        finally:
-            self.logger.info(f"바이빗 메시지 수신 루프 종료")
-            self.status = SubscriptionStatus.CLOSED
-    
-    async def _process_message(self, message):
-        """
-        메시지 처리
+        메시지 수신 처리
         
         Args:
-            message: 수신된 메시지
+            message: 수신된 원시 메시지
         """
         try:
-            # 메시지 통계 업데이트
-            self.message_stats["total_received"] += 1
-            
-            # 바이트 메시지 디코딩
-            raw_message = message
-            if isinstance(message, bytes):
-                message = message.decode('utf-8')
-            
-            # raw 로거를 사용하여 원본 메시지 로깅
-            try:
-                # 타임스탬프 추가
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-                self.raw_logger.debug(f"[{timestamp}] {message}")
-                self.logger.debug(f"원본 메시지 raw_data 디렉토리에 로깅 완료")
-            except Exception as e:
-                self.logger.error(f"원본 메시지 로깅 실패: {str(e)}")
-            
-            # JSON 파싱
-            try:
-                data = json.loads(message)
-            except json.JSONDecodeError as e:
-                self.logger.error(f"JSON 파싱 실패: {e}")
-                self.message_stats["errors"] += 1
-                return
-            
-            # 구독 응답 처리
-            if data.get("op") == "subscribe":
-                self.logger.info(f"구독 응답 수신: {data}")
-                return
+            # 메시지 파싱
+            parsed_data = None
+            if self.parser:
+                parsed_data = self.parser.parse_message(message)
                 
-            # PONG 응답 처리
-            if data.get("op") == "pong" or (data.get("ret_msg") == "pong" and data.get("op") == "ping"):
-                self.logger.debug(f"PONG 응답 수신")
+            if not parsed_data:
                 return
             
-            # 오더북 메시지 처리
-            if "topic" in data and "data" in data:
-                topic = data.get("topic", "")
-                if "orderbook" in topic:
-                    # 심볼 추출
-                    parts = topic.split(".")
-                    if len(parts) >= 3:
-                        symbol = parts[-1].replace("USDT", "")
-                        msg_type = data.get("type", "delta")
-                        
-                        # 메시지 타입에 따라 처리
-                        if msg_type == "snapshot":
-                            self.message_stats["snapshot"] += 1
-                            self.logger.info(f"스냅샷 메시지 수신: {symbol}")
-                            
-                            # 스냅샷 콜백 호출
-                            if symbol in self.on_snapshot_callbacks and self.on_snapshot_callbacks[symbol]:
-                                await self.on_snapshot_callbacks[symbol](symbol, data)
-                                
-                        elif msg_type == "delta":
-                            self.message_stats["delta"] += 1
-                            
-                            # 델타 콜백 호출
-                            if symbol in self.on_delta_callbacks and self.on_delta_callbacks[symbol]:
-                                await self.on_delta_callbacks[symbol](symbol, data)
-                        
-                        # 상태 업데이트
-                        if symbol in self.subscribed_symbols:
-                            if msg_type == "snapshot":
-                                self.subscribed_symbols[symbol] = SubscriptionStatus.SNAPSHOT_RECEIVED
-                            elif msg_type == "delta":
-                                self.subscribed_symbols[symbol] = SubscriptionStatus.DELTA_RECEIVING
+            # 파싱된 데이터에서 필요한 정보 추출
+            symbol = parsed_data.get("symbol")
+            if not symbol or symbol not in self.subscribed_symbols:
+                return
             
+            # 스냅샷/델타 구분
+            is_snapshot = self.is_snapshot_message(message)
+            is_delta = self.is_delta_message(message)
+            
+            # 검증 및 업데이트
+            validation_result = None
+            
+            if is_snapshot:
+                # 스냅샷 검증 및 초기화
+                validation_result = await self.validator.initialize_orderbook(
+                    symbol=symbol,
+                    data=parsed_data
+                )
+                
+                # 스냅샷 콜백 호출
+                if validation_result.is_valid and symbol in self.snapshot_callbacks:
+                    # 검증된 데이터로 콜백 호출
+                    validated_data = {
+                        "bids": validation_result.limited_bids,
+                        "asks": validation_result.limited_asks,
+                        "timestamp": parsed_data.get("timestamp"),
+                        "sequence": parsed_data.get("sequence")
+                    }
+                    await self.snapshot_callbacks[symbol](symbol, validated_data)
+            
+            elif is_delta:
+                # 델타 검증 및 업데이트
+                validation_result = await self.validator.update(
+                    symbol=symbol,
+                    data=parsed_data
+                )
+                
+                # 델타 콜백 호출
+                if validation_result.is_valid and symbol in self.delta_callbacks:
+                    # 검증된 데이터로 콜백 호출
+                    validated_data = {
+                        "bids": validation_result.limited_bids,
+                        "asks": validation_result.limited_asks,
+                        "timestamp": parsed_data.get("timestamp"),
+                        "sequence": parsed_data.get("sequence")
+                    }
+                    await self.delta_callbacks[symbol](symbol, validated_data)
+            
+            # 검증 결과 로깅
+            if validation_result and not validation_result.is_valid:
+                self.logger.warning(f"[{self.exchange_code}] {symbol} 검증 실패: {validation_result.errors}")
+            
+            # 검증된 오더북 데이터 로깅 (상위 10개만)
+            if self.raw_logger and validation_result and validation_result.is_valid:
+                # 현재 시간 기록
+                current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                
+                # 검증기에서 관리하는 전체 오더북 가져오기
+                full_orderbook = self.validator.get_orderbook(symbol)
+                
+                if full_orderbook:
+                    # 매수/매도 주문 개수 계산
+                    bid_count = len(full_orderbook["bids"])
+                    ask_count = len(full_orderbook["asks"])
+                    
+                    # 상위 10개만 제한하여 로깅
+                    limited_bids = full_orderbook["bids"][:10] if full_orderbook["bids"] else []
+                    limited_asks = full_orderbook["asks"][:10] if full_orderbook["asks"] else []
+                    
+                    log_data = {
+                        "exchangename": self.exchange_code,  # 소문자로 통일된 exchange_code 사용
+                        "symbol": symbol,
+                        "bids": limited_bids,
+                        "asks": limited_asks,
+                        "timestamp": parsed_data.get("timestamp"),
+                        "sequence": parsed_data.get("sequence")
+                    }
+                    self.raw_logger.debug(f"[{current_time}] 매수 ({bid_count}) / 매도 ({ask_count}) {json.dumps(log_data)}")
+                    
         except Exception as e:
-            self.logger.error(f"메시지 처리 중 오류 발생: {e}")
-            self.message_stats["errors"] += 1
+            self.logger.error(f"[{self.exchange_code}] 메시지 처리 중 오류 발생: {str(e)}")
     
     async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
         """
@@ -337,30 +325,31 @@ class BybitSubscription(BaseSubscription):
             else:
                 symbols = symbol
             
-            # 연결 확인
-            if not self.connection.is_connected:
-                self.logger.error(f"웹소켓이 연결되지 않았습니다.")
+            # 연결 상태 확인
+            if not self.connection or not self.connection.is_connected:
+                self.logger.error(f"웹소켓이 연결되지 않았습니다. 연결을 먼저 시도해주세요.")
                 return False
-            
-            # 상태 업데이트
-            self.status = SubscriptionStatus.SUBSCRIBING
+                
+            if not self.connection.ws:
+                self.logger.error(f"웹소켓 객체가 없습니다. 연결을 다시 시도해주세요.")
+                return False
             
             # 콜백 함수 등록
             for sym in symbols:
                 if on_snapshot:
-                    self.on_snapshot_callbacks[sym] = on_snapshot
+                    self.snapshot_callbacks[sym] = on_snapshot
                 if on_delta:
-                    self.on_delta_callbacks[sym] = on_delta
+                    self.delta_callbacks[sym] = on_delta
                 if on_error:
-                    self.on_error_callbacks[sym] = on_error
+                    self.error_callbacks[sym] = on_error
                 
-                # 구독 상태 초기화
-                self.subscribed_symbols[sym] = SubscriptionStatus.SUBSCRIBING
+                # 구독된 심볼에 추가
+                self.subscribed_symbols[sym] = True
             
             # 메시지 루프가 실행 중이 아니면 시작
             if self.message_loop_task is None or self.message_loop_task.done():
                 self.stop_event.clear()
-                self.message_loop_task = asyncio.create_task(self._run_message_loop())
+                self.message_loop_task = asyncio.create_task(self.message_loop())
             
             # 구독 메시지 생성 및 전송
             total_batches = (len(symbols) + self.max_symbols_per_subscription - 1) // self.max_symbols_per_subscription
@@ -379,18 +368,16 @@ class BybitSubscription(BaseSubscription):
                 await asyncio.sleep(0.1)
             
             # 상태 업데이트
-            self.status = SubscriptionStatus.SUBSCRIBED
             self.logger.info(f"전체 구독 요청 완료 | 총 {len(symbols)}개 심볼")
             
             return True
             
         except Exception as e:
             self.logger.error(f"구독 요청 실패: {e}")
-            self.status = SubscriptionStatus.ERROR
             
             # 에러 콜백 호출
-            if isinstance(symbol, str) and symbol in self.on_error_callbacks and self.on_error_callbacks[symbol]:
-                await self.on_error_callbacks[symbol](symbol, str(e))
+            if isinstance(symbol, str) and symbol in self.error_callbacks and self.error_callbacks[symbol]:
+                await self.error_callbacks[symbol](symbol, str(e))
             
             return False
     
@@ -405,30 +392,34 @@ class BybitSubscription(BaseSubscription):
             bool: 구독 취소 성공 여부
         """
         try:
-            # 연결 확인
-            if not self.connection.is_connected:
-                self.logger.error(f"웹소켓이 연결되지 않았습니다.")
-                return False
+            # 연결 확인 - 이미 연결이 끊어진 경우에는 메시지 전송 없이 바로 정리
+            if not self.connection or not self.connection.is_connected or not self.connection.ws:
+                self.logger.info(f"[{self.exchange_code}] {symbol} 연결 없음, 구독 상태 정리만 진행")
+                # 콜백 정리 및 상태 제거는 부모 클래스의 _cleanup_subscription 메서드 호출로 대체
+                self._cleanup_subscription(symbol)
+                return True
             
             # 구독 취소 메시지 생성
             msg = await self.create_unsubscribe_message(symbol)
             
             # 구독 취소 메시지 전송
             await self.connection.ws.send(json.dumps(msg))
-            self.logger.info(f"{symbol} 구독 취소 요청 전송")
+            self.logger.info(f"[{self.exchange_code}] {symbol} 구독 취소 요청 전송")
             
-            # 콜백 함수 제거
-            self.on_snapshot_callbacks.pop(symbol, None)
-            self.on_delta_callbacks.pop(symbol, None)
-            self.on_error_callbacks.pop(symbol, None)
-            
-            # 구독 상태 제거
-            self.subscribed_symbols.pop(symbol, None)
+            # 콜백 정리 및 상태 제거는 부모 클래스의 _cleanup_subscription 메서드 호출로 대체
+            self._cleanup_subscription(symbol)
             
             return True
             
+        except websockets.exceptions.ConnectionClosed:
+            # 연결이 이미 닫혀있는 경우 - 성공으로 처리하고 정리만 진행
+            self.logger.info(f"[{self.exchange_code}] {symbol} 연결이 닫혀있음, 구독 상태 정리만 진행")
+            # 콜백 정리 및 상태 제거는 부모 클래스의 _cleanup_subscription 메서드 호출로 대체
+            self._cleanup_subscription(symbol)
+            return True
+            
         except Exception as e:
-            self.logger.error(f"{symbol} 구독 취소 실패: {e}")
+            self.logger.error(f"[{self.exchange_code}] {symbol} 구독 취소 실패: {e}")
             return False
     
     async def close(self) -> None:
@@ -438,23 +429,11 @@ class BybitSubscription(BaseSubscription):
         try:
             self.logger.info(f"바이빗 구독 종료 시작")
             
-            # 메시지 루프 중지
-            self.stop_event.set()
+            # 기본 클래스의 close 메서드 호출
+            await super().close()
             
-            if self.message_loop_task and not self.message_loop_task.done():
-                self.message_loop_task.cancel()
-                try:
-                    await self.message_loop_task
-                except asyncio.CancelledError:
-                    pass
+            # 추가 정리 작업이 필요한 경우 여기에 구현
             
-            # 모든 구독 취소
-            symbols = list(self.subscribed_symbols.keys())
-            for symbol in symbols:
-                await self.unsubscribe(symbol)
-            
-            # 상태 업데이트
-            self.status = SubscriptionStatus.CLOSED
             self.logger.info(f"바이빗 구독 종료 완료")
             
         except Exception as e:

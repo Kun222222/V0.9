@@ -8,15 +8,15 @@ import json
 import time
 from typing import Dict, List, Optional, Tuple, Any
 
-from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 from crosskimp.ob_collector.orderbook.parser.base_parser import BaseParser
 
 # ============================
 # 바이빗 파서 관련 상수
 # ============================
 # 기본 설정
-EXCHANGE_CODE = Exchange.BYBIT.value  # 거래소 코드
-BYBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이빗 설정
+EXCHANGE_CODE = "BYBIT"  # 거래소 코드
+DEFAULT_DEPTH = 50  # 기본 오더북 깊이
+
 
 class BybitParser(BaseParser):
     """
@@ -33,7 +33,7 @@ class BybitParser(BaseParser):
         바이빗 파서 초기화
         """
         super().__init__(EXCHANGE_CODE)
-        self.depth_level = BYBIT_CONFIG.get("default_depth", 50)
+        self.depth_level = DEFAULT_DEPTH
 
     def parse_message(self, raw_message: str) -> Optional[Dict[str, Any]]:
         """

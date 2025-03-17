@@ -8,15 +8,14 @@ import json
 import time
 from typing import Dict, List, Optional, Tuple, Any
 
-from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 from crosskimp.ob_collector.orderbook.parser.base_parser import BaseParser
 
 # ============================
 # 업비트 파서 관련 상수
 # ============================
 # 기본 설정
-EXCHANGE_CODE = Exchange.UPBIT.value  # 거래소 코드
-UPBIT_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 업비트 설정
+EXCHANGE_CODE = "UPBIT"  # 거래소 코드
+
 
 class UpbitParser(BaseParser):
     """

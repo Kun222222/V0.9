@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Set, Any
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
-from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector, WebSocketError
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, WebSocketError
 from crosskimp.ob_collector.orderbook.parser.bybit_f_pa import BybitFutureParser
 
 # 로거 인스턴스 가져오기

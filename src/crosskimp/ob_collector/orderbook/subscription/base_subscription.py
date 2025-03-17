@@ -8,7 +8,7 @@ from typing import Dict, Optional, List, Any, Callable, Union, Tuple
 
 # 필요한 로거 임포트 - 실제 구현에 맞게 수정 필요
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 # 메트릭 매니저 임포트 추가
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 
@@ -24,18 +24,6 @@ class DeltaMethod(Enum):
     """델타 수신 방법"""
     WEBSOCKET = "websocket"  # 웹소켓을 통해 델타 수신
     NONE = "none"            # 델타 수신 안함 (업비트처럼 항상 전체 스냅샷)
-
-
-class SubscriptionStatus(Enum):
-    """구독 상태"""
-    IDLE = "idle"                # 초기 상태
-    CONNECTING = "connecting"    # 연결 중
-    SUBSCRIBING = "subscribing"  # 구독 중
-    SUBSCRIBED = "subscribed"    # 구독 완료
-    SNAPSHOT_RECEIVED = "snapshot_received"  # 스냅샷 수신 완료
-    DELTA_RECEIVING = "delta_receiving"      # 델타 수신 중
-    ERROR = "error"              # 에러 상태
-    CLOSED = "closed"            # 종료됨
 
 
 class BaseSubscription(ABC):
@@ -70,9 +58,12 @@ class BaseSubscription(ABC):
         self.logger = get_unified_logger()
         self.exchange_code = exchange_code
         
+        # 메트릭 매니저 인스턴스 획득
+        self.metrics_manager = WebsocketMetricsManager.get_instance()
+        self.metrics_manager.initialize_exchange(self.exchange_code)
+        
         # 구독 상태 관리
-        self.status = SubscriptionStatus.IDLE
-        self.subscribed_symbols = {}  # symbol: status
+        self.subscribed_symbols = {}  # symbol: True/False
         
         # 스냅샷과 델타 메소드 (거래소별로 달라짐)
         self.snapshot_method = self._get_snapshot_method()
@@ -97,9 +88,8 @@ class BaseSubscription(ABC):
         # 종료 이벤트
         self.stop_event = asyncio.Event()
         
-        # 메트릭 매니저 초기화
-        self.metrics_manager = WebsocketMetricsManager.get_instance()
-        self.metrics_manager.initialize_exchange(self.exchange_code)
+        # 원시 데이터 로깅 설정 - 기본적으로 비활성화
+        self.log_raw_data = False
     
     def _init_rest_session(self):
         """REST API 세션 초기화 (REST 스냅샷 방식인 경우)"""
@@ -210,69 +200,61 @@ class BaseSubscription(ABC):
             message: 수신된 원시 메시지
         """
         try:
-            # 원본 메시지 로깅
-            self.log_raw_message(message)
+            # 원본 메시지 로깅 (활성화된 경우만)
+            if self.log_raw_data:
+                self.log_raw_message(message)
             
-            # 메트릭 업데이트
-            self.metrics_manager.record_message(self.exchange_code)
+            # 메시지 파싱
+            parsed_data = None
+            if self.parser:
+                parsed_data = self.parser.parse_message(message)
             
-            # 메시지 크기 기록 (바이트)
-            if isinstance(message, str):
-                message_size = len(message.encode('utf-8'))
-            elif isinstance(message, bytes):
-                message_size = len(message)
-            else:
-                message_size = 0
-            self.metrics_manager.record_bytes(self.exchange_code, message_size)
-            
-            # 스냅샷 메시지 확인
-            if self.is_snapshot_message(message):
-                # 메트릭 업데이트
-                self.metrics_manager.record_orderbook(self.exchange_code)
+            if not parsed_data:
+                return
                 
-                # 스냅샷 메시지 파싱 및 처리
-                parsed_data = None
-                if self.parser:
-                    parsed_data = self.parser.parse_message(message)
+            # 심볼 확인
+            symbol = parsed_data.get("symbol")
+            if not symbol or symbol not in self.subscribed_symbols:
+                return
                 
-                if parsed_data:
-                    symbol = parsed_data.get("symbol")
-                    if symbol and symbol in self.subscribed_symbols and symbol in self.snapshot_callbacks:
-                        # 스냅샷 콜백 호출
-                        callback = self.snapshot_callbacks[symbol]
-                        if callback:
-                            await callback(symbol, parsed_data)
-            
-            # 델타 메시지 확인
-            elif self.is_delta_message(message):
-                # 메트릭 업데이트
-                self.metrics_manager.record_orderbook(self.exchange_code)
+            # 메시지 타입에 따라 콜백 분기 처리
+            if self.is_snapshot_message(message) and symbol in self.snapshot_callbacks:
+                await self._call_snapshot_callback(symbol, parsed_data)
+            elif self.is_delta_message(message) and symbol in self.delta_callbacks:
+                await self._call_delta_callback(symbol, parsed_data)
                 
-                # 델타 메시지 파싱 및 처리
-                parsed_data = None
-                if self.parser:
-                    parsed_data = self.parser.parse_message(message)
-                
-                if parsed_data:
-                    symbol = parsed_data.get("symbol")
-                    if symbol and symbol in self.subscribed_symbols and symbol in self.delta_callbacks:
-                        # 델타 콜백 호출
-                        callback = self.delta_callbacks[symbol]
-                        if callback:
-                            await callback(symbol, parsed_data)
-            
         except Exception as e:
-            # 에러 메트릭 업데이트
-            self.metrics_manager.record_error(self.exchange_code)
-            self.logger.error(f"메시지 처리 중 오류 발생: {str(e)}")
+            # 에러 로깅
+            self.logger.error(f"메시지 처리 오류: {str(e)}")
             
             # 에러 콜백 호출
-            for symbol, callback in self.error_callbacks.items():
-                if callback:
-                    try:
-                        await callback(symbol, str(e))
-                    except Exception as cb_error:
-                        self.logger.error(f"에러 콜백 호출 중 오류: {str(cb_error)}")
+            await self._call_error_callbacks(str(e))
+    
+    async def _call_snapshot_callback(self, symbol: str, data: Dict) -> None:
+        """스냅샷 콜백 호출"""
+        callback = self.snapshot_callbacks.get(symbol)
+        if callback:
+            await callback(symbol, data)
+    
+    async def _call_delta_callback(self, symbol: str, data: Dict) -> None:
+        """델타 콜백 호출"""
+        callback = self.delta_callbacks.get(symbol)
+        if callback:
+            await callback(symbol, data)
+    
+    async def _call_error_callbacks(self, error_msg: str) -> None:
+        """모든 등록된 에러 콜백 호출"""
+        for symbol, callback in self.error_callbacks.items():
+            if callback:
+                try:
+                    await callback(symbol, error_msg)
+                except Exception as cb_error:
+                    self.logger.error(f"에러 콜백 호출 중 오류: {str(cb_error)}")
+    
+    @property
+    def is_connected(self) -> bool:
+        """연결 상태 확인 (메트릭 매니저 사용)"""
+        return self.metrics_manager.is_connected(self.exchange_code)
     
     async def message_loop(self) -> None:
         """
@@ -281,14 +263,12 @@ class BaseSubscription(ABC):
         웹소켓 연결에서 메시지를 지속적으로 수신하고 처리합니다.
         """
         self.logger.info(f"[{self.exchange_code}] 메시지 수신 루프 시작")
-        self.metrics_manager.update_connection_state(self.exchange_code, "connected")
         
         while not self.stop_event.is_set():
             try:
                 # 연결 상태 확인
-                if not hasattr(self.connection, 'is_connected') or not self.connection.is_connected:
-                    self.logger.error(f"[{self.exchange_code}] 웹소켓 연결이 끊어짐")
-                    self.metrics_manager.update_connection_state(self.exchange_code, "disconnected")
+                if not self.connection.is_connected:
+                    self.logger.warning(f"[{self.exchange_code}] 웹소켓 연결 끊김, 재연결 대기 중")
                     await asyncio.sleep(1)  # 잠시 대기 후 재시도
                     continue
                 
@@ -299,15 +279,8 @@ class BaseSubscription(ABC):
                     await asyncio.sleep(0.01)  # 짧은 대기로 CPU 사용량 감소
                     continue
                 
-                # 메시지 처리 시작 시간
-                start_time = asyncio.get_event_loop().time()
-                
                 # 메시지 처리
                 await self._on_message(message)
-                
-                # 메시지 처리 시간 계산 및 기록 (밀리초 단위)
-                processing_time = (asyncio.get_event_loop().time() - start_time) * 1000
-                self.metrics_manager.record_processing_time(self.exchange_code, processing_time)
                 
             except asyncio.CancelledError:
                 self.logger.info(f"[{self.exchange_code}] 메시지 수신 루프 취소됨")
@@ -315,10 +288,8 @@ class BaseSubscription(ABC):
                 
             except Exception as e:
                 self.logger.error(f"[{self.exchange_code}] 메시지 수신 중 오류: {e}")
-                self.metrics_manager.record_error(self.exchange_code)
                 await asyncio.sleep(0.1)  # 오류 발생시 약간 더 긴 대기
         
-        self.metrics_manager.update_connection_state(self.exchange_code, "disconnected")
         self.logger.info(f"[{self.exchange_code}] 메시지 수신 루프 종료")
     
     @abstractmethod
@@ -352,6 +323,21 @@ class BaseSubscription(ABC):
         """
         pass
     
+    def _cleanup_subscription(self, symbol: str) -> None:
+        """
+        구독 관련 콜백 및 상태 정리
+        
+        Args:
+            symbol: 정리할 심볼
+        """
+        # 콜백 함수 제거
+        self.snapshot_callbacks.pop(symbol, None)
+        self.delta_callbacks.pop(symbol, None)
+        self.error_callbacks.pop(symbol, None)
+        
+        # 구독 상태 제거
+        self.subscribed_symbols.pop(symbol, None)
+    
     async def close(self) -> None:
         """
         모든 구독 취소 및 자원 정리 기본 구현
@@ -359,11 +345,6 @@ class BaseSubscription(ABC):
         try:
             # 종료 이벤트 설정
             self.stop_event.set()
-            
-            # 모든 구독 취소
-            symbols = list(self.subscribed_symbols.keys())
-            for symbol in symbols:
-                await self.unsubscribe(symbol)
             
             # 메시지 수신 루프 취소
             if self.message_loop_task and not self.message_loop_task.done():
@@ -373,9 +354,30 @@ class BaseSubscription(ABC):
                 except asyncio.CancelledError:
                     pass
             
+            # 모든 구독 취소 (타임아웃 설정)
+            symbols = list(self.subscribed_symbols.keys())
+            for symbol in symbols:
+                try:
+                    # 각 구독 취소에 최대 1초의 타임아웃 설정
+                    await asyncio.wait_for(self.unsubscribe(symbol), timeout=1.0)
+                except asyncio.TimeoutError:
+                    self.logger.warning(f"[{self.exchange_code}] {symbol} 구독 취소 타임아웃")
+                    # 타임아웃 발생해도 콜백은 정리
+                    self._cleanup_subscription(symbol)
+                except Exception as e:
+                    self.logger.error(f"[{self.exchange_code}] {symbol} 구독 취소 오류: {str(e)}")
+                    # 오류 발생해도 콜백은 정리
+                    self._cleanup_subscription(symbol)
+            
             # 연결 종료
             if hasattr(self.connection, 'disconnect'):
-                await self.connection.disconnect()
+                try:
+                    # 연결 종료에도 타임아웃 설정
+                    await asyncio.wait_for(self.connection.disconnect(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    self.logger.warning(f"[{self.exchange_code}] 연결 종료 타임아웃")
+                except Exception as e:
+                    self.logger.error(f"[{self.exchange_code}] 연결 종료 오류: {str(e)}")
             
             # 태스크 취소
             for task in self.tasks.values():
@@ -387,12 +389,10 @@ class BaseSubscription(ABC):
                 await self.rest_session.close()
                 self.rest_session = None
             
-            self.status = SubscriptionStatus.CLOSED
             self.metrics_manager.update_connection_state(self.exchange_code, "disconnected")
             self.logger.info(f"[{self.exchange_code}] 모든 구독 취소 및 자원 정리 완료")
             
         except Exception as e:
             self.logger.error(f"[{self.exchange_code}] 자원 정리 중 오류 발생: {e}")
             self.metrics_manager.record_error(self.exchange_code)
-            self.status = SubscriptionStatus.ERROR
 

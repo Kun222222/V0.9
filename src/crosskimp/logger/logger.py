@@ -474,7 +474,7 @@ def get_unified_logger() -> logging.Logger:
                 name='unified_logger',
                 log_dir=LOG_DIRS['base'],
                 level=DEFAULT_FILE_LEVEL,
-                console_level=DEFAULT_CONSOLE_LEVEL,
+                console_level=DEFAULT_FILE_LEVEL,  # 콘솔 레벨을 파일 레벨과 동일하게 설정
                 format_str=LOG_FORMAT,
                 add_console=True,  # 통합 로거만 콘솔 출력 활성화
                 add_error_file=True

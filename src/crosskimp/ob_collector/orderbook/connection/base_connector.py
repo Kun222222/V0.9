@@ -108,7 +108,6 @@ class BaseWebsocketConnector(ABC):
 
         # 기본 상태 변수
         self.ws = None
-        self.is_connected = False
         self.stop_event = Event()
         
         # 웹소켓 통계
@@ -124,6 +123,24 @@ class BaseWebsocketConnector(ABC):
         self.health_check_interval = None  # 헬스 체크 간격 (초)
         self.ping_interval = None       # 핑 전송 간격 (초)
         self.ping_timeout = None        # 핑 응답 타임아웃 (초)
+        
+        # 연결 상태 콜백 (WebsocketManager와 호환)
+        self.connection_status_callback = None
+
+    # is_connected 속성 대신 메트릭 매니저를 통해 조회하는 프로퍼티로 변경
+    @property
+    def is_connected(self) -> bool:
+        """연결 상태 확인"""
+        return self.metrics.is_connected(self.exchangename)
+    
+    @is_connected.setter
+    def is_connected(self, value: bool) -> None:
+        """
+        연결 상태 설정
+        
+        직접 설정하면 메트릭 매니저를 통해 업데이트
+        """
+        self.metrics.update_connection_state(self.exchangename, "connected" if value else "disconnected")
 
     # 로깅 헬퍼 메서드들
     def log_error(self, msg: str, exc_info: bool = True):
@@ -152,7 +169,7 @@ class BaseWebsocketConnector(ABC):
 
     def update_message_metrics(self, message: str) -> None:
         """
-        메시지 수신 시 메트릭 및 통계 업데이트
+        메시지 수신 시 통계 업데이트
         
         Args:
             message: 수신된 메시지
@@ -161,10 +178,8 @@ class BaseWebsocketConnector(ABC):
         self.stats.message_count += 1
         self.stats.last_message_time = time.time()
         
-        # 메트릭 업데이트
-        self.metrics.record_message(self.exchangename)
-        self.metrics.record_bytes(self.exchangename, len(message))
-        self.metrics.update_connection_state(self.exchangename, "connected")
+        # 연결 상태 업데이트
+        self.is_connected = True
 
     async def send_telegram_notification(self, event_type: str, message: str) -> None:
         """

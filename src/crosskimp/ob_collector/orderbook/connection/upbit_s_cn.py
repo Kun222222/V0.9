@@ -7,7 +7,7 @@ from websockets import connect
 import websockets.exceptions
 from typing import Dict, List, Optional, Tuple, Any
 
-from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector, ReconnectStrategy
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 
 # ============================
@@ -66,7 +66,8 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         # 메트릭 매니저 싱글톤 인스턴스 사용
         self.metrics = WebsocketMetricsManager.get_instance()
         
-        # 연결 상태
+        # 연결 상태 - 이제 부모 클래스의 ConnectionStateManager를 통해 관리
+        # 연결 중 상태 관리 (is_connected와 별개)
         self.connecting = False
 
     async def connect(self) -> bool:
@@ -95,13 +96,10 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                 ping_timeout=self.ping_timeout     # PONG 응답 타임아웃
             )
             
-            # 연결 성공 처리
+            # 연결 성공 처리 - 상태 관리자를 통해 상태 업데이트
             self.is_connected = True
             self.stats.connection_start_time = time.time()
             self.reconnect_strategy.reset()
-            
-            # 메트릭 업데이트
-            self.metrics.update_connection_state(self.exchangename, "connected")
             
             # 연결 성공 알림
             connect_msg = f"{self.exchange_korean_name} 웹소켓 연결 성공"
@@ -114,20 +112,16 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             self.connecting = False
             self.log_error(f"연결 타임아웃: {str(e)}")
             
-            # 메트릭 업데이트
-            self.metrics.record_error(self.exchangename)
-            self.metrics.update_connection_state(self.exchangename, "disconnected")
-            
+            # 연결 실패 처리
+            self.is_connected = False
             return False
                 
         except Exception as e:
             self.log_error(f"연결 오류: {str(e)}", exc_info=True)
             self.connecting = False
             
-            # 메트릭 업데이트
-            self.metrics.record_error(self.exchangename)
-            self.metrics.update_connection_state(self.exchangename, "disconnected")
-            
+            # 연결 실패 처리
+            self.is_connected = False
             return False
             
         finally:
@@ -143,12 +137,9 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         try:
             if self.ws:
                 await self.ws.close()
-                
+            
+            # 연결 상태 업데이트
             self.is_connected = False
-            
-            # 메트릭 업데이트
-            self.metrics.update_connection_state(self.exchangename, "disconnected")
-            
             return True
             
         except Exception as e:
@@ -265,11 +256,8 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             
         except websockets.exceptions.ConnectionClosed as e:
             self.log_error(f"웹소켓 연결 끊김: {e}")
+            # 연결 상태 업데이트
             self.is_connected = False
-            
-            # 메트릭 업데이트
-            self.metrics.update_connection_state(self.exchangename, "disconnected")
-            
             return None
             
         except Exception as e:

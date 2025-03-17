@@ -16,13 +16,11 @@ from enum import Enum
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import (
     BaseSubscription, 
     SnapshotMethod, 
-    DeltaMethod,
-    SubscriptionStatus
+    DeltaMethod
 )
-from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.logger.logger import create_raw_logger
 from crosskimp.config.paths import LOG_SUBDIRS
-from crosskimp.ob_collector.orderbook.validator.validators import UpbitOrderBookValidator
 
 # ============================
 # 업비트 구독 관련 상수
@@ -59,12 +57,12 @@ class UpbitSubscription(BaseSubscription):
         super().__init__(connection, EXCHANGE_CODE, parser)
         
         # 로깅 설정
-        self.log_raw_data = True
+        self.log_raw_data = False  # 원시 데이터 로깅 비활성화
         self.raw_logger = None
         self._setup_raw_logging()
         
-        # 업비트 전용 검증기 초기화
-        self.validator = UpbitOrderBookValidator(EXCHANGE_CODE)
+        # 시퀀스 검증을 위한 마지막 타임스탬프 저장 딕셔너리
+        self.last_timestamps = {}
         
         # 오더북 데이터 저장소
         self.orderbooks = {}  # symbol -> orderbook_data
@@ -173,7 +171,7 @@ class UpbitSubscription(BaseSubscription):
         업비트는 모든 오더북 메시지가 스냅샷 형태이므로,
         메시지 타입이 orderbook인지 확인합니다.
         
-        Args:
+        Args:로깅용으로 10개로 제한
             message: 수신된 메시지
             
         Returns:
@@ -205,32 +203,19 @@ class UpbitSubscription(BaseSubscription):
         Args:
             message: 원본 메시지
         """
-        try:
-            # raw_logger가 있는 경우에만 로깅
-            if self.log_raw_data and self.raw_logger:
-                # 메시지 타입과 심볼 추출 시도
-                try:
-                    if isinstance(message, bytes):
-                        message_str = message.decode('utf-8')
-                    else:
-                        message_str = message
-                        
-                    data = json.loads(message_str)
-                    msg_type = data.get("type", "unknown")
-                    code = data.get("code", "unknown")
-                    symbol = code.replace("KRW-", "") if code.startswith("KRW-") else code
-                except:
-                    msg_type = "unknown"
-                    symbol = "unknown"
+        # log_raw_data가 True인 경우에만 로깅
+        if self.log_raw_data and self.raw_logger:
+            try:
+                # 웹소켓 원본 메시지는 일반적으로 JSON 형태
+                data = json.loads(message)
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
                 
-                # 타임스탬프 추가
-                timestamp = int(time.time() * 1000)
-                log_entry = f"{timestamp}|{msg_type}|{symbol}|{message}"
-                
-                # 로깅
-                self.raw_logger.debug(log_entry)
-        except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] 원본 메시지 로깅 실패: {str(e)}")
+                # 간소화된 형태로 로깅 (필요한 정보만)
+                symbol = data.get('code', data.get('symbol', 'unknown'))
+                self.raw_logger.debug(f"[{timestamp}] Raw message received for {symbol}")
+            except Exception as e:
+                self.logger.error(f"원본 메시지 로깅 실패: {e}")
+        # 로깅 비활성화 상태면 아무것도 하지 않음
     
     async def _on_message(self, message: str) -> None:
         """
@@ -240,21 +225,6 @@ class UpbitSubscription(BaseSubscription):
             message: 수신된 원시 메시지
         """
         try:
-            # 원본 메시지 로깅
-            self.log_raw_message(message)
-            
-            # 메트릭 업데이트
-            self.metrics_manager.record_message(self.exchange_code)
-            
-            # 메시지 크기 기록 (바이트)
-            if isinstance(message, str):
-                message_size = len(message.encode('utf-8'))
-            elif isinstance(message, bytes):
-                message_size = len(message)
-            else:
-                message_size = 0
-            self.metrics_manager.record_bytes(self.exchange_code, message_size)
-            
             # 메시지 파싱
             parsed_data = None
             if self.parser:
@@ -267,59 +237,76 @@ class UpbitSubscription(BaseSubscription):
             if not symbol or symbol not in self.subscribed_symbols:
                 return
                 
-            # 파싱된 데이터 로깅 (raw_logger 사용)
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-            log_data = {
-                "exchangename": self.exchange_code,
-                "symbol": symbol,
+            # 간단한 시퀀스 검증 (타임스탬프 기반)
+            timestamp = parsed_data.get("timestamp")
+            if not self._validate_timestamp(symbol, timestamp):
+                self.logger.warning(f"[{self.exchange_code}] {symbol} 타임스탬프 역전 감지: skip")
+                return
+            
+            # 유효한 데이터만 사용
+            validated_data = {
                 "bids": parsed_data.get("bids", []),
                 "asks": parsed_data.get("asks", []),
-                "timestamp": parsed_data.get("timestamp"),
+                "timestamp": timestamp,
                 "sequence": parsed_data.get("sequence")
-            }
-            if self.raw_logger:
-                self.raw_logger.debug(f"[{current_time}] {json.dumps(log_data)}")
-                
-            # 검증
-            validation = self.validator.validate_orderbook(
-                symbol=symbol,
-                bids=parsed_data["bids"],
-                asks=parsed_data["asks"],
-                timestamp=parsed_data.get("timestamp"),
-                sequence=parsed_data.get("sequence")
-            )
-            
-            if not validation.is_valid:
-                self.logger.warning(f"[{self.exchange_code}] {symbol} 검증 실패: {validation.errors}")
-                return
-                
-            # 오더북 업데이트
-            self.orderbooks[symbol] = {
-                "bids": parsed_data["bids"][:10],  # 상위 10개만
-                "asks": parsed_data["asks"][:10],  # 상위 10개만
-                "timestamp": parsed_data["timestamp"],
-                "sequence": parsed_data["sequence"]
             }
             
             # 검증된 오더북 데이터 로깅 (raw_logger 사용)
             if self.raw_logger:
-                validated_data = {
+                # 매수/매도 주문 개수 계산 (원본 개수 표시용)
+                bid_count = len(validated_data["bids"])
+                ask_count = len(validated_data["asks"])
+                
+                # 로깅을 위해 10개로 제한
+                limited_bids = validated_data["bids"][:10]
+                limited_asks = validated_data["asks"][:10]
+                
+                log_data = {
                     "exchangename": self.exchange_code,
                     "symbol": symbol,
-                    "bids": self.orderbooks[symbol]["bids"],
-                    "asks": self.orderbooks[symbol]["asks"],
-                    "timestamp": self.orderbooks[symbol]["timestamp"],
-                    "sequence": self.orderbooks[symbol]["sequence"]
+                    "bids": limited_bids,  # 10개로 제한
+                    "asks": limited_asks,  # 10개로 제한
+                    "timestamp": validated_data["timestamp"],
+                    "sequence": validated_data["sequence"]
                 }
-                self.raw_logger.debug(f"[{current_time}] {json.dumps(validated_data)}")
+                
+                current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                # 로그 메시지에도 제한된 개수 표시
+                self.raw_logger.debug(f"[{current_time}] 매수 ({len(limited_bids)}) / 매도 ({len(limited_asks)}) {json.dumps(log_data)}")
             
             # 콜백 호출
             if symbol in self.snapshot_callbacks:
-                await self.snapshot_callbacks[symbol](symbol, self.orderbooks[symbol])
+                await self.snapshot_callbacks[symbol](symbol, validated_data)
                 
         except Exception as e:
             self.logger.error(f"[{self.exchange_code}] 메시지 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
+    
+    def _validate_timestamp(self, symbol: str, timestamp: int) -> bool:
+        """
+        타임스탬프 기반 간단한 시퀀스 검증
+        
+        Args:
+            symbol: 심볼
+            timestamp: 타임스탬프
+            
+        Returns:
+            bool: 타임스탬프가 유효하면 True, 아니면 False
+        """
+        # 타임스탬프가 없으면 유효하지 않음
+        if timestamp is None:
+            return False
+            
+        # 심볼의 마지막 타임스탬프와 비교
+        if symbol in self.last_timestamps:
+            last_ts = self.last_timestamps[symbol]
+            if timestamp <= last_ts:
+                # 타임스탬프 역전 감지
+                return False
+        
+        # 마지막 타임스탬프 업데이트
+        self.last_timestamps[symbol] = timestamp
+        return True
     
     async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
         """
@@ -363,6 +350,9 @@ class UpbitSubscription(BaseSubscription):
                 # 업비트는 델타를 사용하지 않으므로 델타 콜백은 등록하지 않음
                 if on_error is not None:
                     self.error_callbacks[sym] = on_error
+                
+                # 구독 상태 초기화
+                self.subscribed_symbols[sym] = True
             
             # 연결 확인 및 연결
             if not hasattr(self.connection, 'is_connected') or not self.connection.is_connected:
@@ -380,13 +370,14 @@ class UpbitSubscription(BaseSubscription):
             
             # 구독 상태 업데이트
             for sym in new_symbols:
-                self.subscribed_symbols[sym] = SubscriptionStatus.SUBSCRIBED
+                self.subscribed_symbols[sym] = True
             
             self.logger.info(f"[{self.exchange_code}] 구독 성공: {len(new_symbols)}개 심볼")
             
             # 첫 번째 구독 시 메시지 수신 루프 시작
             if not self.message_loop_task or self.message_loop_task.done():
                 self.logger.info(f"[{self.exchange_code}] 첫 번째 구독으로 메시지 수신 루프 시작")
+                self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
             return True
@@ -399,9 +390,9 @@ class UpbitSubscription(BaseSubscription):
             if on_error is not None:
                 if isinstance(symbol, list):
                     for sym in symbol:
-                        on_error(sym, str(e))
+                        await on_error(sym, str(e))
                 else:
-                    on_error(symbol, str(e))
+                    await on_error(symbol, str(e))
             return False
     
     async def unsubscribe(self, symbol: str) -> bool:
@@ -422,13 +413,13 @@ class UpbitSubscription(BaseSubscription):
                 self.logger.warning(f"[{self.exchange_code}] {symbol} 구독 중이 아닙니다.")
                 return True
             
-            # 상태 업데이트
-            del self.subscribed_symbols[symbol]
+            # 부모 클래스의 _cleanup_subscription 메서드 사용
+            self._cleanup_subscription(symbol)
             self.logger.info(f"[{self.exchange_code}] {symbol} 구독 취소 완료")
             
             # 모든 구독이 취소된 경우 상태 업데이트
             if not self.subscribed_symbols:
-                self.status = SubscriptionStatus.IDLE
+                self.logger.info(f"[{self.exchange_code}] 모든 구독이 취소되었습니다.")
                 
             return True
             

@@ -10,14 +10,19 @@
 import asyncio
 import time
 import importlib
+import json
+import struct
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional, Set, Callable, Tuple, Union
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, Exchange
+from crosskimp.config.paths import LOG_SUBDIRS
+from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
-from crosskimp.ob_collector.orderbook.validator.validators import UpbitOrderBookValidator, BaseOrderBookValidator
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -44,6 +49,7 @@ class OrderManager:
         
         # 메트릭 매니저 싱글톤 인스턴스 사용
         self.metrics_manager = WebsocketMetricsManager.get_instance()
+        self.metrics_manager.initialize_exchange(self.exchange_code)
         
         # 컴포넌트들
         self.connection = None       # 웹소켓 연결 객체
@@ -61,16 +67,9 @@ class OrderManager:
         self.is_running = False
         self.tasks = {}
         
-        # WebsocketManager와 호환되는 속성들
+        # 외부 콜백
         self.connection_status_callback = None
         self.start_time = time.time()
-        self.message_stats = {
-            "total_received": 0,
-            "snapshot_received": 0,
-            "delta_received": 0,
-            "errors": 0,
-            "last_received": None
-        }
         
         # 거래소별 설정
         self.exchange_config = self._get_exchange_config()
@@ -96,7 +95,7 @@ class OrderManager:
                 "connection": f"{self.exchange_code.capitalize()}WebSocketConnector",
                 "subscription": f"{self.exchange_code.capitalize()}Subscription",
                 "parser": f"{self.exchange_code.capitalize()}Parser",
-                "validator": "UpbitOrderBookValidator" if self.exchange_code == "upbit" else "BaseOrderBookValidator"
+                "validator": "BaseOrderBookValidator"  # 업비트도 기본 검증기 사용
             }
         }
         
@@ -141,7 +140,10 @@ class OrderManager:
             
             # 3.3 validator 생성
             depth = self.settings.get("websocket", {}).get("orderbook_depth", 15)
-            self.validator = validator_class(self.exchange_code, depth)
+            if self.exchange_config["class_names"]["validator"] == "UpbitOrderBookValidator":
+                self.validator = validator_class(self.exchange_code, depth)
+            else:
+                self.validator = validator_class(self.exchange_code)
             
             # 3.4 구독 객체 생성 (연결, 파서 연결)
             self.subscription = subscription_class(self.connection, self.parser)
@@ -150,9 +152,10 @@ class OrderManager:
             if self.output_queue:
                 self.validator.set_output_queue(self.output_queue)
             
-            # 3.6 WebsocketManager와 호환되는 설정
-            if hasattr(self.connection, 'connection_status_callback'):
-                self.connection.connection_status_callback = self.update_connection_status
+            # 3.6 연결 상태 콜백 등록 (메트릭 매니저 활용)
+            if self.connection_status_callback:
+                # 외부 콜백이 있는 경우 메트릭 매니저에 등록
+                self.metrics_manager.register_callback(self.exchange_code, self.update_connection_status)
             
             logger.info(f"{self.exchange_name_kr} 모든 컴포넌트 초기화 완료")
             return True
@@ -202,8 +205,15 @@ class OrderManager:
                 return True
             
             # 웹소켓 연결
-            await self.connection.connect()
-            
+            if not await self.connection.connect():
+                logger.error(f"{self.exchange_name_kr} 웹소켓 연결 실패")
+                return False
+                
+            # 연결 상태 확인 후 구독 시도
+            if not self.connection.is_connected:
+                logger.error(f"{self.exchange_name_kr} 웹소켓이 연결되지 않아 구독을 시도하지 않습니다.")
+                return False
+                
             # 모든 심볼을 한 번에 구독
             try:
                 logger.info(f"{self.exchange_name_kr} 전체 {len(symbols)}개 심볼 구독 시작")
@@ -253,7 +263,7 @@ class OrderManager:
             
             # 연결 종료
             if self.connection:
-                await self.connection.stop()
+                await self.connection.disconnect()
             
             # 오더북 관리자 정리
             if self.validator:
@@ -283,45 +293,28 @@ class OrderManager:
             self.validator.set_output_queue(queue)
         logger.info(f"{self.exchange_name_kr} 출력 큐 설정 완료 (큐 ID: {id(queue)})")
     
-    def update_connection_status(self, exchange=None, status=None):
+    @property
+    def is_connected(self) -> bool:
+        """연결 상태 확인 (메트릭 매니저 사용)"""
+        return self.metrics_manager.is_connected(self.exchange_code)
+    
+    def update_connection_status(self, exchange_code=None, status=None):
         """
-        연결 상태 업데이트
+        외부에서 연결 상태 변경 시 호출되는 콜백
         
         Args:
-            exchange: 거래소 코드 (기본값: None, 자체 exchange_code 사용)
-            status: 연결 상태 (문자열: "connected" 또는 "disconnected")
+            exchange_code: 거래소 코드
+            status: 연결 상태 ('connected', 'disconnected' 등)
         """
-        # exchange 인자가 없거나 self.exchange_code와 일치하는 경우에만 처리
-        if exchange is None or exchange == self.exchange_code:
-            # status가 문자열인 경우 (WebsocketManager 호환)
-            if isinstance(status, str):
-                if status in ["connect", "message", "connected"]:
-                    actual_status = "connected"
-                    # 메트릭 매니저 상태 업데이트
-                    if self.validator and hasattr(self.validator, 'metrics'):
-                        self.validator.metrics.update_connection_state(self.exchange_code, "connected")
-                elif status in ["disconnect", "error", "disconnected"]:
-                    actual_status = "disconnected"
-                    # 메트릭 매니저 상태 업데이트
-                    if self.validator and hasattr(self.validator, 'metrics'):
-                        self.validator.metrics.update_connection_state(self.exchange_code, "disconnected")
-                else:
-                    actual_status = status
-            # 불리언 값이 들어온 경우 문자열로 변환
-            elif isinstance(status, bool):
-                actual_status = "connected" if status else "disconnected"
-                # 메트릭 매니저 상태 업데이트
-                if self.validator and hasattr(self.validator, 'metrics'):
-                    if status:
-                        self.validator.metrics.update_connection_state(self.exchange_code, "connected")
-                    else:
-                        self.validator.metrics.update_connection_state(self.exchange_code, "disconnected")
-            else:
-                actual_status = "disconnected"
+        if not exchange_code:
+            exchange_code = self.exchange_code
             
-            # 실제 상태가 None이 아닌 경우에만 콜백 호출
-            if actual_status is not None and self.connection_status_callback:
-                self.connection_status_callback(self.exchange_code, actual_status)
+        # 메트릭 매니저를 통해 상태 업데이트
+        self.metrics_manager.update_connection_state(exchange_code, status)
+        
+        # 외부 콜백이 있는 경우 호출
+        if self.connection_status_callback:
+            self.connection_status_callback(exchange_code, status)
     
     async def _handle_snapshot(self, symbol: str, data: Dict) -> None:
         """
@@ -335,45 +328,26 @@ class OrderManager:
             # 처리 시작 시간 기록
             start_time = time.time()
             
-            # 오더북 초기화 (세부 구현은 validator에 위임)
-            result = await self.validator.initialize_orderbook(symbol, data)
+            # 데이터 검증
+            if self.exchange_code == "upbit":
+                # 업비트는 subscription에서 검증 완료된 데이터를 받으므로 별도 검증 없이 바로 처리
+                is_valid = True
+                orderbook = data
+            else:
+                # 다른 거래소는 validator를 통한 오더북 초기화 수행
+                result = await self.validator.initialize_orderbook(symbol, data)
+                is_valid = result.is_valid
+                orderbook = self.validator.get_orderbook(symbol) if is_valid else None
             
-            # 출력 큐에 추가
-            if result.is_valid and self.output_queue:
-                orderbook = self.validator.get_orderbook(symbol).to_dict()
-                self.output_queue.put_nowait({
-                    "exchange": self.exchange_code,
-                    "symbol": symbol,
-                    "timestamp": time.time(),
-                    "data": orderbook
-                })
+            # 출력 큐에 전송
+            self._send_to_output_queue(symbol, orderbook, is_valid)
             
-            # 메시지 통계 업데이트
-            self.update_message_stats("snapshot")
-            
-            # 메트릭 업데이트 - 중앙 메트릭 매니저 사용
-            if hasattr(self.validator, 'metrics'):
-                # 메시지 수신 기록
-                self.validator.metrics.record_message(self.exchange_code)
-                # 오더북 업데이트 기록
-                self.validator.metrics.record_orderbook(self.exchange_code)
-                # 데이터 크기 메트릭 업데이트
-                data_size = len(str(data))  # 간단한 크기 측정
-                self.validator.metrics.record_bytes(self.exchange_code, data_size)
-                
-                # 처리 시간 기록
-                end_time = time.time()
-                processing_time_ms = (end_time - start_time) * 1000
-                self.validator.metrics.record_processing_time(self.exchange_code, processing_time_ms)
-            
-            # 연결 상태 콜백 호출
-            self.update_connection_status(None, "connected")
+            # 메트릭 및 통계 업데이트
+            self._update_metrics(start_time, "snapshot", data)
             
         except Exception as e:
             logger.error(f"[스냅샷 오류] {self.exchange_name_kr} {symbol} 스냅샷 처리 실패: {str(e)}")
-            self.update_message_stats("error")
-            if hasattr(self.validator, 'metrics'):
-                self.validator.metrics.record_error(self.exchange_code)
+            self._handle_error()
     
     async def _handle_delta(self, symbol: str, data: Dict) -> None:
         """
@@ -390,42 +364,19 @@ class OrderManager:
             # 오더북 업데이트 (세부 구현은 validator에 위임)
             result = await self.validator.update(symbol, data)
             
-            # 출력 큐에 추가
-            if result.is_valid and self.output_queue:
-                orderbook = self.validator.get_orderbook(symbol).to_dict()
-                self.output_queue.put_nowait({
-                    "exchange": self.exchange_code,
-                    "symbol": symbol,
-                    "timestamp": time.time(),
-                    "data": orderbook
-                })
+            # 검증 결과 처리
+            is_valid = result.is_valid
+            orderbook = self.validator.get_orderbook(symbol) if is_valid else None
             
-            # 메시지 통계 업데이트
-            self.update_message_stats("delta")
+            # 출력 큐에 전송
+            self._send_to_output_queue(symbol, orderbook, is_valid)
             
-            # 메트릭 업데이트 - 중앙 메트릭 매니저 사용
-            if hasattr(self.validator, 'metrics'):
-                # 메시지 수신 기록
-                self.validator.metrics.record_message(self.exchange_code)
-                # 오더북 업데이트 기록
-                self.validator.metrics.record_orderbook(self.exchange_code)
-                # 데이터 크기 메트릭 업데이트
-                data_size = len(str(data))  # 간단한 크기 측정
-                self.validator.metrics.record_bytes(self.exchange_code, data_size)
-                
-                # 처리 시간 기록
-                end_time = time.time()
-                processing_time_ms = (end_time - start_time) * 1000
-                self.validator.metrics.record_processing_time(self.exchange_code, processing_time_ms)
-            
-            # 연결 상태 콜백 호출
-            self.update_connection_status(None, "connected")
+            # 메트릭 및 통계 업데이트
+            self._update_metrics(start_time, "delta", data)
             
         except Exception as e:
             logger.error(f"[델타 오류] {self.exchange_name_kr} {symbol} 델타 처리 실패: {str(e)}")
-            self.update_message_stats("error")
-            if hasattr(self.validator, 'metrics'):
-                self.validator.metrics.record_error(self.exchange_code)
+            self._handle_error()
     
     def _on_error(self, symbol: str, error: str) -> None:
         """
@@ -436,48 +387,106 @@ class OrderManager:
             error: 에러 메시지
         """
         logger.error(f"{self.exchange_name_kr} {symbol} 에러 발생: {error}")
-        self.update_message_stats("error")
+        self._handle_error()
+    
+    def _handle_error(self):
+        """에러 처리 통합 메서드"""
+        # 내부 통계 업데이트
+        self.message_stats["errors"] += 1
+        self.message_stats["last_received"] = datetime.now()
         
-        # 메트릭 업데이트 - 중앙 메트릭 매니저 사용
-        if hasattr(self.validator, 'metrics'):
-            self.validator.metrics.record_error(self.exchange_code)
+        # 메트릭 시스템 업데이트
+        self.metrics_manager.record_error(self.exchange_code)
+    
+    def _update_metrics(self, start_time: float, message_type: str, data: Dict) -> None:
+        """
+        메트릭 및 통계 업데이트
+        
+        Args:
+            start_time: 처리 시작 시간
+            message_type: 메시지 타입 ("snapshot" 또는 "delta")
+            data: 메시지 데이터
+        """
+        # 처리 시간 계산 (밀리초)
+        processing_time_ms = (time.time() - start_time) * 1000
+        
+        # 추정 데이터 크기 계산 (바이트)
+        data_size = self._estimate_data_size(data)
+        
+        # 메트릭 매니저를 통해 통합 업데이트
+        self.metrics_manager.update_message_stats(self.exchange_code, message_type)
+        self.metrics_manager.record_processing_time(self.exchange_code, processing_time_ms)
+        self.metrics_manager.record_bytes(self.exchange_code, data_size)
+        
+        # 연결 상태 갱신 (메시지 수신은 연결이 활성화된 증거)
+        self.metrics_manager.update_connection_state(self.exchange_code, "connected")
+    
+    def _estimate_data_size(self, data: Dict) -> int:
+        """
+        데이터 크기 추정 (효율적인 방식)
+        
+        Args:
+            data: 데이터 객체
+            
+        Returns:
+            int: 추정된 바이트 크기
+        """
+        # 빈 데이터 처리
+        if not data:
+            return 0
+            
+        size = 0
+        
+        # bids와 asks가 있는 경우 (오더북 데이터)
+        if "bids" in data and isinstance(data["bids"], list):
+            # 각 호가 항목의 대략적인 크기 (숫자 + 콤마 + 대괄호)
+            size += len(data["bids"]) * 20  # 호가당 평균 20바이트로 추정
+            
+        if "asks" in data and isinstance(data["asks"], list):
+            size += len(data["asks"]) * 20
+        
+        # 기타 메타데이터의 대략적인 크기
+        size += 100  # 타임스탬프, 시퀀스 번호 등 (고정 100바이트로 추정)
+        
+        return size
     
     def get_status(self) -> Dict:
         """
-        상태 정보 반환
+        현재 상태 정보 반환
         
         Returns:
-            상태 정보 딕셔너리
+            Dict: 상태 정보
         """
-        # 기본 상태 정보
-        status = {
+        # 메트릭 매니저에서 상태 정보 가져오기
+        connection_state = self.is_connected
+        message_stats = self.metrics_manager.get_message_stats(self.exchange_code)
+        
+        # 오더북 정보 수집
+        orderbooks = {}
+        for symbol in self.symbols:
+            if self.validator and hasattr(self.validator, 'get_orderbook'):
+                ob = self.validator.get_orderbook(symbol)
+                if ob:
+                    # 주요 정보만 포함
+                    orderbooks[symbol] = {
+                        "best_bid": ob.best_bid() if hasattr(ob, 'best_bid') else None,
+                        "best_ask": ob.best_ask() if hasattr(ob, 'best_ask') else None,
+                        "bid_count": len(ob.bids) if hasattr(ob, 'bids') else 0,
+                        "ask_count": len(ob.asks) if hasattr(ob, 'asks') else 0,
+                        "last_update": ob.last_update_time if hasattr(ob, 'last_update_time') else None,
+                    }
+        
+        # 상태 정보 구성
+        return {
             "exchange": self.exchange_code,
-            "connected": self.is_running,
+            "exchange_kr": self.exchange_name_kr,
+            "is_connected": connection_state,
+            "is_running": self.is_running,
             "uptime": time.time() - self.start_time,
-            "symbols": list(self.symbols)
+            "symbols": list(self.symbols),
+            "message_stats": message_stats,
+            "orderbooks": orderbooks
         }
-        
-        # 메시지 통계 정보 추가
-        status.update({
-            "message_count": self.message_stats["total_received"],
-            "snapshot_count": self.message_stats["snapshot_received"],
-            "delta_count": self.message_stats["delta_received"],
-            "error_count": self.message_stats["errors"]
-        })
-        
-        # 중앙 메트릭 매니저에서 추가 정보 가져오기
-        if hasattr(self.validator, 'metrics'):
-            metrics = self.validator.metrics.get_metrics()
-            if self.exchange_code in metrics:
-                exchange_metrics = metrics[self.exchange_code]
-                status.update({
-                    "connected": exchange_metrics.get("connected", self.is_running),
-                    "processing_rate": exchange_metrics.get("processing_rate", 0),
-                    "avg_processing_time": exchange_metrics.get("avg_processing_time", 0),
-                    "bytes_received": exchange_metrics.get("bytes_received", 0)
-                })
-        
-        return status
 
     def set_connection_status_callback(self, callback):
         """
@@ -507,13 +516,32 @@ class OrderManager:
             self.message_stats["errors"] += 1
         
         # 중앙 메트릭 매니저 업데이트
-        if hasattr(self.validator, 'metrics'):
-            # 연결 상태 업데이트 - 메시지 수신 시 연결됨으로 간주
-            if message_type != "error":
-                self.validator.metrics.update_connection_state(self.exchange_code, "connected")
-            else:
-                # 에러 메시지는 연결 상태에 영향을 주지 않음
-                pass
+        # 연결 상태 업데이트 - 메시지 수신 시 연결됨으로 간주
+        if message_type != "error":
+            self.metrics_manager.update_connection_state(self.exchange_code, "connected")
+        else:
+            # 에러 메시지는 연결 상태에 영향을 주지 않음
+            pass
+
+    def _send_to_output_queue(self, symbol: str, orderbook: Any, is_valid: bool) -> None:
+        """
+        검증된 오더북 데이터를 출력 큐에 전송
+        
+        Args:
+            symbol: 심볼
+            orderbook: 오더북 데이터
+            is_valid: 데이터 유효성 여부
+        """
+        if is_valid and self.output_queue and orderbook:
+            # 오더북 데이터가 객체일 경우 dict로 변환
+            data = orderbook.to_dict() if hasattr(orderbook, 'to_dict') else orderbook
+            
+            self.output_queue.put_nowait({
+                "exchange": self.exchange_code,
+                "symbol": symbol,
+                "timestamp": time.time(),
+                "data": data
+            })
 
 
 # OrderManager 팩토리 함수
