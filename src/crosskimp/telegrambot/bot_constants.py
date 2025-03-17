@@ -19,6 +19,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Union, Any
 from dotenv import load_dotenv
+import json
 
 # Load environment variables
 load_dotenv()
@@ -237,63 +238,44 @@ def format_message(
         logger.error("[텔레그램] 메시지 포맷팅 중 오류: %s", str(e))
         return f"메시지 포맷팅 오류: {str(e)}"
 
-def validate_telegram_config(settings: Dict) -> bool:
+def validate_telegram_config(settings: Dict = None) -> bool:
     """
     텔레그램 설정 유효성 검증
     
     Args:
-        settings: 설정 데이터
+        settings: 설정 데이터 (선택적, 사용하지 않음)
         
     Returns:
         bool: 유효성 여부
     """
-    logger.debug("[텔레그램] 설정 유효성 검증 시작")
-    
-    # 설정에서 텔레그램 활성화 여부 확인
-    if 'notifications' not in settings:
-        logger.error("[텔레그램] 설정에 'notifications' 섹션 누락")
-        return False
-        
-    if 'telegram' not in settings['notifications']:
-        logger.error("[텔레그램] 설정에 'notifications.telegram' 섹션 누락")
-        return False
-        
-    if 'enabled' not in settings['notifications']['telegram']:
-        logger.error("[텔레그램] 설정에 'notifications.telegram.enabled' 필드 누락")
-        return False
-        
-    # 텔레그램 비활성화 상태면 유효성 검증 통과 (사용하지 않으므로)
-    if not settings['notifications']['telegram']['enabled']:
-        logger.debug("[텔레그램] 텔레그램 알림 비활성화 상태")
-        return True
-    
-    # 환경 변수에서 토큰과 채팅 ID 확인
+    # 환경 변수에서 직접 토큰과 채팅 ID 확인
     token = NOTIFICATION_BOT_TOKEN
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
     
     if not token:
-        logger.error("[텔레그램] 봇 토큰 누락 (환경 변수 TELEGRAM_BOT_TOKEN)")
+        logger.error("[텔레그램] 봇 토큰이 설정되지 않았습니다.")
         return False
         
     if not chat_id:
-        logger.error("[텔레그램] chat_id 누락 (환경 변수 TELEGRAM_CHAT_ID)")
+        logger.error("[텔레그램] 채팅 ID가 설정되지 않았습니다.")
         return False
     
+    # 항상 활성화 상태로 간주
     logger.debug("[텔레그램] 설정 유효성 검증 완료 (유효함)")
     return True
 
 async def send_telegram_message(
-    settings: Dict,
-    message_type: Union[str, MessageType],
-    data: Union[Dict[str, Union[str, int, float]], str],
+    settings: Dict = None,  # settings 파라미터를 선택적으로 변경
+    message_type: Union[str, MessageType] = MessageType.INFO,
+    data: Union[Dict[str, Union[str, int, float]], str] = None,
     retry_count: int = 0,
-    timeout: float = 10.0  # 타임아웃 설정 추가 (기본 10초)
+    timeout: float = 10.0
 ) -> bool:
     """
     텔레그램 메시지 전송
     
     Args:
-        settings: 설정 데이터
+        settings: 설정 데이터 (선택적, 사용하지 않음)
         message_type: 메시지 타입 (MessageType 클래스 참조 또는 문자열)
         data: 템플릿에 들어갈 데이터 또는 메시지 문자열
         retry_count: 현재 재시도 횟수
@@ -307,6 +289,10 @@ async def send_telegram_message(
                 message_type, retry_count, timeout)
     task_id = f"{message_type}_{int(time.time() * 1000)}"
     
+    # data가 None인 경우 기본값 설정
+    if data is None:
+        data = {"message": "텔레그램 메시지"}
+    
     # 문자열을 받은 경우 딕셔너리로 변환
     if isinstance(data, str):
         data = {"message": data}
@@ -318,8 +304,8 @@ async def send_telegram_message(
             start_time = time.time()
             logger.debug("[텔레그램] 메시지 전송 태스크 시작 (ID: %s)", task_id)
             
-            # 설정 유효성 검증
-            if not validate_telegram_config(settings):
+            # 설정 유효성 검증 (settings 파라미터 없이 호출)
+            if not validate_telegram_config():
                 logger.error("[텔레그램] 설정 유효성 검증 실패 (ID: %s)", task_id)
                 return False
                 
@@ -341,11 +327,16 @@ async def send_telegram_message(
                 "parse_mode": "HTML"
             }
             
-            logger.debug("[텔레그램] API 요청 준비 완료 (ID: %s, URL: %s)", task_id, url)
-            logger.info("[텔레그램] 메시지 전송 시도 (ID: %s, 타입: %s)", task_id, message_type)
+            # 디버깅을 위해 페이로드 출력
+            logger.debug("[텔레그램] 페이로드: %s", json.dumps(payload, ensure_ascii=False))
             
             # API 요청 전송
             request_start_time = time.time()
+            
+            # curl 명령어로 직접 API 호출 (디버깅용)
+            curl_cmd = f'curl -s -X POST "{url}" -d "chat_id={chat_id}&text=테스트 메시지&parse_mode=HTML"'
+            logger.debug("[텔레그램] curl 명령어: %s", curl_cmd)
+            
             async with aiohttp.ClientSession() as session:
                 logger.debug("[텔레그램] ClientSession 생성 완료 (ID: %s)", task_id)
                 
@@ -353,25 +344,29 @@ async def send_telegram_message(
                     # 타임아웃 설정
                     async with session.post(url, json=payload, timeout=timeout) as response:
                         request_elapsed = time.time() - request_start_time
-                        logger.debug("[텔레그램] API 응답 수신 (ID: %s, 소요 시간: %.3f초)", task_id, request_elapsed)
+                        logger.debug("[텔레그램] API 응답 수신 (ID: %s, 소요 시간: %.3f초, 상태 코드: %d)", 
+                                    task_id, request_elapsed, response.status)
+                        
+                        # 응답 내용 로깅
+                        response_text = await response.text()
+                        logger.debug("[텔레그램] API 응답 내용: %s", response_text)
                         
                         if response.status == 200:
                             response_json = await response.json()
-                            logger.debug("[텔레그램] API 응답 내용: %s", response_json)
+                            logger.debug("[텔레그램] API 응답 JSON: %s", response_json)
                             logger.info("[텔레그램] 메시지 전송 성공 (ID: %s, 타입: %s, 소요 시간: %.3f초)", 
                                        task_id, message_type, request_elapsed)
                             return True
                         else:
-                            error_text = await response.text()
                             logger.error("[텔레그램] 메시지 전송 실패 (ID: %s, 상태 코드: %d): %s", 
-                                        task_id, response.status, error_text)
+                                        task_id, response.status, response_text)
                             
                             # 재시도
                             if retry_count < TELEGRAM_MAX_RETRIES:
                                 logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d)", 
                                            task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
                                 await asyncio.sleep(TELEGRAM_RETRY_DELAY)
-                                return await send_telegram_message(settings, message_type, data, retry_count + 1, timeout)
+                                return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
                             else:
                                 logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
                                 return False
@@ -383,7 +378,7 @@ async def send_telegram_message(
                         logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d, 타임아웃)", 
                                    task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
                         await asyncio.sleep(TELEGRAM_RETRY_DELAY)
-                        return await send_telegram_message(settings, message_type, data, retry_count + 1, timeout)
+                        return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
                     else:
                         logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
                         return False
@@ -395,7 +390,7 @@ async def send_telegram_message(
                 logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d, 오류)", 
                            task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
                 await asyncio.sleep(TELEGRAM_RETRY_DELAY)
-                return await send_telegram_message(settings, message_type, data, retry_count + 1, timeout)
+                return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
             else:
                 logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
                 return False
@@ -414,18 +409,18 @@ async def send_telegram_message(
 # ============================
 # 편의 함수
 # ============================
-async def send_error(settings: Dict, component: str, message: str) -> bool:
+async def send_error(settings: Dict = None, component: str = "", message: str = "") -> bool:
     """오류 메시지 전송"""
     data = {
         "component": component,
         "message": message
     }
     # 비동기 태스크로 실행
-    asyncio.create_task(send_telegram_message(settings, MessageType.ERROR, data))
+    asyncio.create_task(send_telegram_message(None, MessageType.ERROR, data))
     return True
 
-async def send_trade(settings: Dict, exchange_from: str, exchange_to: str,
-                    symbol: str, amount: float, price: float, kimp: float) -> bool:
+async def send_trade(settings: Dict = None, exchange_from: str = "", exchange_to: str = "",
+                    symbol: str = "", amount: float = 0.0, price: float = 0.0, kimp: float = 0.0) -> bool:
     """거래 메시지 전송"""
     data = {
         "exchange_from": exchange_from,
@@ -436,10 +431,10 @@ async def send_trade(settings: Dict, exchange_from: str, exchange_to: str,
         "kimp": kimp
     }
     # 비동기 태스크로 실행
-    asyncio.create_task(send_telegram_message(settings, MessageType.TRADE, data))
+    asyncio.create_task(send_telegram_message(None, MessageType.TRADE, data))
     return True
 
-async def send_profit(settings: Dict, amount: float, percentage: float, details: str) -> bool:
+async def send_profit(settings: Dict = None, amount: float = 0.0, percentage: float = 0.0, details: str = "") -> bool:
     """수익 메시지 전송"""
     data = {
         "amount": amount,
@@ -447,11 +442,11 @@ async def send_profit(settings: Dict, amount: float, percentage: float, details:
         "details": details
     }
     # 비동기 태스크로 실행
-    asyncio.create_task(send_telegram_message(settings, MessageType.PROFIT, data))
+    asyncio.create_task(send_telegram_message(None, MessageType.PROFIT, data))
     return True
 
-async def send_market_status(settings: Dict, usdt_price: float,
-                           upbit_status: bool, bithumb_status: bool) -> bool:
+async def send_market_status(settings: Dict = None, usdt_price: float = 0.0,
+                           upbit_status: bool = False, bithumb_status: bool = False) -> bool:
     """시장 상태 메시지 전송"""
     data = {
         "usdt_price": usdt_price,
@@ -459,11 +454,11 @@ async def send_market_status(settings: Dict, usdt_price: float,
         "bithumb_status": MessageIcon.CONNECTION[bithumb_status]
     }
     # 비동기 태스크로 실행
-    asyncio.create_task(send_telegram_message(settings, MessageType.MARKET, data))
+    asyncio.create_task(send_telegram_message(None, MessageType.MARKET, data))
     return True
 
-async def send_system_status(settings: Dict, cpu_usage: float,
-                           memory_usage: float, uptime: str) -> bool:
+async def send_system_status(settings: Dict = None, cpu_usage: float = 0.0,
+                           memory_usage: float = 0.0, uptime: str = "") -> bool:
     """시스템 상태 메시지 전송"""
     data = {
         "cpu_usage": cpu_usage,
@@ -471,7 +466,7 @@ async def send_system_status(settings: Dict, cpu_usage: float,
         "uptime": uptime
     }
     # 비동기 태스크로 실행
-    asyncio.create_task(send_telegram_message(settings, MessageType.SYSTEM, data))
+    asyncio.create_task(send_telegram_message(None, MessageType.SYSTEM, data))
     return True
 
 # Export all constants and functions

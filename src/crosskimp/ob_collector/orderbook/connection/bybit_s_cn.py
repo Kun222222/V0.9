@@ -27,9 +27,6 @@ WS_URL = BYBIT_CONFIG["ws_url"]  # 웹소켓 URL
 PING_INTERVAL = BYBIT_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
 PING_TIMEOUT = BYBIT_CONFIG["ping_timeout"]  # 핑 응답 타임아웃 (초)
 
-# 오더북 관련 설정
-MAX_SYMBOLS_PER_SUBSCRIPTION = BYBIT_CONFIG["max_symbols_per_subscription"]  # 구독당 최대 심볼 수
-
 class BybitWebSocketConnector(BaseWebsocketConnector):
     """
     바이빗 웹소켓 연결 관리 클래스
@@ -39,7 +36,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
     특징:
     - 커스텀 핑/퐁 메커니즘 사용
     - 재연결 전략 구현
-    - 배치 구독 지원
+    - 연결 상태 관리
     """
     def __init__(self, settings: dict):
         """
@@ -61,10 +58,6 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
         self.last_pong_time = 0
         self.ping_interval = PING_INTERVAL
         self.ping_timeout = PING_TIMEOUT
-        
-        # 구독 관련 설정
-        self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
-        self.subscribed_symbols: List[str] = []
         
         # 백그라운드 태스크
         self.ping_task = None
@@ -140,51 +133,6 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             # 초기 연결이 아닌 경우 기본 타임아웃 처리 사용
             return await super()._handle_timeout_error(exception)
 
-    async def subscribe(self, symbols: List[str]) -> None:
-        """
-        지정된 심볼에 대한 오더북 구독
-        
-        Args:
-            symbols: 구독할 심볼 목록
-        
-        Raises:
-            ConnectionError: 웹소켓이 연결되지 않은 경우
-            Exception: 구독 처리 중 오류 발생
-        """
-        try:
-            if not self.ws or not self.is_connected:
-                error_msg = "웹소켓이 연결되지 않음"
-                self.log_error(error_msg)
-                raise ConnectionError(error_msg)
-                
-            total_batches = (len(symbols) + self.max_symbols_per_subscription - 1) // self.max_symbols_per_subscription
-            self.log_info(f"구독 시작 | 총 {len(symbols)}개 심볼, {total_batches}개 배치로 나눔")
-            
-            for i in range(0, len(symbols), self.max_symbols_per_subscription):
-                batch_symbols = symbols[i:i + self.max_symbols_per_subscription]
-                batch_num = (i // self.max_symbols_per_subscription) + 1
-                
-                # 파서를 사용하여 구독 메시지 생성
-                msg = self.parser.create_subscribe_message(batch_symbols)
-                
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "subscribe")
-                    
-                await self.ws.send(json.dumps(msg))
-                self.log_info(f"구독 요청 전송 | 배치 {batch_num}/{total_batches}, symbols={batch_symbols}")
-                await asyncio.sleep(0.1)
-            
-            self.log_info(f"전체 구독 요청 완료 | 총 {len(symbols)}개 심볼")
-            self.subscribed_symbols = symbols
-            
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "subscribe_complete")
-            
-        except Exception as e:
-            error_msg = f"구독 요청 실패: {str(e)}"
-            self.log_error(error_msg)
-            raise
-
     async def _send_ping(self) -> None:
         """
         PING 메시지 전송
@@ -200,244 +148,236 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                 await self.ws.send(json.dumps(ping_message))
                 self.last_ping_time = time.time()
                 self.stats.last_ping_time = self.last_ping_time
-                self.log_debug(f"PING 전송: {ping_message}")
+                self.log_debug(f"PING 메시지 전송")
+                self.message_stats["ping_pong"] += 1
         except Exception as e:
-            self.log_error(f"PING 전송 실패: {str(e)}")
+            self.log_error(f"PING 메시지 전송 실패: {str(e)}")
 
     def _handle_pong(self, data: dict) -> bool:
         """
         PONG 메시지 처리
         
         Args:
-            data: 수신된 PONG 메시지 데이터
+            data: PONG 메시지 데이터
             
         Returns:
             bool: PONG 메시지 처리 성공 여부
         """
         try:
-            # 파서를 사용하여 PONG 메시지 확인
-            if self.parser.is_pong_message(data):
-                self.last_pong_time = time.time()
-                self.stats.last_pong_time = self.last_pong_time
-                self.message_stats["ping_pong"] += 1
-                
-                latency = (self.last_pong_time - self.last_ping_time) * 1000
-                self.stats.latency_ms = latency
-                
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "heartbeat")
-                    
-                self.log_debug(f"PONG 수신 (레이턴시: {latency:.2f}ms)")
-                return True
-            return False
+            self.last_pong_time = time.time()
+            self.stats.last_pong_time = self.last_pong_time
+            self.log_debug(f"PONG 응답 수신")
+            return True
         except Exception as e:
-            self.log_error(f"PONG 처리 실패: {str(e)}")
+            self.log_error(f"PONG 메시지 처리 실패: {str(e)}")
             return False
 
     async def _ping_loop(self):
         """
-        바이빗 공식 핑 태스크
-        공식 문서에 따르면 20초마다 ping을 보내는 것이 권장됨
-        """
-        self.last_ping_time = time.time()
-        self.last_pong_time = time.time()
-        self.stats.last_ping_time = self.last_ping_time
-        self.stats.last_pong_time = self.last_pong_time
+        PING 루프 실행
         
-        while not self.stop_event.is_set() and self.is_connected:
-            try:
-                await self._send_ping()
-                await asyncio.sleep(self.ping_interval)
-                current_time = time.time()
-                
-                if self.last_pong_time <= 0:
-                    self.last_pong_time = current_time
-                    self.stats.last_pong_time = self.last_pong_time
-                    continue
-                
-                pong_diff = current_time - self.last_pong_time
-                if pong_diff < self.ping_interval:
-                    continue
-                
-                if pong_diff > self.ping_timeout:
-                    error_msg = f"{self.exchange_korean_name} PONG 응답 타임아웃 ({self.ping_timeout}초) | 마지막 PONG: {pong_diff:.1f}초 전"
-                    self.log_error(error_msg)
-                    await self._send_telegram_notification("error", error_msg)
-                    
-                    if self.connection_status_callback:
-                        self.connection_status_callback(self.exchangename, "heartbeat_timeout")
-                        
-                    self.is_connected = False
-                    self.stats.connected = False
-                    await self.reconnect()
-                    break
-                    
-            except Exception as e:
-                self.log_error(f"PING 태스크 오류: {str(e)}")
-                await asyncio.sleep(1)
-
-    async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
-        """
-        메시지 처리 루프 실행 (BaseWebsocketConnector 템플릿 메서드 구현)
-        
-        Args:
-            symbols: 구독한 심볼 목록
-            tasks: 실행 중인 백그라운드 태스크 목록
+        주기적으로 PING 메시지를 전송하여 연결 상태를 유지합니다.
         """
         try:
-            while not self.stop_event.is_set() and self.is_connected:
+            self.log_info(f"PING 루프 시작 | 간격: {self.ping_interval}초")
+            
+            while self.is_connected and not self.stop_event.is_set():
                 try:
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=30)
-                    self.stats.last_message_time = time.time()
-                    self.stats.message_count += 1
-                    self.message_stats["total_received"] += 1
+                    # PING 메시지 전송
+                    await self._send_ping()
                     
-                    # 메시지 처리 (자식 클래스에서 구현)
-                    await self.process_message(message)
-                        
-                except asyncio.TimeoutError:
-                    self.log_debug(f"30초 동안 메시지 없음, 연결 상태 확인을 위해 PING 전송")
-                    try:
-                        await self._send_ping()
-                    except Exception as e:
-                        self.log_error(f"PING 전송 실패: {str(e)}")
-                        await self.reconnect()
-                        break
-                        
-                except websockets.exceptions.ConnectionClosed as e:
-                    error_msg = f"{self.exchange_korean_name} 웹소켓 연결 끊김: {str(e)}"
-                    self.log_error(error_msg)
-                    await self._send_telegram_notification("error", error_msg)
-                    self.is_connected = False
-                    if not self.stop_event.is_set():
-                        await self.reconnect()
+                    # 다음 PING까지 대기
+                    await asyncio.sleep(self.ping_interval)
+                    
+                except asyncio.CancelledError:
+                    self.log_info(f"PING 루프 취소됨")
                     break
                     
                 except Exception as e:
-                    self.log_error(f"메시지 루프 오류: {str(e)}")
-                    await self.reconnect()
+                    self.log_error(f"PING 루프 오류: {str(e)}")
+                    await asyncio.sleep(1)  # 오류 발생 시 짧게 대기 후 재시도
+            
+            self.log_info(f"PING 루프 종료")
+            
+        except asyncio.CancelledError:
+            self.log_info(f"PING 루프 취소됨")
+            
+        except Exception as e:
+            self.log_error(f"PING 루프 실행 중 오류 발생: {str(e)}")
+
+    async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
+        """
+        메시지 수신 루프 실행
+        
+        웹소켓으로부터 메시지를 수신하고 처리합니다.
+        
+        Args:
+            symbols: 구독할 심볼 목록
+            tasks: 백그라운드 태스크 목록
+        """
+        try:
+            self.log_info(f"메시지 수신 루프 시작")
+            
+            # 연결 상태 콜백 호출
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "connected")
+            
+            # 메시지 수신 루프
+            while self.is_connected and not self.stop_event.is_set():
+                try:
+                    # 메시지 수신
+                    message = await asyncio.wait_for(
+                        self.ws.recv(),
+                        timeout=self.ping_interval + self.ping_timeout
+                    )
+                    
+                    # 메시지 처리
+                    await self.process_message(message)
+                    
+                except asyncio.TimeoutError:
+                    # 타임아웃 발생 시 연결 상태 확인
+                    current_time = time.time()
+                    if self.last_pong_time > 0 and (current_time - self.last_pong_time) > self.ping_timeout:
+                        self.log_warning(f"PONG 응답 타임아웃 | 마지막 PONG: {current_time - self.last_pong_time:.1f}초 전")
+                        break
+                    
+                except websockets.exceptions.ConnectionClosed as e:
+                    self.log_error(f"웹소켓 연결이 닫혔습니다: {e}")
                     break
                     
+                except asyncio.CancelledError:
+                    self.log_info(f"메시지 루프가 취소되었습니다.")
+                    break
+                    
+                except Exception as e:
+                    self.log_error(f"메시지 처리 중 오류 발생: {e}")
+                    continue
+                    
+        except asyncio.CancelledError:
+            self.log_info(f"메시지 루프가 취소되었습니다.")
+            
         except Exception as e:
-            self.log_error(f"메시지 루프 실행 실패: {str(e)}")
-            await self.reconnect()
+            self.log_error(f"메시지 루프 실행 중 오류 발생: {e}")
             
         finally:
-            # 태스크 정리
+            self.log_info(f"메시지 수신 루프 종료")
+            
+            # 연결 상태 콜백 호출
+            if self.connection_status_callback:
+                self.connection_status_callback(self.exchangename, "disconnected")
+            
+            # 모든 태스크 취소
             for task in tasks:
                 if not task.done():
                     task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
             
-            # 재연결 처리 (재귀적 호출 방지)
-            if not self.stop_event.is_set() and not self.is_connected:
-                self.log_info(f"메시지 루프 종료 후 재연결 시도")
-                # 재연결 시도
-                await self.reconnect()
-                
-                # 재연결 성공 시 구독 다시 시도
-                if self.is_connected:
-                    try:
-                        await self.subscribe(symbols)
-                        self.log_info(f"{len(symbols)}개 심볼 재구독 완료")
-                    except Exception as e:
-                        self.log_error(f"심볼 재구독 실패: {str(e)}")
-                        # 구독 실패 시 연결 종료 (다음 재연결 시도는 health_check에서 처리)
-                        await self._cleanup_connection()
+            # 연결 종료
+            await self._cleanup_connection()
+            
+            # 재연결 시도
+            if not self.stop_event.is_set():
+                self.log_info(f"재연결 시도")
+                asyncio.create_task(self.reconnect())
 
     async def process_message(self, message: str) -> None:
         """
-        수신된 메시지 처리 (자식 클래스에서 구현)
+        수신된 메시지 처리
+        
+        이 메서드는 하위 클래스에서 구현해야 합니다.
         
         Args:
             message: 수신된 웹소켓 메시지
         """
-        # 이 메서드는 자식 클래스에서 구현해야 함
         pass
 
     async def start_background_tasks(self) -> List[asyncio.Task]:
         """
-        백그라운드 태스크 시작 (BaseWebsocketConnector 템플릿 메서드 구현)
+        백그라운드 태스크 시작
+        
+        Returns:
+            List[asyncio.Task]: 시작된 태스크 목록
         """
         tasks = []
+        
+        # PING 루프 시작
         self.ping_task = asyncio.create_task(self._ping_loop())
         tasks.append(self.ping_task)
-        self.health_check_task = asyncio.create_task(self.health_check())
-        tasks.append(self.health_check_task)
+        
         return tasks
 
     async def _cancel_task(self, task: Optional[asyncio.Task], name: str) -> None:
-        """공통 태스크 취소 함수"""
-        if task:
+        """
+        태스크 취소
+        
+        Args:
+            task: 취소할 태스크
+            name: 태스크 이름
+        """
+        if task and not task.done():
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                self.log_warning(f"{name} 취소 중 오류 (무시됨): {str(e)}")
+                self.log_debug(f"{name} 태스크 취소됨")
 
     async def reconnect(self) -> None:
         """
-        웹소켓 연결 재설정
+        재연결 시도
         
-        바이빗의 경우 초기 연결 시도 중 타임아웃은 정상적인 상황으로 처리합니다.
+        연결이 끊어진 경우 재연결을 시도합니다.
         """
-        # 재연결 시도 횟수 증가
-        self.current_retry += 1
-        self.stats.reconnect_count += 1
-        
-        # 초기 연결 시도 중 타임아웃은 정상적인 상황으로 처리
-        is_initial_timeout = self.current_retry <= 3
-        
-        # 로그 및 알림 처리 - 초기 연결 여부에 따라 다르게 처리
-        if is_initial_timeout:
-            self.log_info(f"{self.exchange_korean_name} 초기 연결 재시도 중 (시도 횟수: {self.current_retry})")
-        else:
-            reconnect_msg = f"{self.exchange_korean_name} 웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count})"
-            self.log_info(reconnect_msg)
-            await self._send_telegram_notification("reconnect", reconnect_msg)
-        
         try:
-            # 웹소켓 및 태스크 정리
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except Exception as e:
-                    self.log_warning(f"웹소켓 종료 중 오류 (무시됨): {str(e)}")
+            # 이미 재연결 중인 경우 무시
+            if self.is_reconnecting:
+                return
+                
+            self.is_reconnecting = True
             
-            await self._cancel_task(self.ping_task, "PING 태스크")
-            await self._cancel_task(self.health_check_task, "헬스 체크 태스크")
+            # 재연결 시도 횟수 증가
+            self.current_retry += 1
             
-            self.is_connected = False
-            self.stats.connected = False
-            
-            # 초기 연결 시도 중 타임아웃인 경우 직접 connect 호출, 그 외에는 부모 클래스의 reconnect 호출
-            if is_initial_timeout:
-                await asyncio.sleep(1)  # 짧은 대기 후 재연결 시도
-                await self.connect()
-            else:
-                await super().reconnect()
-            
-        except Exception as e:
-            # 오류 메시지 및 로깅 - 초기 연결 여부에 따라 다르게 처리
-            error_msg = f"{self.exchange_korean_name} {'초기 연결 재시도' if is_initial_timeout else '웹소켓 재연결'} 실패: {str(e)}"
-            
-            if is_initial_timeout:
-                self.log_info(f"{error_msg} (무시됨)")
-            else:
-                self.log_error(error_msg)
-                await self._send_telegram_notification("error", error_msg)
-            
+            # 최대 재시도 횟수 초과 시 중단
+            if self.max_retries > 0 and self.current_retry > self.max_retries:
+                self.log_error(
+                    f"최대 재연결 시도 횟수 초과 | 시도={self.current_retry}회, 최대={self.max_retries}회"
+                )
+                self.stop_event.set()
+                return
+                
+            # 지수 백오프 적용
             delay = min(30, self.retry_delay * (2 ** (self.current_retry - 1)))
-            self.log_info(f"재연결 대기 중 ({delay}초) | 시도={self.current_retry}회차")
+            self.log_info(f"재연결 대기 | 시도={self.current_retry}회, 대기={delay:.1f}초")
             await asyncio.sleep(delay)
+            
+            # 연결 시도
+            success = await self.connect()
+            
+            if success:
+                self.log_info(f"재연결 성공 | 시도={self.current_retry}회")
+                self.current_retry = 0
+                
+                # 백그라운드 태스크 시작
+                tasks = await self.start_background_tasks()
+                
+                # 메시지 루프 실행
+                await self._run_message_loop(self.subscribed_symbols, tasks)
+            else:
+                self.log_error(f"재연결 실패 | 시도={self.current_retry}회")
+                # 다시 재연결 시도
+                asyncio.create_task(self.reconnect())
+                
+        except Exception as e:
+            self.log_error(f"재연결 중 오류 발생: {str(e)}")
+            # 다시 재연결 시도
+            asyncio.create_task(self.reconnect())
+            
+        finally:
+            self.is_reconnecting = False
 
     async def _cleanup_connection(self) -> None:
-        """연결 종료 및 정리"""
+        """
+        연결 종료 및 정리
+        """
         if self.ws:
             try:
                 await self.ws.close()
@@ -449,3 +389,51 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
         # 연결 종료 상태 콜백
         if self.connection_status_callback:
             self.connection_status_callback(self.exchangename, "disconnect")
+
+    async def receive_raw(self) -> Optional[str]:
+        """
+        웹소켓에서 원시 메시지 수신
+        
+        Returns:
+            Optional[str]: 수신된 원시 메시지 또는 None
+        """
+        try:
+            if not self.ws or not self.is_connected:
+                self.log_debug("웹소켓 연결이 없거나 연결되지 않음")
+                return None
+                
+            # 메시지 수신
+            message = await self.ws.recv()
+            
+            # 메시지 로깅 (너무 길면 일부만)
+            if message:
+                # 메시지 통계 업데이트
+                self.stats.total_messages += 1
+                self.stats.message_count += 1
+                self.stats.last_message_time = time.time()
+                
+                # 일반 메시지는 DEBUG 레벨로 로깅
+                try:
+                    # JSON 형식인 경우 파싱하여 타입 확인
+                    data = json.loads(message)
+                    if "topic" in data and "orderbook" in data.get("topic", ""):
+                        # 오더북 메시지는 DEBUG 레벨로 로깅
+                        self.log_debug(f"오더북 메시지 수신: 길이={len(message)}")
+                    else:
+                        # 기타 메시지는 INFO 레벨로 로깅
+                        self.log_info(f"메시지 수신: {message[:200]}...")
+                except:
+                    # 파싱 실패 시 원시 메시지 일부만 로깅
+                    if len(message) > 200:
+                        self.log_info(f"메시지 수신 (길이: {len(message)}): {message[:100]}...{message[-100:]}")
+                    else:
+                        self.log_info(f"메시지 수신: {message}")
+                
+            return message
+        except websockets.exceptions.ConnectionClosed as e:
+            self.log_error(f"웹소켓 연결 끊김: {e}")
+            self.is_connected = False
+            return None
+        except Exception as e:
+            self.log_error(f"메시지 수신 실패: {e}")
+            return None

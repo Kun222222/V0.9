@@ -51,19 +51,6 @@ class BaseParser(ABC):
         """
         pass
     
-    @abstractmethod
-    def create_subscribe_message(self, symbols: List[str]) -> Any:
-        """
-        구독 메시지 생성
-        
-        Args:
-            symbols: 구독할 심볼 목록
-            
-        Returns:
-            Any: 구독 메시지 (형식은 거래소마다 다름)
-        """
-        pass
-    
     def filter_zero_values(self, bids: List[Dict[str, float]], asks: List[Dict[str, float]]) -> Tuple[List[Dict[str, float]], List[Dict[str, float]]]:
         """
         0인 값을 필터링하는 공통 메서드

@@ -2,11 +2,13 @@
 
 import asyncio
 import time
+import json
 from websockets import connect
 import websockets.exceptions
 from typing import Dict, List, Optional, Tuple, Any
 
-from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector
+from crosskimp.ob_collector.orderbook.connection.base_ws_connector import BaseWebsocketConnector, ReconnectStrategy
+from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 
 # ============================
 # 업비트 웹소켓 연결 관련 상수
@@ -19,6 +21,8 @@ EXCHANGE_NAME_KR = "[업비트]"  # 거래소 한글 이름
 WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
 PING_INTERVAL = 30  # 핑 전송 간격 (초)
 PING_TIMEOUT = 10  # 핑 응답 타임아웃 (초)
+MESSAGE_TIMEOUT = 60  # 메시지 타임아웃 (초)
+HEALTH_CHECK_INTERVAL = 30  # 헬스 체크 간격 (초)
 
 class UpbitWebSocketConnector(BaseWebsocketConnector):
     """
@@ -29,6 +33,11 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
     특징:
     - URL: wss://api.upbit.com/websocket/v1
     - 핑/퐁: 표준 WebSocket PING/PONG 프레임 사용
+    
+    책임:
+    - 웹소켓 연결 관리 (연결, 재연결, 종료)
+    - 원시 메시지 수신 및 전송
+    - 연결 상태 모니터링
     """
     def __init__(self, settings: dict):
         """
@@ -40,40 +49,112 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         super().__init__(settings, EXCHANGE_CODE)
         self.ws_url = WS_URL
         
-        # 연결 관련 설정
-        self.is_connected = False
-        
-        # 핑/퐁 설정
+        # 업비트 전용 설정
         self.ping_interval = PING_INTERVAL
         self.ping_timeout = PING_TIMEOUT
-
-    async def _do_connect(self):
-        """
-        실제 웹소켓 연결 수행 (BaseWebsocketConnector 템플릿 메서드 구현)
-        """
-        # 웹소켓 연결 수립 - 표준 PING/PONG 프레임 사용
-        self.ws = await connect(
-            self.ws_url,
-            ping_interval=self.ping_interval,  # 표준 PING 프레임 자동 전송
-            ping_timeout=self.ping_timeout     # PONG 응답 타임아웃
-        )
-        self.is_connected = True
-        self.log_info("업비트 웹소켓 연결 성공")
-
-    async def _cleanup_connection(self) -> None:
-        """연결 종료 및 정리"""
-        if self.ws:
-            try:
-                await self.ws.close()
-            except Exception as e:
-                self.log_error(f"웹소켓 종료 실패: {e}")
-
-        self.is_connected = False
+        self.message_timeout = MESSAGE_TIMEOUT
+        self.health_check_interval = HEALTH_CHECK_INTERVAL
         
-        # 연결 종료 상태 콜백
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "disconnect") 
+        # 재연결 전략 설정
+        self.reconnect_strategy = ReconnectStrategy(
+            initial_delay=1.0,
+            max_delay=60.0,
+            multiplier=2.0,
+            max_attempts=0  # 무제한 재시도
+        )
+        
+        # 메트릭 매니저 싱글톤 인스턴스 사용
+        self.metrics = WebsocketMetricsManager.get_instance()
+        
+        # 연결 상태
+        self.connecting = False
+
+    async def connect(self) -> bool:
+        """
+        웹소켓 연결 수행
+        
+        Returns:
+            bool: 연결 성공 여부
+        """
+        # 이미 연결된 경우 바로 반환
+        if self.is_connected and self.ws:
+            return True
             
+        # 연결 중인 경우 대기
+        if self.connecting:
+            self.log_debug("이미 연결 중")
+            return True
+            
+        self.connecting = True
+        
+        try:
+            # 웹소켓 연결 수립 - 표준 PING/PONG 프레임 사용
+            self.ws = await connect(
+                self.ws_url,
+                ping_interval=self.ping_interval,  # 표준 PING 프레임 자동 전송
+                ping_timeout=self.ping_timeout     # PONG 응답 타임아웃
+            )
+            
+            # 연결 성공 처리
+            self.is_connected = True
+            self.stats.connection_start_time = time.time()
+            self.reconnect_strategy.reset()
+            
+            # 메트릭 업데이트
+            self.metrics.update_connection_state(self.exchangename, "connected")
+            
+            # 연결 성공 알림
+            connect_msg = f"{self.exchange_korean_name} 웹소켓 연결 성공"
+            await self.send_telegram_notification("connect", connect_msg)
+            
+            self.log_info("웹소켓 연결 성공")
+            return True
+            
+        except asyncio.TimeoutError as e:
+            self.connecting = False
+            self.log_error(f"연결 타임아웃: {str(e)}")
+            
+            # 메트릭 업데이트
+            self.metrics.record_error(self.exchangename)
+            self.metrics.update_connection_state(self.exchangename, "disconnected")
+            
+            return False
+                
+        except Exception as e:
+            self.log_error(f"연결 오류: {str(e)}", exc_info=True)
+            self.connecting = False
+            
+            # 메트릭 업데이트
+            self.metrics.record_error(self.exchangename)
+            self.metrics.update_connection_state(self.exchangename, "disconnected")
+            
+            return False
+            
+        finally:
+            self.connecting = False
+
+    async def disconnect(self) -> bool:
+        """
+        웹소켓 연결 종료
+        
+        Returns:
+            bool: 종료 성공 여부
+        """
+        try:
+            if self.ws:
+                await self.ws.close()
+                
+            self.is_connected = False
+            
+            # 메트릭 업데이트
+            self.metrics.update_connection_state(self.exchangename, "disconnected")
+            
+            return True
+            
+        except Exception as e:
+            self.log_error(f"웹소켓 연결 종료 실패: {str(e)}")
+            return False
+
     async def send_message(self, message: str) -> bool:
         """
         웹소켓을 통해 메시지 전송
@@ -94,12 +175,75 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         except Exception as e:
             self.log_error(f"메시지 전송 실패: {str(e)}")
             return False
+
+    async def health_check(self) -> None:
+        """
+        웹소켓 상태 체크 (백그라운드 태스크)
+        """
+        self.log_info(f"헬스 체크 시작 (간격: {self.health_check_interval}초)")
+        
+        while not self.stop_event.is_set():
+            try:
+                current_time = time.time()
+                
+                # 메시지 타임아웃 체크
+                if self.is_connected and self.stats.last_message_time > 0 and (current_time - self.stats.last_message_time) > self.message_timeout:
+                    error_msg = f"{self.exchange_korean_name} 웹소켓 메시지 타임아웃 발생 ({self.message_timeout}초), 마지막 메시지: {current_time - self.stats.last_message_time:.1f}초 전"
+                    self.log_error(error_msg)
+                    await self.send_telegram_notification("error", error_msg)
+                    await self.reconnect()
+                
+                # 연결 상태 로깅 (디버그)
+                if self.is_connected:
+                    uptime = current_time - self.stats.connection_start_time
+                    last_msg_time_diff = current_time - self.stats.last_message_time if self.stats.last_message_time > 0 else -1
+                    self.log_debug(
+                        f"헬스 체크: 연결됨, 업타임={uptime:.1f}초, 메시지={self.stats.message_count}개, "
+                        f"마지막 메시지={last_msg_time_diff:.1f}초 전, 오류={self.stats.error_count}개"
+                    )
+                
+                await asyncio.sleep(self.health_check_interval)
+                
+            except Exception as e:
+                self.log_error(f"웹소켓 상태 체크 중 오류 발생: {str(e)}")
+                await asyncio.sleep(1)
+
+    async def reconnect(self) -> bool:
+        """
+        웹소켓 재연결
+        
+        Returns:
+            bool: 재연결 성공 여부
+        """
+        try:
+            self.stats.reconnect_count += 1
+            reconnect_msg = f"{self.exchange_korean_name} 웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count})"
+            self.log_info(reconnect_msg)
+            await self.send_telegram_notification("reconnect", reconnect_msg)
             
+            await self.disconnect()
+            
+            # 재연결 지연 시간 계산
+            delay = self.reconnect_strategy.next_delay()
+            self.log_info(f"재연결 대기: {delay:.1f}초")
+            await asyncio.sleep(delay)
+            
+            success = await self.connect()
+            
+            if success:
+                self.log_info(f"{self.exchange_korean_name} 웹소켓 재연결 성공")
+            else:
+                self.log_error(f"{self.exchange_korean_name} 웹소켓 재연결 실패")
+            
+            return success
+            
+        except Exception as e:
+            self.log_error(f"웹소켓 재연결 실패: {str(e)}")
+            return False
+
     async def receive_raw(self) -> Optional[str]:
         """
         웹소켓에서 원시 메시지 수신
-        
-        이 메서드는 Subscription 클래스에서 사용됩니다.
         
         Returns:
             Optional[str]: 수신된 원시 메시지 또는 None
@@ -112,52 +256,26 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             # 메시지 수신
             message = await self.ws.recv()
             
-            # 메시지 로깅 (너무 길면 일부만)
+            # 메시지 수신 시 통계 및 메트릭 업데이트
             if message:
-                # 메시지 통계 업데이트 - stats 객체에 total_messages 속성 사용
-                self.stats.total_messages += 1
-                self.stats.message_count += 1
-                self.stats.last_message_time = time.time()
-                
-                # 일반 메시지는 INFO 레벨로 로깅
-                try:
-                    # JSON 형식인 경우 파싱하여 타입 확인
-                    import json
-                    data = json.loads(message)
-                    msg_type = data.get("type", "unknown")
-                    code = data.get("code", "unknown")
-                    self.log_info(f"메시지 수신: 타입={msg_type}, 코드={code}, 길이={len(message)}")
-                except:
-                    # 파싱 실패 시 원시 메시지 일부만 로깅
-                    if len(message) > 200:
-                        self.log_info(f"메시지 수신 (길이: {len(message)}): {message[:100]}...{message[-100:]}")
-                    else:
-                        self.log_info(f"메시지 수신: {message}")
+                # 기본 클래스의 메트릭 업데이트 메소드 사용
+                self.update_message_metrics(message)
                 
             return message
+            
         except websockets.exceptions.ConnectionClosed as e:
             self.log_error(f"웹소켓 연결 끊김: {e}")
             self.is_connected = False
+            
+            # 메트릭 업데이트
+            self.metrics.update_connection_state(self.exchangename, "disconnected")
+            
             return None
+            
         except Exception as e:
             self.log_error(f"메시지 수신 실패: {e}")
+            
+            # 에러 기록
+            self.metrics.record_error(self.exchangename)
+            
             return None
-        
-    async def check_connection(self) -> bool:
-        """
-        웹소켓 연결 상태 확인
-        
-        Returns:
-            bool: 연결 상태
-        """
-        return self.ws is not None and self.is_connected
-        
-    async def keep_alive(self) -> None:
-        """
-        연결 유지 (PING 전송)
-        
-        이 메서드는 Subscription 클래스에서 호출됩니다.
-        """
-        while self.is_connected and not self.stop_event.is_set():
-            await self._send_ping()
-            await asyncio.sleep(self.ping_interval) 

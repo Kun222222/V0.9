@@ -16,13 +16,13 @@ import os
 
 from crosskimp.logger.logger import get_unified_logger, get_queue_logger
 from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, LOG_SYSTEM, STATUS_EMOJIS, EXCHANGE_CLASS_MAP
-from crosskimp.ob_collector.core.metrics_manager import WebsocketMetricsManager
+from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 
 from crosskimp.ob_collector.orderbook.websocket.binance_f_ws import BinanceFutureWebsocket
 from crosskimp.ob_collector.orderbook.websocket.binance_s_ws import BinanceSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bithumb_s_ws import BithumbSpotWebsocket
 from crosskimp.ob_collector.orderbook.websocket.bybit_f_ws import BybitFutureWebsocket
-from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebsocket
+# from crosskimp.ob_collector.orderbook.websocket.bybit_s_ws import BybitSpotWebsocket
 # from crosskimp.ob_collector.orderbook.websocket.upbit_s_ws import UpbitWebsocket
 
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
@@ -39,7 +39,7 @@ queue_logger = get_queue_logger()
 WEBSOCKET_CLASS_MAP = {
     "binance": BinanceSpotWebsocket,
     "binancefuture": BinanceFutureWebsocket,
-    "bybit": BybitSpotWebsocket,
+    # "bybit": BybitSpotWebsocket,
     "bybitfuture": BybitFutureWebsocket,
     # "upbit": UpbitWebsocket,
     "bithumb": BithumbSpotWebsocket
@@ -58,14 +58,16 @@ class WebsocketManager:
         self.callback: Optional[Callable[[str, dict], None]] = None
         self.start_time = time.time()
 
-        # 메트릭 매니저로 통합
-        self.metrics_manager = WebsocketMetricsManager()
+        # 메트릭 매니저 싱글톤 인스턴스 사용
+        self.metrics_manager = WebsocketMetricsManager.get_instance()
         
         # 메트릭 매니저의 설정값 사용
         self.delay_threshold_ms = self.metrics_manager.delay_threshold_ms
-        self.ping_interval = self.metrics_manager.ping_interval
-        self.pong_timeout = self.metrics_manager.pong_timeout
-        self.health_threshold = self.metrics_manager.health_threshold
+        
+        # 다른 설정값들도 메트릭 매니저에서 가져오기 (없는 경우 기본값 설정)
+        self.ping_interval = getattr(self.metrics_manager, 'ping_interval', 30)
+        self.pong_timeout = getattr(self.metrics_manager, 'pong_timeout', 10)
+        self.health_threshold = getattr(self.metrics_manager, 'health_threshold', 0.8)
 
         # 메트릭 저장 경로 설정 (절대 경로 사용)
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
@@ -93,35 +95,38 @@ class WebsocketManager:
         except Exception as e:
             logger.error(f"메트릭 디렉토리 생성 실패: {str(e)}", exc_info=True)
 
-    def update_connection_status(self, exchange: str, status: str):
-        """연결 상태 업데이트"""
+    def update_connection_status(self, exchange, status):
         try:
-            if status == "connect":
-                self.metrics_manager.update_metric(
-                    exchange=exchange,
-                    event_type="connect"
-                )
-                logger.info(f"{EXCHANGE_NAMES_KR.get(exchange, exchange)} {STATUS_EMOJIS['CONNECTED']} 웹소켓 연결됨")
-                # 연결 상태 변경 시에만 전체 상태 표시
-                self._display_all_connection_status()
+            # 이전 상태 저장 (없으면 초기화)
+            if not hasattr(self, 'previous_status'):
+                self.previous_status = {}
             
-            elif status == "disconnect":
-                self.metrics_manager.update_metric(
-                    exchange=exchange,
-                    event_type="disconnect"
-                )
-                logger.info(f"{EXCHANGE_NAMES_KR.get(exchange, exchange)} {STATUS_EMOJIS['DISCONNECTED']} 웹소켓 연결 해제됨")
-                # 연결 상태 변경 시에만 전체 상태 표시
-                self._display_all_connection_status()
+            # 상태가 문자열인지 확인하고 변환
+            if isinstance(status, bool):
+                simplified_status = "connected" if status else "disconnected"
+            elif isinstance(status, str):
+                simplified_status = "connected" if "connect" in status.lower() and "dis" not in status.lower() else "disconnected"
+            else:
+                simplified_status = "disconnected"
             
-            elif status == "message":
-                self.metrics_manager.update_metric(
-                    exchange=exchange,
-                    event_type="message"
-                )
-                
+            # 이전 상태와 같으면 중복 로그 방지
+            previous = self.previous_status.get(exchange, None)
+            if previous == simplified_status:
+                return
+            
+            # 상태 업데이트 및 저장
+            self.previous_status[exchange] = simplified_status
+            
+            # 로그 출력
+            emoji = STATUS_EMOJIS.get("CONNECTED" if simplified_status == "connected" else "DISCONNECTED", "⚪")
+            logger.info(f"[시스템] [{exchange}] {emoji} 웹소켓 {'연결 성공' if simplified_status == 'connected' else '연결 종료'}")
+            
+            # 콜백 호출 (있는 경우)
+            if hasattr(self, 'connection_status_callback') and self.connection_status_callback:
+                self.connection_status_callback(exchange, simplified_status)
+            
         except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 연결 상태 업데이트 오류: {str(e)}")
+            logger.error(f"연결 상태 업데이트 실패: {str(e)}", exc_info=True)
 
     def _display_all_connection_status(self):
         """전체 거래소 연결 상태 표시"""

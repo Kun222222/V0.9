@@ -44,9 +44,6 @@ class UpbitParser(BaseParser):
             Optional[Dict[str, Any]]: 파싱된 오더북 데이터 또는 None
         """
         try:
-            # 통계 업데이트
-            self.stats["total_parsed"] += 1
-            
             # 바이트 메시지 디코딩
             if isinstance(raw_message, bytes):
                 raw_message = raw_message.decode("utf-8")
@@ -62,7 +59,6 @@ class UpbitParser(BaseParser):
             symbol = data.get("code", "").replace("KRW-","")
             if not symbol:
                 self.log_error("심볼 정보 누락")
-                self.stats["invalid_parsed"] += 1
                 return None
 
             # 타임스탬프 추출
@@ -73,15 +69,11 @@ class UpbitParser(BaseParser):
 
             # 유효성 검사
             if not bids_dict or not asks_dict:
-                self.stats["invalid_parsed"] += 1
                 return None
                 
             # 딕셔너리 형식에서 리스트 형식으로 변환 ({'price': p, 'size': s} -> [p, s])
             bids = [[item['price'], item['size']] for item in bids_dict]
             asks = [[item['price'], item['size']] for item in asks_dict]
-
-            # 파싱 성공 카운트 증가
-            self.stats["valid_parsed"] += 1
             
             # 표준화된 오더북 데이터 반환
             return {
@@ -95,11 +87,9 @@ class UpbitParser(BaseParser):
             }
         except json.JSONDecodeError:
             self.log_error(f"JSON 파싱 실패: {raw_message[:100]}...")
-            self.stats["invalid_parsed"] += 1
             return None
         except Exception as e:
-            self.log_error(f"메시지 파싱 실패: {str(e)}, raw={raw_message[:200]}...")
-            self.stats["processing_errors"] += 1
+            self.log_error(f"메시지 파싱 실패: {str(e)}")
             return None
 
     def _extract_orderbook_data(self, units: List[Dict[str, Any]], symbol: str) -> Tuple[List[Dict[str, float]], List[Dict[str, float]]]:
@@ -129,35 +119,5 @@ class UpbitParser(BaseParser):
 
         # 0인 값 필터링 적용
         filtered_bids, filtered_asks = self.filter_zero_values(bids, asks)
-        
-        # 빈 데이터 로깅
-        if not filtered_bids:
-            self.log_error(f"{symbol} bids가 비어 있습니다: {units}")
-        if not filtered_asks:
-            self.log_error(f"{symbol} asks가 비어 있습니다: {units}")
             
-        return filtered_bids, filtered_asks
-
-    def create_subscribe_message(self, symbols: List[str]) -> List[Dict[str, Any]]:
-        """
-        구독 메시지 생성
-        
-        Args:
-            symbols: 구독할 심볼 목록
-            
-        Returns:
-            List[Dict[str, Any]]: 구독 메시지
-        """
-        # 심볼 형식 변환 (KRW-{symbol})
-        markets = [f"KRW-{s.upper()}" for s in symbols]
-        
-        # 구독 메시지 생성
-        return [
-            {"ticket": f"upbit_orderbook_{int(time.time())}"},
-            {
-                "type": "orderbook",
-                "codes": markets,
-                "is_only_realtime": False  # 스냅샷 포함 요청
-            },
-            {"format": "DEFAULT"}
-        ] 
+        return filtered_bids, filtered_asks 

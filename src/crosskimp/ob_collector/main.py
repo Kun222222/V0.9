@@ -12,11 +12,10 @@ from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.config.config_loader import get_settings, initialize_config, add_config_observer, shutdown_config
 from crosskimp.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT, Exchange, EXCHANGE_NAMES_KR
-from crosskimp.ob_collector.orderbook.websocket.base_ws_manager import WebsocketManager
-from crosskimp.ob_collector.orderbook.order_manager import integrate_with_websocket_manager
+from crosskimp.ob_collector.orderbook.order_manager import OrderManager, create_order_manager
 
-from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_system_status, send_market_status, send_error
-from crosskimp.config.bot_constants import MessageType, TELEGRAM_START_MESSAGE, TELEGRAM_STOP_MESSAGE
+from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_error_notification, send_system_status_notification
+from crosskimp.telegrambot.bot_constants import MessageType, TELEGRAM_START_MESSAGE, TELEGRAM_STOP_MESSAGE
 
 # 시스템 관리 모듈 가져오기
 from crosskimp.system_manager.scheduler import calculate_next_midnight, format_remaining_time, schedule_task
@@ -57,22 +56,15 @@ async def websocket_callback(exchange_name: str, data: dict):
     except Exception as e:
         logger.error(f"{LOG_SYSTEM} 콜백 오류: {e}")
 
-async def reset_websockets(aggregator, ws_manager, settings):
+async def reset_websockets(aggregator, settings):
     """웹소켓 재시작 및 심볼 필터링 재실행"""
     try:
         logger.info(f"{LOG_SYSTEM} 웹소켓 재시작 시작")
         async with asyncio.timeout(300):  # 5분 타임아웃
-            await ws_manager.shutdown()
-            logger.info(f"{LOG_SYSTEM} 웹소켓 종료 완료")
+            
+            # 심볼 필터링 재실행
             filtered_data = await aggregator.run_filtering()
             logger.info(f"{LOG_SYSTEM} 필터링된 심볼: {filtered_data}")
-            await ws_manager.start_all_websockets(filtered_data)
-            logger.info(f"{LOG_SYSTEM} 웹소켓 재시작 완료")
-            
-            # 업비트 OrderManager 통합
-            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 시작")
-            await integrate_with_websocket_manager(ws_manager, settings, filtered_data)
-            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 완료")
             
             # 다음 자정에 다시 실행되도록 예약
             tomorrow = calculate_next_midnight()
@@ -80,7 +72,7 @@ async def reset_websockets(aggregator, ws_manager, settings):
                 "daily_websocket_reset",
                 tomorrow,
                 reset_websockets,
-                aggregator, ws_manager, settings
+                aggregator, settings
             )
             logger.info(f"{LOG_SYSTEM} 다음 웹소켓 재시작 예약됨: {tomorrow.strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception as e:
@@ -91,7 +83,7 @@ async def reset_websockets(aggregator, ws_manager, settings):
             "retry_websocket_reset",
             next_try,
             reset_websockets,
-            aggregator, ws_manager, settings
+            aggregator, settings
         )
         logger.info(f"{LOG_SYSTEM} 웹소켓 재시작 재시도 예약됨: {next_try.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -106,10 +98,8 @@ async def shutdown():
     try:
         logger.info(f"{LOG_SYSTEM} 프로그램 종료 처리 시작")
         
-        # 텔레그램 종료 메시지 전송
-        settings = get_settings()
-        if settings:
-            await send_telegram_message(settings, MessageType.SHUTDOWN, TELEGRAM_STOP_MESSAGE)
+        # 텔레그램 종료 메시지 전송 (settings 파라미터 없이)
+        await send_telegram_message(None, MessageType.SHUTDOWN, TELEGRAM_STOP_MESSAGE)
         
         logger.info(f"{LOG_SYSTEM} 프로그램 종료 처리 완료")
         
@@ -123,8 +113,6 @@ async def shutdown():
 class OrderbookCollector:
     """
     오더북 수집기 클래스
-    
-    OrderManager와 WebsocketManager를 함께 사용하여 오더북 데이터를 수집합니다.
     """
     
     def __init__(self, settings: dict):
@@ -135,8 +123,8 @@ class OrderbookCollector:
             settings: 설정 딕셔너리
         """
         self.settings = settings
-        self.ws_manager = None
         self.aggregator = None
+        self.order_managers = {}  # 거래소별 OrderManager 저장
         self.stop_event = asyncio.Event()
         
         # 시그널 핸들러 설정
@@ -160,9 +148,6 @@ class OrderbookCollector:
             # Aggregator 초기화
             self.aggregator = Aggregator(self.settings)
             
-            # WebsocketManager 초기화
-            self.ws_manager = WebsocketManager(self.settings)
-            
             logger.info(f"{LOG_SYSTEM} 오더북 수집기 초기화 완료")
             return True
             
@@ -179,16 +164,26 @@ class OrderbookCollector:
                 logger.error(f"{LOG_SYSTEM} 필터링된 심볼이 없습니다.")
                 return False
             
-            # 업비트를 제외한 데이터 (기존 WebsocketManager용)
-            non_upbit_data = {k: v for k, v in filtered_data.items() if k != "upbit"}
-            
-            # 기존 WebsocketManager 시작 (업비트 제외)
-            await self.ws_manager.start_all_websockets(non_upbit_data)
-            
-            # 업비트 OrderManager 통합
-            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 시작")
-            await integrate_with_websocket_manager(self.ws_manager, self.settings, filtered_data)
-            logger.info(f"{LOG_SYSTEM} 업비트 OrderManager 통합 완료")
+            # 각 거래소별 OrderManager 초기화 및 시작
+            for exchange, symbols in filtered_data.items():
+                if not symbols:
+                    logger.info(f"{exchange} 심볼이 없어 OrderManager를 초기화하지 않습니다.")
+                    continue
+                
+                # OrderManager 생성
+                manager = create_order_manager(exchange, self.settings)
+                if not manager:
+                    logger.error(f"{exchange} OrderManager 생성 실패")
+                    continue
+                
+                # 초기화 및 시작
+                await manager.initialize()
+                await manager.start(symbols)
+                
+                # OrderManager 저장
+                self.order_managers[exchange] = manager
+                
+                logger.info(f"{exchange} OrderManager 시작 완료")
             
             logger.info(f"{LOG_SYSTEM} 오더북 수집기 시작 완료")
             return True
@@ -200,15 +195,12 @@ class OrderbookCollector:
     async def stop(self):
         """중지"""
         try:
-            # WebsocketManager 중지
-            if self.ws_manager:
-                await self.ws_manager.shutdown()
+            # 모든 OrderManager 중지
+            for exchange, manager in self.order_managers.items():
+                await manager.stop()
+                logger.info(f"{exchange} OrderManager 중지 완료")
             
-            # OrderManager 중지 (WebsocketManager에 저장된 경우)
-            if hasattr(self.ws_manager, "order_managers"):
-                for manager in self.ws_manager.order_managers.values():
-                    await manager.stop()
-            
+            self.order_managers.clear()
             logger.info(f"{LOG_SYSTEM} 오더북 수집기 중지 완료")
             
         except Exception as e:
@@ -247,8 +239,8 @@ async def async_main():
         elapsed = time.time() - start_time
         logger.info(f"{LOG_SYSTEM} 설정 로드 완료 (소요 시간: {elapsed:.3f}초)")
         
-        # 텔레그램 시작 메시지 전송
-        asyncio.create_task(send_telegram_message(settings, MessageType.STARTUP, TELEGRAM_START_MESSAGE))
+        # 텔레그램 시작 메시지 전송 (settings 파라미터 없이)
+        asyncio.create_task(send_telegram_message(None, MessageType.STARTUP, TELEGRAM_START_MESSAGE))
         
         # 오더북 수집기 생성 및 실행
         collector = OrderbookCollector(settings)
