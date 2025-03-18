@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, Callable, Union
 import websockets.exceptions
 from enum import Enum
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, SnapshotMethod, DeltaMethod
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.logger.logger import create_raw_logger
 from crosskimp.config.paths import LOG_SUBDIRS
@@ -85,28 +85,6 @@ class UpbitSubscription(BaseSubscription):
         except Exception as e:
             self.log_error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
             self.log_raw_data = False
-    
-    def _get_snapshot_method(self) -> SnapshotMethod:
-        """
-        스냅샷 수신 방법 반환
-        
-        업비트는 웹소켓을 통해 스냅샷을 수신합니다.
-        
-        Returns:
-            SnapshotMethod: WEBSOCKET
-        """
-        return SnapshotMethod.WEBSOCKET
-    
-    def _get_delta_method(self) -> DeltaMethod:
-        """
-        델타 수신 방법 반환
-        
-        업비트는 델타를 사용하지 않고 항상 전체 스냅샷을 수신합니다.
-        
-        Returns:
-            DeltaMethod: NONE
-        """
-        return DeltaMethod.NONE
     
     async def create_subscribe_message(self, symbol: Union[str, List[str]]) -> Dict:
         """

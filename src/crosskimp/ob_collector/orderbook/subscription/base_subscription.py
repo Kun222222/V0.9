@@ -4,7 +4,6 @@ import aiohttp
 import logging
 import time
 from abc import ABC, abstractmethod
-from enum import Enum
 from typing import Dict, Optional, List, Any, Callable, Union, Tuple, Set
 import datetime
 import websockets
@@ -27,19 +26,6 @@ EXCHANGE_NAMES_KR = {
 }
 
 
-class SnapshotMethod(Enum):
-    """스냅샷 수신 방법"""
-    WEBSOCKET = "websocket"  # 웹소켓을 통해 스냅샷 수신 (업비트, 바이빗)
-    REST = "rest"            # REST API를 통해 스냅샷 수신 (빗섬, 바이낸스)
-    NONE = "none"            # 스냅샷 필요 없음
-
-
-class DeltaMethod(Enum):
-    """델타 수신 방법"""
-    WEBSOCKET = "websocket"  # 웹소켓을 통해 델타 수신
-    NONE = "none"            # 델타 수신 안함 (업비트처럼 항상 전체 스냅샷)
-
-
 class BaseSubscription(ABC):
     """
     오더북 구독 기본 클래스
@@ -58,40 +44,29 @@ class BaseSubscription(ABC):
     - 메트릭 관리
     """
     
-    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str, parser=None):
+    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str):
         """
         초기화
         
         Args:
             connection: 웹소켓 연결 객체
             exchange_code: 거래소 코드
-            parser: 메시지 파싱 객체 (선택적)
         """
         self.connection = connection
-        self.parser = parser
         self.logger = get_unified_logger()
         self.exchange_code = exchange_code
         
-        # 메트릭 매니저 인스턴스 획득
+        # 메트릭 매니저 싱글톤 인스턴스 사용
         self.metrics_manager = WebsocketMetricsManager.get_instance()
         self.metrics_manager.initialize_exchange(self.exchange_code)
         
         # 구독 상태 관리
         self.subscribed_symbols = {}  # symbol: True/False
         
-        # 스냅샷과 델타 메소드 (거래소별로 달라짐)
-        self.snapshot_method = self._get_snapshot_method()
-        self.delta_method = self._get_delta_method()
-        
         # 콜백 함수 저장
         self.snapshot_callbacks = {}  # symbol: callback
         self.delta_callbacks = {}     # symbol: callback
         self.error_callbacks = {}     # symbol: callback
-        
-        # REST API 세션 (필요한 경우)
-        self.rest_session = None
-        if self.snapshot_method == SnapshotMethod.REST:
-            self._init_rest_session()
         
         # 비동기 태스크 관리
         self.tasks = {}
@@ -108,21 +83,6 @@ class BaseSubscription(ABC):
         # 검증기 및 출력 큐
         self.validator = None
         self.output_queue = None
-    
-    def _init_rest_session(self):
-        """REST API 세션 초기화 (REST 스냅샷 방식인 경우)"""
-        self.rest_session = aiohttp.ClientSession()
-        self.logger.info(f"[{self.exchange_code}] REST API 세션 초기화 완료")
-    
-    @abstractmethod
-    def _get_snapshot_method(self) -> SnapshotMethod:
-        """스냅샷 수신 방법 반환"""
-        pass
-    
-    @abstractmethod
-    def _get_delta_method(self) -> DeltaMethod:
-        """델타 수신 방법 반환"""
-        pass
     
     @abstractmethod
     async def create_subscribe_message(self, symbol: Union[str, List[str]]) -> Dict:
@@ -183,23 +143,6 @@ class BaseSubscription(ABC):
         # 기본 구현 - 델타 메시지 없음
         return False
     
-    async def get_rest_snapshot(self, symbol: str) -> Dict:
-        """
-        REST API를 통해 스냅샷 요청 (REST 방식인 경우)
-        
-        기본 구현은 빈 딕셔너리를 반환합니다.
-        REST 스냅샷을 사용하지 않는 거래소는 이 메서드를 오버라이드할 필요가 없습니다.
-        
-        Args:
-            symbol: 심볼
-            
-        Returns:
-            Dict: 스냅샷 데이터
-        """
-        # 기본 구현 - REST 스냅샷 지원 안함
-        self.logger.warning(f"[{self.exchange_code}] REST API 스냅샷을 지원하지 않음: {symbol}")
-        return {}
-    
     @abstractmethod
     def log_raw_message(self, message: str) -> None:
         """
@@ -222,34 +165,81 @@ class BaseSubscription(ABC):
             if self.log_raw_data:
                 self.log_raw_message(message)
             
-            # 메시지 파싱
+            # 메시지 파싱 - 각 서브클래스에서 구현해야 함
             parsed_data = None
-            if self.parser:
-                parsed_data = self.parser.parse_message(message)
             
-            if not parsed_data:
-                return
-                
-            # 심볼 확인
-            symbol = parsed_data.get("symbol")
-            if not symbol or symbol not in self.subscribed_symbols:
-                return
-                
-            # 메시지 타입에 따라 직접 처리 메서드 호출
+            # 메시지 타입 확인
             if self.is_snapshot_message(message):
-                await self._handle_snapshot(symbol, parsed_data)
+                # 스냅샷 메시지 처리
+                symbol = self._extract_symbol_from_message(message)
+                if symbol and symbol in self.subscribed_symbols:
+                    parsed_data = self._parse_snapshot_message(message)
+                    if parsed_data:
+                        await self._handle_snapshot(symbol, parsed_data)
+            
             elif self.is_delta_message(message):
-                await self._handle_delta(symbol, parsed_data)
+                # 델타 메시지 처리
+                symbol = self._extract_symbol_from_message(message)
+                if symbol and symbol in self.subscribed_symbols:
+                    parsed_data = self._parse_delta_message(message)
+                    if parsed_data:
+                        await self._handle_delta(symbol, parsed_data)
                 
         except Exception as e:
             # 에러 로깅
             self.logger.error(f"메시지 처리 오류: {str(e)}")
             
             # 에러 처리
-            if parsed_data and "symbol" in parsed_data:
-                self._handle_error(parsed_data["symbol"], str(e))
+            symbol = self._extract_symbol_from_message(message)
+            if symbol:
+                self._handle_error(symbol, str(e))
             else:
                 self._handle_error("unknown", str(e))
+    
+    def _extract_symbol_from_message(self, message: str) -> Optional[str]:
+        """
+        메시지에서 심볼 추출 (기본 구현)
+        
+        각 서브클래스에서 거래소별 형식에 맞게 오버라이드해야 함
+        
+        Args:
+            message: 수신된 메시지
+            
+        Returns:
+            Optional[str]: 추출된 심볼 또는 None
+        """
+        # 기본 구현은 None 반환 - 각 거래소별로 구현 필요
+        return None
+        
+    def _parse_snapshot_message(self, message: str) -> Optional[Dict]:
+        """
+        스냅샷 메시지 파싱 (기본 구현)
+        
+        각 서브클래스에서 거래소별 형식에 맞게 오버라이드해야 함
+        
+        Args:
+            message: 수신된 스냅샷 메시지
+            
+        Returns:
+            Optional[Dict]: 파싱된 스냅샷 데이터 또는 None
+        """
+        # 기본 구현은 None 반환 - 각 거래소별로 구현 필요
+        return None
+        
+    def _parse_delta_message(self, message: str) -> Optional[Dict]:
+        """
+        델타 메시지 파싱 (기본 구현)
+        
+        각 서브클래스에서 거래소별 형식에 맞게 오버라이드해야 함
+        
+        Args:
+            message: 수신된 델타 메시지
+            
+        Returns:
+            Optional[Dict]: 파싱된 델타 데이터 또는 None
+        """
+        # 기본 구현은 None 반환 - 각 거래소별로 구현 필요
+        return None
     
     async def _call_snapshot_callback(self, symbol: str, data: Dict) -> None:
         """스냅샷 콜백 호출"""

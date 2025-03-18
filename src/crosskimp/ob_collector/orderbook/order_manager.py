@@ -9,7 +9,6 @@
 
 import asyncio
 import time
-import importlib
 import json
 import struct
 import logging
@@ -22,6 +21,23 @@ from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.paths import LOG_SUBDIRS
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
+
+# 모든 거래소 컴포넌트 직접 임포트
+# 연결 컴포넌트
+from crosskimp.ob_collector.orderbook.connection.upbit_s_cn import UpbitWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.bybit_s_cn import BybitWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.bybit_f_cn import BybitFutureWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
+
+# 구독 컴포넌트
+from crosskimp.ob_collector.orderbook.subscription.upbit_s_sub import UpbitSubscription
+from crosskimp.ob_collector.orderbook.subscription.bybit_s_sub import BybitSubscription
+from crosskimp.ob_collector.orderbook.subscription.bybit_f_sub import BybitFutureSubscription
+# from crosskimp.ob_collector.orderbook.subscription.binance_s_sub import BinanceSubscription
+# from crosskimp.ob_collector.orderbook.subscription.binance_f_sub import BinanceFutureSubscription
+# from crosskimp.ob_collector.orderbook.subscription.bithumb_s_sub import BithumbSubscription
 
 # ============================
 # 거래소 이름 및 상수
@@ -48,6 +64,25 @@ LOG_SYSTEM = {
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
+
+# 컴포넌트 클래스 매핑
+EXCHANGE_CONNECTORS = {
+    "UPBIT": UpbitWebSocketConnector,
+    "BYBIT": BybitWebSocketConnector,
+    "BYBIT_FUTURE": BybitFutureWebSocketConnector,
+    "BINANCE": BinanceWebSocketConnector,
+    "BINANCE_FUTURE": BinanceFutureWebSocketConnector,
+    "BITHUMB": BithumbWebSocketConnector
+}
+
+EXCHANGE_SUBSCRIPTIONS = {
+    "UPBIT": UpbitSubscription,
+    "BYBIT": BybitSubscription,
+    "BYBIT_FUTURE": BybitFutureSubscription,
+    # "BINANCE": BinanceSubscription,
+    # "BINANCE_FUTURE": BinanceFutureSubscription,
+    # "BITHUMB": BithumbSubscription
+}
 
 class OrderManager:
     """
@@ -114,49 +149,24 @@ class OrderManager:
         Returns:
             dict: 거래소별 기본 설정
         """
-        # 간소화된 거래소별 컴포넌트 매핑
-        EXCHANGE_COMPONENTS = {
-            "UPBIT": {
-                "connection": "crosskimp.ob_collector.orderbook.connection.upbit_s_cn.UpbitWebSocketConnector",
-                "subscription": "crosskimp.ob_collector.orderbook.subscription.upbit_s_sub.UpbitSubscription",
-                "supports_delta": False
-            },
-            "BYBIT": {
-                "connection": "crosskimp.ob_collector.orderbook.connection.bybit_s_cn.BybitWebSocketConnector",
-                "subscription": "crosskimp.ob_collector.orderbook.subscription.bybit_s_sub.BybitSubscription",
-                "supports_delta": True
-            },
-            "BYBIT_FUTURE": {
-                "connection": "crosskimp.ob_collector.orderbook.connection.bybit_f_cn.BybitFutureWebSocketConnector",
-                "subscription": "crosskimp.ob_collector.orderbook.subscription.bybit_f_sub.BybitFutureSubscription",
-                "supports_delta": True
-            },
-            "BINANCE": {
-                "connection": "crosskimp.ob_collector.orderbook.connection.binance_s_cn.BinanceWebSocketConnector",
-                "subscription": "crosskimp.ob_collector.orderbook.subscription.binance_s_sub.BinanceSubscription",
-                "supports_delta": True
-            },
-            "BINANCE_FUTURE": {
-                "connection": "crosskimp.ob_collector.orderbook.connection.binance_f_cn.BinanceFutureWebSocketConnector",
-                "subscription": "crosskimp.ob_collector.orderbook.subscription.binance_f_sub.BinanceFutureSubscription",
-                "supports_delta": True
-            },
-            "BITHUMB": {
-                "connection": "crosskimp.ob_collector.orderbook.connection.bithumb_s_cn.BithumbWebSocketConnector",
-                "subscription": "crosskimp.ob_collector.orderbook.subscription.bithumb_s_sub.BithumbSubscription",
-                "supports_delta": False
-            }
+        # 간소화된 거래소별 특성 매핑
+        EXCHANGE_FEATURES = {
+            "UPBIT": {"supports_delta": False},
+            "BYBIT": {"supports_delta": True},
+            "BYBIT_FUTURE": {"supports_delta": True},
+            "BINANCE": {"supports_delta": True},
+            "BINANCE_FUTURE": {"supports_delta": True},
+            "BITHUMB": {"supports_delta": False}
         }
         
         # 해당 거래소 설정 가져오기
-        if self.exchange_code not in EXCHANGE_COMPONENTS:
+        if self.exchange_code not in EXCHANGE_FEATURES:
             logger.error(f"지원하지 않는 거래소 코드: {self.exchange_code}")
             return {}
             
         return {
-            "components": EXCHANGE_COMPONENTS[self.exchange_code],
-            "validator": "crosskimp.ob_collector.orderbook.validator.validators.BaseOrderBookValidator",
-            "supports_delta": EXCHANGE_COMPONENTS[self.exchange_code].get("supports_delta", True)
+            "components": {}, # 더 이상 동적 임포트에 사용되지 않음
+            "supports_delta": EXCHANGE_FEATURES[self.exchange_code].get("supports_delta", True)
         }
     
     async def initialize(self) -> bool:
@@ -167,101 +177,54 @@ class OrderManager:
             bool: 초기화 성공 여부
         """
         try:
-            # 거래소 설정이 없는 경우
-            if not self.config:
-                logger.error(f"{self.exchange_name_kr} 설정을 찾을 수 없습니다")
+            # 직접 컴포넌트 클래스 가져오기
+            conn_class = EXCHANGE_CONNECTORS.get(self.exchange_code)
+            sub_class = EXCHANGE_SUBSCRIPTIONS.get(self.exchange_code)
+            
+            # 필요한 컴포넌트가 없는 경우
+            if not conn_class or not sub_class:
+                logger.error(f"{self.exchange_name_kr} 필요한 컴포넌트 클래스를 찾을 수 없습니다")
                 return False
             
-            # 필요한 컴포넌트 경로 가져오기
-            connection_path = self.config["components"].get("connection")
-            subscription_path = self.config["components"].get("subscription")
-            validator_path = self.config.get("validator")
+            # 검증기 클래스 가져오기 (선택적)
+            validator_class = BaseOrderBookValidator
             
-            # 필수 컴포넌트 경로 검증
-            if not connection_path or not subscription_path:
-                logger.error(f"{self.exchange_name_kr} 필수 컴포넌트 경로가 없습니다")
-                return False
-            
-            # 동적으로 컴포넌트 로드
-            import importlib
-            
+            # 연결 객체 생성
             try:
-                # 컴포넌트 경로 분리
-                conn_parts = connection_path.split(".")
-                sub_parts = subscription_path.split(".")
-                
-                # 모듈과 클래스 분리
-                conn_module_path, conn_class_name = ".".join(conn_parts[:-1]), conn_parts[-1]
-                sub_module_path, sub_class_name = ".".join(sub_parts[:-1]), sub_parts[-1]
-                
-                # connection과 subscription 모듈 로드 (필수)
-                try:
-                    conn_module = importlib.import_module(conn_module_path)
-                    conn_class = getattr(conn_module, conn_class_name)
-                except (ImportError, AttributeError) as e:
-                    logger.error(f"{self.exchange_name_kr} 연결 컴포넌트 로드 실패: {str(e)}")
-                    return False
-                    
-                try:
-                    sub_module = importlib.import_module(sub_module_path)
-                    sub_class = getattr(sub_module, sub_class_name)
-                except (ImportError, AttributeError) as e:
-                    logger.error(f"{self.exchange_name_kr} 구독 컴포넌트 로드 실패: {str(e)}")
-                    return False
-                
-                # validator 모듈 로드 (선택적)
-                validator_class = None
-                if validator_path:
-                    try:
-                        validator_parts = validator_path.split(".")
-                        validator_module_path, validator_class_name = ".".join(validator_parts[:-1]), validator_parts[-1]
-                        validator_module = importlib.import_module(validator_module_path)
-                        validator_class = getattr(validator_module, validator_class_name)
-                    except (ImportError, AttributeError) as e:
-                        logger.warning(f"{self.exchange_name_kr} 검증기 컴포넌트 로드 실패: {str(e)}")
-                        # 검증기는 선택적이므로 계속 진행
-                
-                # 컴포넌트 인스턴스 생성
-                # 먼저 연결 객체 생성
-                try:
-                    self.connection = conn_class(self.settings)
-                except Exception as e:
-                    logger.error(f"{self.exchange_name_kr} 연결 객체 생성 실패: {str(e)}")
-                    return False
-                
-                # 검증기 객체 생성 (선택적)
-                if validator_class:
-                    try:
-                        self.validator = validator_class(self.exchange_code)
-                    except Exception as e:
-                        logger.warning(f"{self.exchange_name_kr} 검증기 객체 생성 실패: {str(e)}")
-                        # 계속 진행
-
-                # 구독 객체 생성 (필수)
-                try:
-                    # 파서 없이 구독 객체 생성
-                    self.subscription = sub_class(self.connection)
-                except Exception as e:
-                    logger.error(f"{self.exchange_name_kr} 구독 객체 생성 실패: {str(e)}")
-                    self.connection = None  # 생성된 객체 정리
-                    return False
-                
-                # 리소스 연결
-                if self.output_queue:
-                    self.set_output_queue(self.output_queue)
-                
-                # 컨넥션에 콜백 설정
-                if self.connection and self.connection_status_callback:
-                    self.connection.set_connection_status_callback(
-                        lambda status: self.update_connection_status(self.exchange_code, status)
-                    )
-                
-                logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 완료")
-                return True
-                
+                self.connection = conn_class(self.settings)
             except Exception as e:
-                logger.error(f"{self.exchange_name_kr} 컴포넌트 로드 중 예외 발생: {str(e)}", exc_info=True)
+                logger.error(f"{self.exchange_name_kr} 연결 객체 생성 실패: {str(e)}")
                 return False
+            
+            # 구독 객체 생성 (파서 사용하지 않음)
+            try:
+                self.subscription = sub_class(self.connection)
+            except Exception as e:
+                logger.error(f"{self.exchange_name_kr} 구독 객체 생성 실패: {str(e)}")
+                self.connection = None  # 생성된 객체 정리
+                return False
+            
+            # 검증기 객체 생성 (선택적)
+            try:
+                self.validator = validator_class(self.exchange_code)
+                if self.subscription:
+                    self.subscription.set_validator(self.validator)
+            except Exception as e:
+                logger.warning(f"{self.exchange_name_kr} 검증기 객체 생성 실패: {str(e)}")
+                # 검증기 없이도 계속 진행
+            
+            # 리소스 연결
+            if self.output_queue:
+                self.set_output_queue(self.output_queue)
+            
+            # 컨넥션에 콜백 설정
+            if self.connection and self.connection_status_callback:
+                self.connection.set_connection_status_callback(
+                    lambda status: self.update_connection_status(self.exchange_code, status)
+                )
+            
+            logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 완료")
+            return True
             
         except Exception as e:
             logger.error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}", exc_info=True)

@@ -5,14 +5,11 @@
 """
 
 import json
-import time
 import asyncio
-import os
 import datetime
-from typing import Dict, List, Any, Optional, Callable, Union
-import websockets.exceptions
+from typing import Dict, List, Optional, Union
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, SnapshotMethod, DeltaMethod
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.logger.logger import create_raw_logger
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.paths import LOG_SUBDIRS
@@ -25,7 +22,6 @@ EXCHANGE_CODE = "BYBIT"  # 거래소 코드 (소문자로 통일)
 EXCHANGE_NAME_KR = "[바이빗]"  # 한글 로깅용 이름
 
 # 웹소켓 설정
-REST_URL = "https://api.bybit.com/v5/market/orderbook"  # REST API URL
 WS_URL = "wss://stream.bybit.com/v5/public/spot"  # 웹소켓 URL
 MAX_SYMBOLS_PER_SUBSCRIPTION = 10  # 구독당 최대 심볼 수
 DEFAULT_DEPTH = 50  # 기본 오더북 깊이
@@ -60,36 +56,30 @@ class BybitSubscription(BaseSubscription):
         self.raw_logger = None
         self._setup_raw_logging()
         
-        # 웹소켓을 통해 스냅샷을 수신하기 전에 REST로 초기 스냅샷 요청 여부
-        self.init_rest_snapshot = False  # 바이빗은 웹소켓으로만 스냅샷 수신
-        
         # 바이빗 오더북 검증기 초기화
         self.validator = BaseOrderBookValidator(EXCHANGE_CODE)
         
         # 각 심볼별 전체 오더북 상태 저장용
         self.orderbooks = {}  # symbol -> {"bids": {...}, "asks": {...}, "timestamp": ..., "sequence": ...}
     
-    def _get_snapshot_method(self) -> SnapshotMethod:
-        """
-        스냅샷 수신 방법 반환
-        
-        바이빗은 웹소켓을 통해 스냅샷을 수신합니다.
-        
-        Returns:
-            SnapshotMethod: 스냅샷 수신 방법
-        """
-        return SnapshotMethod.WEBSOCKET
-    
-    def _get_delta_method(self) -> DeltaMethod:
-        """
-        델타 수신 방법 반환
-        
-        바이빗은 웹소켓을 통해 델타를 수신합니다.
-        
-        Returns:
-            DeltaMethod: 델타 수신 방법
-        """
-        return DeltaMethod.WEBSOCKET
+    def _setup_raw_logging(self):
+        """Raw 데이터 로깅 설정"""
+        try:
+            # 로그 디렉토리 설정
+            raw_data_dir = LOG_SUBDIRS['raw_data']
+            log_dir = raw_data_dir / EXCHANGE_CODE
+            log_dir.mkdir(exist_ok=True, parents=True)
+            
+            # 로그 파일 경로 설정
+            current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.log_file_path = log_dir / f"{EXCHANGE_CODE}_raw_{current_datetime}.log"
+            
+            # 로거 설정
+            self.raw_logger = create_raw_logger(EXCHANGE_CODE)
+            self.logger.info(f"{EXCHANGE_NAME_KR} raw 로거 초기화 완료")
+        except Exception as e:
+            self.logger.error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
+            self.log_raw_data = False
     
     async def create_subscribe_message(self, symbol: Union[str, List[str]]) -> Dict:
         """
@@ -199,40 +189,22 @@ class BybitSubscription(BaseSubscription):
         # 로그 출력 없이 메서드만 유지 (호환성을 위해)
         pass
     
-    async def get_rest_snapshot(self, symbol: str) -> Dict:
+    async def _call_callback(self, symbol: str, data: Dict, is_snapshot: bool = True) -> None:
         """
-        REST API를 통해 스냅샷 요청 (REST 방식인 경우)
-        
-        바이빗은 웹소켓을 통해 스냅샷을 수신하므로 이 메서드는 사용되지 않습니다.
+        콜백 메서드 (스냅샷 또는 델타)
         
         Args:
             symbol: 심볼
-            
-        Returns:
-            Dict: 스냅샷 데이터
+            data: 오더북 데이터
+            is_snapshot: 스냅샷 여부 (True: 스냅샷 콜백, False: 델타 콜백)
         """
-        # 바이빗은 웹소켓을 통해 스냅샷을 수신하므로 이 메서드는 사용되지 않습니다.
-        self.logger.warning(f"바이빗은 REST API 스냅샷을 지원하지 않습니다. 웹소켓을 통해 스냅샷을 수신하세요.")
-        return {}
-    
-    def _setup_raw_logging(self):
-        """Raw 데이터 로깅 설정"""
         try:
-            # 로그 디렉토리 설정
-            raw_data_dir = LOG_SUBDIRS['raw_data']
-            log_dir = raw_data_dir / EXCHANGE_CODE
-            log_dir.mkdir(exist_ok=True, parents=True)
-            
-            # 로그 파일 경로 설정
-            current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log_file_path = log_dir / f"{EXCHANGE_CODE}_raw_{current_datetime}.log"
-            
-            # 로거 설정
-            self.raw_logger = create_raw_logger(EXCHANGE_CODE)
-            self.logger.info(f"{EXCHANGE_NAME_KR} raw 로거 초기화 완료")
+            callback = self.snapshot_callbacks.get(symbol) if is_snapshot else self.delta_callbacks.get(symbol)
+            if callback:
+                await callback(symbol, data)
         except Exception as e:
-            self.logger.error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
-            self.log_raw_data = False
+            callback_type = "스냅샷" if is_snapshot else "델타"
+            self.logger.error(f"{EXCHANGE_NAME_KR} {symbol} {callback_type} 콜백 호출 실패: {str(e)}")
     
     async def _on_message(self, message: str) -> None:
         """
@@ -352,12 +324,12 @@ class BybitSubscription(BaseSubscription):
                 # 스냅샷 콜백 호출
                 if symbol in self.snapshot_callbacks:
                     self.logger.debug(f"{EXCHANGE_NAME_KR} {symbol} 스냅샷 수신 (시간: {timestamp}, 시퀀스: {sequence})")
-                    await self.snapshot_callbacks[symbol](symbol, full_orderbook)
+                    await self._call_callback(symbol, full_orderbook, is_snapshot=True)
             else:
                 # 델타 메시지지만 완전한 오더북으로 델타 콜백 호출
                 if symbol in self.delta_callbacks:
                     self.logger.debug(f"{EXCHANGE_NAME_KR} {symbol} 델타 적용 후 오더북 업데이트 (시간: {timestamp}, 시퀀스: {sequence})")
-                    await self.delta_callbacks[symbol](symbol, full_orderbook)
+                    await self._call_callback(symbol, full_orderbook, is_snapshot=False)
                     
         except Exception as e:
             self.logger.error(f"{EXCHANGE_NAME_KR} 메시지 처리 실패: {str(e)}")
@@ -409,8 +381,8 @@ class BybitSubscription(BaseSubscription):
             # 데이터 추출
             orderbook_data = data.get("data", {})
             
-            # 타임스탬프 추출
-            timestamp = orderbook_data.get("ts")
+            # 타임스탬프 추출 (메시지 자체의 ts 필드 사용)
+            timestamp = data.get("ts")
             
             # 시퀀스 추출 (u: updateId)
             sequence = orderbook_data.get("u", 0)
