@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, Callable, Union
 import websockets.exceptions
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, SnapshotMethod, DeltaMethod
-from crosskimp.logger.logger import get_unified_logger, create_raw_logger
+from crosskimp.logger.logger import create_raw_logger
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.paths import LOG_SUBDIRS
 
@@ -41,16 +41,15 @@ class BybitSubscription(BaseSubscription):
     - 시퀀스 번호 기반 데이터 정합성 검증
     """
     
-    def __init__(self, connection, parser=None):
+    def __init__(self, connection):
         """
         초기화
         
         Args:
             connection: 웹소켓 연결 객체
-            parser: 메시지 파싱 객체 (선택적)
         """
         # 부모 클래스 초기화 (exchange_code 전달)
-        super().__init__(connection, EXCHANGE_CODE, parser)
+        super().__init__(connection, EXCHANGE_CODE)
         
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
@@ -136,6 +135,32 @@ class BybitSubscription(BaseSubscription):
             "args": [f"orderbook.{DEFAULT_DEPTH}.{market}"]
         }
     
+    def _parse_json_message(self, message: str) -> Optional[Dict]:
+        """
+        메시지를 JSON으로 파싱하는 공통 헬퍼 메소드
+        
+        Args:
+            message: 원시 메시지 (bytes 또는 str)
+            
+        Returns:
+            Optional[Dict]: 파싱된 JSON 또는 None (파싱 실패시)
+        """
+        try:
+            # 메시지가 bytes인 경우 문자열로 변환
+            if isinstance(message, bytes):
+                message = message.decode('utf-8')
+                
+            # 메시지가 문자열인 경우 JSON으로 파싱
+            if isinstance(message, str):
+                data = json.loads(message)
+            else:
+                data = message
+                
+            return data
+        except Exception as e:
+            self.logger.error(f"{EXCHANGE_NAME_KR} JSON 파싱 실패: {str(e)}")
+            return None
+    
     def is_snapshot_message(self, message: str) -> bool:
         """
         메시지가 스냅샷인지 확인
@@ -146,25 +171,9 @@ class BybitSubscription(BaseSubscription):
         Returns:
             bool: 스냅샷 메시지인 경우 True
         """
-        try:
-            # JSON 파싱
-            if isinstance(message, bytes):
-                message = message.decode('utf-8')
-                
-            if isinstance(message, str):
-                data = json.loads(message)
-            else:
-                data = message
-                
-            # 메시지 타입 확인 ("type"이 없는 경우 기본값으로 "delta" 사용)
-            msg_type = data.get("type", "delta").lower()
-            
-            # "snapshot" 타입인 경우에만 True 반환
-            return msg_type == "snapshot"
-            
-        except Exception as e:
-            self.logger.error(f"{EXCHANGE_NAME_KR} 스냅샷 메시지 확인 중 오류: {e}")
-            return False
+        # _parse_message 결과를 활용하여 타입 판별
+        parsed_data = self._parse_message(message)
+        return parsed_data is not None and parsed_data.get("type") == "snapshot"
     
     def is_delta_message(self, message: str) -> bool:
         """
@@ -176,25 +185,9 @@ class BybitSubscription(BaseSubscription):
         Returns:
             bool: 델타 메시지인 경우 True
         """
-        try:
-            # JSON 파싱
-            if isinstance(message, bytes):
-                message = message.decode('utf-8')
-                
-            if isinstance(message, str):
-                data = json.loads(message)
-            else:
-                data = message
-                
-            # 메시지 타입 확인 ("type"이 없는 경우 기본값으로 "delta" 사용)
-            msg_type = data.get("type", "delta").lower()
-            
-            # "delta" 타입인 경우에만 True 반환
-            return msg_type == "delta"
-            
-        except Exception as e:
-            self.logger.error(f"{EXCHANGE_NAME_KR} 델타 메시지 확인 중 오류: {e}")
-            return False
+        # _parse_message 결과를 활용하여 타입 판별
+        parsed_data = self._parse_message(message)
+        return parsed_data is not None and parsed_data.get("type") == "delta"
     
     def log_raw_message(self, message: str) -> None:
         """
@@ -249,13 +242,8 @@ class BybitSubscription(BaseSubscription):
             message: 수신된 원시 메시지
         """
         try:
-            # 원본 메시지 로깅
-            self.log_raw_message(message)
-            
-            # 메시지 파싱
-            parsed_data = None
-            if self.parser:
-                parsed_data = self.parser.parse_message(message)
+            # 내부적으로 메시지 파싱
+            parsed_data = self._parse_message(message)
                 
             if not parsed_data:
                 return
@@ -374,6 +362,80 @@ class BybitSubscription(BaseSubscription):
         except Exception as e:
             self.logger.error(f"{EXCHANGE_NAME_KR} 메시지 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
+    
+    def _parse_message(self, message: str) -> Optional[Dict]:
+        """
+        내부 메시지 파싱 메소드
+        
+        외부 파서 없이 직접 메시지를 파싱하는 기능
+        
+        Args:
+            message: 수신된 원시 메시지
+            
+        Returns:
+            Optional[Dict]: 파싱된 오더북 데이터 또는 None (파싱 실패시)
+        """
+        try:
+            # 공통 JSON 파싱 메소드 사용
+            data = self._parse_json_message(message)
+            if data is None:
+                return None
+                
+            # 바이빗 메시지 구조 체크
+            if "topic" not in data or "data" not in data:
+                return None
+            
+            # 토픽이 orderbook으로 시작하는지 확인
+            topic = data.get("topic", "")
+            if not topic.startswith("orderbook."):
+                return None
+            
+            # 메시지 타입 확인 (snapshot 또는 delta)
+            data_type = data.get("type", "").lower()
+            if data_type not in ["snapshot", "delta"]:
+                return None
+            
+            # 심볼 추출 (orderbook.50.BTCUSDT -> BTC)
+            topic_parts = topic.split(".")
+            if len(topic_parts) < 3:
+                return None
+            
+            market = topic_parts[2]  # BTCUSDT
+            if not market.endswith("USDT"):
+                return None
+            
+            symbol = market[:-4]  # BTCUSDT -> BTC
+            
+            # 데이터 추출
+            orderbook_data = data.get("data", {})
+            
+            # 타임스탬프 추출
+            timestamp = orderbook_data.get("ts")
+            
+            # 시퀀스 추출 (u: updateId)
+            sequence = orderbook_data.get("u", 0)
+            
+            # 매수 호가 추출
+            bids_data = orderbook_data.get("b", [])
+            bids = [[float(price), float(size)] for price, size in bids_data]
+            
+            # 매도 호가 추출
+            asks_data = orderbook_data.get("a", [])
+            asks = [[float(price), float(size)] for price, size in asks_data]
+            
+            # 파싱된 데이터 반환
+            return {
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "sequence": sequence,
+                "bids": bids,
+                "asks": asks,
+                "type": data_type  # snapshot 또는 delta
+            }
+            
+        except Exception as e:
+            self.logger.error(f"{EXCHANGE_NAME_KR} 메시지 파싱 실패: {str(e)}")
+            return None
     
     async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
         """

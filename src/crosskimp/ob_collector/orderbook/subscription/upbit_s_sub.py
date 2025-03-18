@@ -43,16 +43,15 @@ class UpbitSubscription(BaseSubscription):
     - 원시 데이터 로깅
     """
     
-    def __init__(self, connection: BaseWebsocketConnector, parser=None):
+    def __init__(self, connection: BaseWebsocketConnector):
         """
         초기화
         
         Args:
             connection: 웹소켓 연결 객체
-            parser: 메시지 파싱 객체 (선택적)
         """
         # 부모 클래스 초기화 (exchange_code 전달)
-        super().__init__(connection, EXCHANGE_CODE, parser)
+        super().__init__(connection, EXCHANGE_CODE)
         
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
@@ -226,10 +225,8 @@ class UpbitSubscription(BaseSubscription):
             message: 수신된 원시 메시지
         """
         try:
-            # 메시지 파싱
-            parsed_data = None
-            if self.parser:
-                parsed_data = self.parser.parse_message(message)
+            # 내부적으로 메시지 파싱
+            parsed_data = self._parse_message(message)
                 
             if not parsed_data:
                 return
@@ -282,6 +279,83 @@ class UpbitSubscription(BaseSubscription):
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
+    
+    def _parse_message(self, message: str) -> dict:
+        """
+        내부 메시지 파싱 메소드
+        
+        외부 파서 없이 직접 메시지를 파싱하는 기능
+        
+        Args:
+            message: 수신된 원시 메시지
+            
+        Returns:
+            dict: 파싱된 오더북 데이터
+        """
+        try:
+            # 메시지가 bytes인 경우 문자열로 변환
+            if isinstance(message, bytes):
+                message = message.decode('utf-8')
+                
+            # 메시지가 문자열인 경우 JSON으로 파싱
+            if isinstance(message, str):
+                data = json.loads(message)
+            else:
+                data = message
+                
+            # 타입 체크 (orderbook 타입만 처리)
+            if data.get("type") != "orderbook":
+                return None
+                
+            # 심볼 추출 (KRW-BTC -> BTC)
+            code = data.get("code", "")
+            if not code or not code.startswith("KRW-"):
+                return None
+                
+            symbol = code.split("-")[1]
+            
+            # 타임스탬프 및 시퀀스 추출
+            timestamp = data.get("timestamp")
+            sequence = timestamp  # 업비트는 별도 시퀀스가 없으므로 타임스탬프 사용
+            
+            # 호가 데이터 추출 및 가공
+            orderbook_units = data.get("orderbook_units", [])
+            
+            # 매수/매도 호가 배열 생성
+            bids = []  # 매수 호가 [가격, 수량]
+            asks = []  # 매도 호가 [가격, 수량]
+            
+            for unit in orderbook_units:
+                # 매수 호가 추가
+                bid_price = unit.get("bid_price")
+                bid_size = unit.get("bid_size")
+                if bid_price is not None and bid_size is not None:
+                    bids.append([float(bid_price), float(bid_size)])
+                    
+                # 매도 호가 추가
+                ask_price = unit.get("ask_price")
+                ask_size = unit.get("ask_size")
+                if ask_price is not None and ask_size is not None:
+                    asks.append([float(ask_price), float(ask_size)])
+            
+            # 가격 기준 내림차순 정렬 (매수 호가)
+            bids.sort(key=lambda x: x[0], reverse=True)
+            
+            # 가격 기준 오름차순 정렬 (매도 호가)
+            asks.sort(key=lambda x: x[0])
+            
+            # 파싱된 데이터 반환
+            return {
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "sequence": sequence,
+                "bids": bids,
+                "asks": asks
+            }
+            
+        except Exception as e:
+            self.log_error(f"메시지 파싱 실패: {str(e)}")
+            return None
     
     def _validate_timestamp(self, symbol: str, timestamp: int) -> bool:
         """

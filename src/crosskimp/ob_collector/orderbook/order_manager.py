@@ -78,9 +78,6 @@ class OrderManager:
         # 구독 관리자
         self.subscription = None
         
-        # 파서
-        self.parser = None
-        
         # 연결 상태 콜백
         self.connection_status_callback = None
         
@@ -122,37 +119,31 @@ class OrderManager:
             "UPBIT": {
                 "connection": "crosskimp.ob_collector.orderbook.connection.upbit_s_cn.UpbitWebSocketConnector",
                 "subscription": "crosskimp.ob_collector.orderbook.subscription.upbit_s_sub.UpbitSubscription",
-                "parser": "crosskimp.ob_collector.orderbook.parser.upbit_s_pa.UpbitParser",
                 "supports_delta": False
             },
             "BYBIT": {
                 "connection": "crosskimp.ob_collector.orderbook.connection.bybit_s_cn.BybitWebSocketConnector",
                 "subscription": "crosskimp.ob_collector.orderbook.subscription.bybit_s_sub.BybitSubscription",
-                "parser": "crosskimp.ob_collector.orderbook.parser.bybit_s_pa.BybitParser",
                 "supports_delta": True
             },
             "BYBIT_FUTURE": {
                 "connection": "crosskimp.ob_collector.orderbook.connection.bybit_f_cn.BybitFutureWebSocketConnector",
                 "subscription": "crosskimp.ob_collector.orderbook.subscription.bybit_f_sub.BybitFutureSubscription",
-                "parser": "crosskimp.ob_collector.orderbook.parser.bybit_f_pa.BybitFutureParser",
                 "supports_delta": True
             },
             "BINANCE": {
                 "connection": "crosskimp.ob_collector.orderbook.connection.binance_s_cn.BinanceWebSocketConnector",
                 "subscription": "crosskimp.ob_collector.orderbook.subscription.binance_s_sub.BinanceSubscription",
-                "parser": "crosskimp.ob_collector.orderbook.parser.binance_s_pa.BinanceParser",
                 "supports_delta": True
             },
             "BINANCE_FUTURE": {
                 "connection": "crosskimp.ob_collector.orderbook.connection.binance_f_cn.BinanceFutureWebSocketConnector",
                 "subscription": "crosskimp.ob_collector.orderbook.subscription.binance_f_sub.BinanceFutureSubscription",
-                "parser": "crosskimp.ob_collector.orderbook.parser.binance_f_pa.BinanceFutureParser",
                 "supports_delta": True
             },
             "BITHUMB": {
                 "connection": "crosskimp.ob_collector.orderbook.connection.bithumb_s_cn.BithumbWebSocketConnector",
                 "subscription": "crosskimp.ob_collector.orderbook.subscription.bithumb_s_sub.BithumbSubscription",
-                "parser": "crosskimp.ob_collector.orderbook.parser.bithumb_s_pa.BithumbParser",
                 "supports_delta": False
             }
         }
@@ -182,10 +173,14 @@ class OrderManager:
                 return False
             
             # 필요한 컴포넌트 경로 가져오기
-            connection_path = self.config["components"]["connection"]
-            subscription_path = self.config["components"]["subscription"]
-            parser_path = self.config["components"]["parser"]
-            validator_path = self.config["validator"]
+            connection_path = self.config["components"].get("connection")
+            subscription_path = self.config["components"].get("subscription")
+            validator_path = self.config.get("validator")
+            
+            # 필수 컴포넌트 경로 검증
+            if not connection_path or not subscription_path:
+                logger.error(f"{self.exchange_name_kr} 필수 컴포넌트 경로가 없습니다")
+                return False
             
             # 동적으로 컴포넌트 로드
             import importlib
@@ -194,46 +189,82 @@ class OrderManager:
                 # 컴포넌트 경로 분리
                 conn_parts = connection_path.split(".")
                 sub_parts = subscription_path.split(".")
-                parser_parts = parser_path.split(".")
-                validator_parts = validator_path.split(".")
                 
                 # 모듈과 클래스 분리
                 conn_module_path, conn_class_name = ".".join(conn_parts[:-1]), conn_parts[-1]
                 sub_module_path, sub_class_name = ".".join(sub_parts[:-1]), sub_parts[-1]
-                parser_module_path, parser_class_name = ".".join(parser_parts[:-1]), parser_parts[-1]
-                validator_module_path, validator_class_name = ".".join(validator_parts[:-1]), validator_parts[-1]
                 
-                # 모듈 로드
-                conn_module = importlib.import_module(conn_module_path)
-                sub_module = importlib.import_module(sub_module_path)
-                parser_module = importlib.import_module(parser_module_path)
-                validator_module = importlib.import_module(validator_module_path)
+                # connection과 subscription 모듈 로드 (필수)
+                try:
+                    conn_module = importlib.import_module(conn_module_path)
+                    conn_class = getattr(conn_module, conn_class_name)
+                except (ImportError, AttributeError) as e:
+                    logger.error(f"{self.exchange_name_kr} 연결 컴포넌트 로드 실패: {str(e)}")
+                    return False
+                    
+                try:
+                    sub_module = importlib.import_module(sub_module_path)
+                    sub_class = getattr(sub_module, sub_class_name)
+                except (ImportError, AttributeError) as e:
+                    logger.error(f"{self.exchange_name_kr} 구독 컴포넌트 로드 실패: {str(e)}")
+                    return False
                 
-                # 클래스 가져오기
-                conn_class = getattr(conn_module, conn_class_name)
-                sub_class = getattr(sub_module, sub_class_name)
-                parser_class = getattr(parser_module, parser_class_name)
-                validator_class = getattr(validator_module, validator_class_name)
+                # validator 모듈 로드 (선택적)
+                validator_class = None
+                if validator_path:
+                    try:
+                        validator_parts = validator_path.split(".")
+                        validator_module_path, validator_class_name = ".".join(validator_parts[:-1]), validator_parts[-1]
+                        validator_module = importlib.import_module(validator_module_path)
+                        validator_class = getattr(validator_module, validator_class_name)
+                    except (ImportError, AttributeError) as e:
+                        logger.warning(f"{self.exchange_name_kr} 검증기 컴포넌트 로드 실패: {str(e)}")
+                        # 검증기는 선택적이므로 계속 진행
                 
                 # 컴포넌트 인스턴스 생성
-                self.connection = conn_class(self.settings)
-                self.parser = parser_class()
-                self.validator = validator_class(self.exchange_code)
-                self.subscription = sub_class(self.connection, self.parser)
+                # 먼저 연결 객체 생성
+                try:
+                    self.connection = conn_class(self.settings)
+                except Exception as e:
+                    logger.error(f"{self.exchange_name_kr} 연결 객체 생성 실패: {str(e)}")
+                    return False
+                
+                # 검증기 객체 생성 (선택적)
+                if validator_class:
+                    try:
+                        self.validator = validator_class(self.exchange_code)
+                    except Exception as e:
+                        logger.warning(f"{self.exchange_name_kr} 검증기 객체 생성 실패: {str(e)}")
+                        # 계속 진행
+
+                # 구독 객체 생성 (필수)
+                try:
+                    # 파서 없이 구독 객체 생성
+                    self.subscription = sub_class(self.connection)
+                except Exception as e:
+                    logger.error(f"{self.exchange_name_kr} 구독 객체 생성 실패: {str(e)}")
+                    self.connection = None  # 생성된 객체 정리
+                    return False
                 
                 # 리소스 연결
                 if self.output_queue:
                     self.set_output_queue(self.output_queue)
                 
+                # 컨넥션에 콜백 설정
+                if self.connection and self.connection_status_callback:
+                    self.connection.set_connection_status_callback(
+                        lambda status: self.update_connection_status(self.exchange_code, status)
+                    )
+                
                 logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 완료")
                 return True
                 
-            except (ImportError, AttributeError) as e:
-                logger.error(f"{self.exchange_name_kr} 컴포넌트 로드 실패: {str(e)}")
+            except Exception as e:
+                logger.error(f"{self.exchange_name_kr} 컴포넌트 로드 중 예외 발생: {str(e)}", exc_info=True)
                 return False
             
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}")
+            logger.error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}", exc_info=True)
             return False
     
     async def start(self, symbols: List[str]) -> bool:
@@ -251,6 +282,15 @@ class OrderManager:
                 logger.warning(f"{self.exchange_name_kr} 심볼이 없어 오더북 수집을 시작하지 않습니다")
                 return False
                 
+            # 필수 컴포넌트 검증
+            if not self.connection:
+                logger.error(f"{self.exchange_name_kr} 연결 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
+                return False
+                
+            if not self.subscription:
+                logger.error(f"{self.exchange_name_kr} 구독 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
+                return False
+            
             # 이미 실행 중인 경우 처리
             if self.is_running:
                 # 새로운 심볼만 추가
@@ -267,22 +307,27 @@ class OrderManager:
             # 시작 상태 설정
             self.is_running = True
             
-            # 연결 및 구독 시작
-            await self.connection.connect()
-            
-            # 구독 시작 (심볼에 따른)
-            subscription_task = asyncio.create_task(
-                self.subscription.subscribe(list(self.symbols))
-            )
-            self.tasks["subscription"] = subscription_task
-            
-            # 심볼 개수 로깅
-            logger.info(f"{self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
-            
-            # 메트릭 업데이트 태스크 시작
-            self._start_metric_tasks()
-            
-            return True
+            try:
+                # 연결 및 구독 시작
+                await self.connection.connect()
+                
+                # 구독 시작 (심볼에 따른)
+                subscription_task = asyncio.create_task(
+                    self.subscription.subscribe(list(self.symbols))
+                )
+                self.tasks["subscription"] = subscription_task
+                
+                # 심볼 개수 로깅
+                logger.info(f"{self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
+                
+                # 메트릭 업데이트 태스크 시작
+                self._start_metric_tasks()
+                
+                return True
+            except Exception as e:
+                self.is_running = False
+                logger.error(f"{self.exchange_name_kr} 연결 및 구독 중 오류: {str(e)}", exc_info=True)
+                return False
             
         except Exception as e:
             self.is_running = False
@@ -489,11 +534,6 @@ class OrderManager:
         # 메트릭 정보 가져오기
         metrics = self.metrics_manager.get_exchange_metrics(self.exchange_code)
         
-        # 메시지 처리 통계
-        parser_stats = {}
-        if self.parser:
-            parser_stats = self.parser.get_statistics()
-        
         # 연결 정보
         connection_info = {}
         if self.connection:
@@ -512,8 +552,7 @@ class OrderManager:
             "uptime_formatted": f"{int(uptime // 3600)}시간 {int((uptime % 3600) // 60)}분 {int(uptime % 60)}초",
             "symbols_count": len(self.symbols),
             "connection": connection_info,
-            "metrics": metrics,
-            "parser_stats": parser_stats
+            "metrics": metrics
         }
         
         return status
@@ -597,9 +636,17 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
                 lambda ex, status: ws_manager.update_connection_status(ex, status)
             )
             
-            # 초기화 및 시작
-            await manager.initialize()
-            await manager.start(symbols)
+            # 초기화 수행
+            init_success = await manager.initialize()
+            if not init_success:
+                logger.error(f"{exchange_korean} 초기화 실패, 해당 거래소는 건너뜁니다.")
+                continue
+            
+            # 시작 수행
+            start_success = await manager.start(symbols)
+            if not start_success:
+                logger.error(f"{exchange_korean} 시작 실패, 해당 거래소는 건너뜁니다.")
+                continue
             
             # WebsocketManager에 OrderManager 저장
             ws_manager.order_managers[exchange_code] = manager
