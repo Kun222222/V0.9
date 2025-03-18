@@ -37,7 +37,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
         Args:
             settings: 설정 딕셔너리
         """
-        super().__init__(settings, "bybit")  # 거래소 코드 직접 지정
+        super().__init__(settings, "BYBIT")  # 거래소 코드 대문자로 변경
         self.ws_url = WS_URL
         
         # 거래소 전용 설정
@@ -63,8 +63,8 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             bool: 연결 성공 여부
         """
         try:
-            logger.info(f"[{self.exchangename}] 🔵 웹소켓 연결 시도")
-            # 연결 상태 초기화 (이제 상태 관리자를 통해 관리됨)
+            self.log_info("🔵 웹소켓 연결 시도")
+            # 연결 상태 초기화 (부모 클래스의 setter 사용)
             self.is_connected = False
             
             # 연결 시도 횟수 초기화
@@ -82,19 +82,19 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                         open_timeout=self.connection_timeout  # 0.5초 타임아웃
                     )
                     
-                    # 연결 성공 - 상태 관리자를 통해 상태 업데이트
+                    # 연결 성공 - 부모 클래스의 setter 사용
                     self.is_connected = True
-                    logger.info(f"[{self.exchangename}] 🟢 웹소켓 연결 성공")
+                    self.log_info("🟢 웹소켓 연결 성공")
                     return True
                     
                 except Exception as e:
                     retry_count += 1
-                    logger.warning(f"[{self.exchangename}] 연결 시도 {retry_count}번째 실패: {str(e)}")
+                    self.log_warning(f"연결 시도 {retry_count}번째 실패: {str(e)}")
                     # 즉시 재시도 (대기 없음)
-                    logger.info(f"[{self.exchangename}] 즉시 재시도...")
+                    self.log_info("즉시 재시도...")
                         
         except Exception as e:
-            logger.error(f"[{self.exchangename}] 🔴 연결 오류: {str(e)}")
+            self.log_error(f"🔴 연결 오류: {str(e)}")
             self.is_connected = False
             return False
 
@@ -109,7 +109,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             if self.ws:
                 await self.ws.close()
             
-            # 연결 상태 업데이트 (상태 관리자를 통해)
+            # 연결 상태 업데이트 (부모 클래스의 setter 사용)
             self.is_connected = False
             return True
             
@@ -146,10 +146,13 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             try:
                 current_time = time.time()
                 
-                # 메시지 타임아웃 체크
+                # 메시지 타임아웃 체크 - 이미 연결된 상태이고 최근에 메시지를 받은 적이 있는 경우만 체크
                 if self.is_connected and self.stats.last_message_time > 0:
-                    if (current_time - self.stats.last_message_time) > self.message_timeout:
-                        error_msg = f"{self.exchange_korean_name} 웹소켓 메시지 타임아웃"
+                    time_since_last_message = current_time - self.stats.last_message_time
+                    
+                    # 타임아웃 발생 시 에러 로그 출력 및 재연결
+                    if time_since_last_message > self.message_timeout:
+                        error_msg = f"웹소켓 메시지 타임아웃: 마지막 메시지로부터 {time_since_last_message:.1f}초 경과"
                         self.log_error(error_msg)
                         await self.send_telegram_notification("error", error_msg)
                         await self.reconnect()
@@ -169,7 +172,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
         """
         try:
             self.stats.reconnect_count += 1
-            reconnect_msg = f"{self.exchange_korean_name} 웹소켓 재연결 시도"
+            reconnect_msg = f"웹소켓 재연결 시도"
             self.log_info(reconnect_msg)
             await self.send_telegram_notification("reconnect", reconnect_msg)
             
@@ -206,7 +209,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             
         except websockets.exceptions.ConnectionClosed:
             self.log_error("웹소켓 연결 끊김")
-            # 연결 상태 업데이트 (상태 관리자를 통해)
+            # 연결 상태 업데이트 (부모 클래스의 setter 사용)
             self.is_connected = False
             return None
             

@@ -5,11 +5,4 @@
 
 
 
-@base_subscription.py @upbit_s_sub.py @base_ws_manager.py @upbit_s_ws.py 스냅샷과 이후 델타 구독(업비트는 항상 스냅샷)과 파싱을 통해 전달된 데이터가 @base_ob.py @upbit_s_ob.py 으로 동일한 형태로 전달된다면 이렇게 각각의 ob 관리자가 필요해? 구독에서 파싱과
-
- 오더북 업데이트를 한번에 처리해도 되는거 아니야?
-오더북 업데이트 이전에 각각의 거래소의 다른 모양의 스냅샷, 델타를 동일한 모양으로 만들었을텐데
-
-가격역전, 뎁스 유지, 순서유지 기능만 정확히 해결하면 되는것 같은데
-
-별도의 벨리데이터 파일 하나를 임포트해서 처리하면 쉬울 것 같은데,
+@base_subscription.py @base_parser.py @base_connector.py @metrics_manager.py 각각의 베이스 파일이 있는데 @order_manager.py 의 코드가 있는데 이 코드가 길어지는 이유가 뭐야?

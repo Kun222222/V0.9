@@ -9,13 +9,18 @@ import time
 from typing import Dict, List, Optional, Tuple, Any
 
 from crosskimp.ob_collector.orderbook.parser.base_parser import BaseParser
+from crosskimp.logger.logger import get_unified_logger
 
 # ============================
 # 바이빗 파서 관련 상수
 # ============================
 # 기본 설정
 EXCHANGE_CODE = "BYBIT"  # 거래소 코드
-DEFAULT_DEPTH = 50  # 기본 오더북 깊이
+# BaseParser에 EXCHANGE_NAMES_KR이 정의되어 있으므로 여기서는 제거
+DEFAULT_DEPTH = 20  # 기본 오더북 깊이
+
+# 로거 인스턴스 획득
+logger = get_unified_logger()
 
 
 class BybitParser(BaseParser):
@@ -34,6 +39,7 @@ class BybitParser(BaseParser):
         """
         super().__init__(EXCHANGE_CODE)
         self.depth_level = DEFAULT_DEPTH
+        self.log_info(f"파서 초기화 완료 (최대 깊이: {self.depth_level})")
 
     def parse_message(self, raw_message: str) -> Optional[Dict[str, Any]]:
         """
@@ -71,7 +77,7 @@ class BybitParser(BaseParser):
             # 심볼 추출
             parts = topic.split(".")
             if len(parts) < 3:
-                self.log_error("토픽 형식 오류")
+                self.log_error(f"토픽 형식 오류: {topic}")
                 self.stats["invalid_parsed"] += 1
                 return None
                 
@@ -184,6 +190,9 @@ class BybitParser(BaseParser):
         for sym in symbols:
             market = f"{sym}USDT"
             args.append(f"orderbook.{self.depth_level}.{market}")
+        
+        symbols_str = ", ".join(symbols) if len(symbols) <= 5 else f"{len(symbols)}개 심볼"
+        self.log_info(f"{symbols_str} 구독 메시지 생성")
         
         # 구독 메시지 생성
         return {

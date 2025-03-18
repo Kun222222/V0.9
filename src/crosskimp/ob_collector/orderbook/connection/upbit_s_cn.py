@@ -14,8 +14,8 @@ from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMet
 # 업비트 웹소켓 연결 관련 상수
 # ============================
 # 거래소 정보
-EXCHANGE_CODE = "upbit"  # 거래소 코드
-EXCHANGE_NAME_KR = "[업비트]"  # 거래소 한글 이름
+EXCHANGE_CODE = "UPBIT"  # 거래소 코드 대문자로 통일
+# EXCHANGE_NAME_KR은 base_connector.py에서 사용하므로 여기서는 제거
 
 # 웹소켓 연결 설정
 WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
@@ -66,7 +66,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         # 메트릭 매니저 싱글톤 인스턴스 사용
         self.metrics = WebsocketMetricsManager.get_instance()
         
-        # 연결 상태 - 이제 부모 클래스의 ConnectionStateManager를 통해 관리
         # 연결 중 상태 관리 (is_connected와 별개)
         self.connecting = False
 
@@ -96,13 +95,13 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                 ping_timeout=self.ping_timeout     # PONG 응답 타임아웃
             )
             
-            # 연결 성공 처리 - 상태 관리자를 통해 상태 업데이트
+            # 연결 성공 처리 - 부모 클래스의 setter 사용
             self.is_connected = True
             self.stats.connection_start_time = time.time()
             self.reconnect_strategy.reset()
             
             # 연결 성공 알림
-            connect_msg = f"{self.exchange_korean_name} 웹소켓 연결 성공"
+            connect_msg = "웹소켓 연결 성공"
             await self.send_telegram_notification("connect", connect_msg)
             
             self.log_info("웹소켓 연결 성공")
@@ -177,15 +176,19 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             try:
                 current_time = time.time()
                 
-                # 메시지 타임아웃 체크
-                if self.is_connected and self.stats.last_message_time > 0 and (current_time - self.stats.last_message_time) > self.message_timeout:
-                    error_msg = f"{self.exchange_korean_name} 웹소켓 메시지 타임아웃 발생 ({self.message_timeout}초), 마지막 메시지: {current_time - self.stats.last_message_time:.1f}초 전"
-                    self.log_error(error_msg)
-                    await self.send_telegram_notification("error", error_msg)
-                    await self.reconnect()
+                # 메시지 타임아웃 체크 - 연결된 상태이고 이전에 메시지를 받은 적이 있는 경우만 체크
+                if self.is_connected and self.stats.last_message_time > 0:
+                    time_since_last_message = current_time - self.stats.last_message_time
+                    
+                    # 타임아웃 발생 시에만 에러 로그 출력 및 재연결
+                    if time_since_last_message > self.message_timeout:
+                        error_msg = f"웹소켓 메시지 타임아웃 발생 ({self.message_timeout}초), 마지막 메시지: {time_since_last_message:.1f}초 전"
+                        self.log_error(error_msg)
+                        await self.send_telegram_notification("error", error_msg)
+                        await self.reconnect()
                 
-                # 연결 상태 로깅 (디버그)
-                if self.is_connected:
+                # 연결 상태 디버그 로깅은 1분에 한 번 정도만 출력 (타임스탬프 기준)
+                if self.is_connected and (current_time % 60) < 1:
                     uptime = current_time - self.stats.connection_start_time
                     last_msg_time_diff = current_time - self.stats.last_message_time if self.stats.last_message_time > 0 else -1
                     self.log_debug(
@@ -208,7 +211,7 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         """
         try:
             self.stats.reconnect_count += 1
-            reconnect_msg = f"{self.exchange_korean_name} 웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count})"
+            reconnect_msg = f"웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count})"
             self.log_info(reconnect_msg)
             await self.send_telegram_notification("reconnect", reconnect_msg)
             
@@ -222,9 +225,9 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             success = await self.connect()
             
             if success:
-                self.log_info(f"{self.exchange_korean_name} 웹소켓 재연결 성공")
+                self.log_info("웹소켓 재연결 성공")
             else:
-                self.log_error(f"{self.exchange_korean_name} 웹소켓 재연결 실패")
+                self.log_error("웹소켓 재연결 실패")
             
             return success
             
@@ -258,6 +261,15 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             self.log_error(f"웹소켓 연결 끊김: {e}")
             # 연결 상태 업데이트
             self.is_connected = False
+            
+            # 정상 종료인 경우(코드 1000)에도 자동 재연결 시도
+            if e.code == 1000:
+                self.log_info("정상 종료로 인한 연결 끊김, 자동 재연결 시도")
+                asyncio.create_task(self.reconnect())
+            else:
+                self.log_info(f"비정상 종료({e.code})로 인한 연결 끊김, 자동 재연결 시도")
+                asyncio.create_task(self.reconnect())
+                
             return None
             
         except Exception as e:

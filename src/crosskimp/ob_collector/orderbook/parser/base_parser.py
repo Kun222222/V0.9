@@ -11,6 +11,17 @@ from abc import ABC, abstractmethod
 
 from crosskimp.logger.logger import get_unified_logger
 
+# 한글 거래소 이름 매핑
+EXCHANGE_NAMES_KR = {
+    "UPBIT": "[업비트]",
+    "BYBIT": "[바이빗]",
+    "BINANCE": "[바이낸스]",
+    "BITHUMB": "[빗썸]",
+    "BINANCE_FUTURE": "[바이낸스 선물]",
+    "BYBIT_FUTURE": "[바이빗 선물]",
+}
+
+# 통합 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
 class BaseParser(ABC):
@@ -27,6 +38,7 @@ class BaseParser(ABC):
             exchangename: 거래소 이름
         """
         self.exchangename = exchangename
+        self.exchange_kr = EXCHANGE_NAMES_KR.get(exchangename, f"[{exchangename}]")
         
         # 파싱 통계
         self.stats = {
@@ -147,7 +159,7 @@ class BaseParser(ABC):
             msg: 오류 메시지
             exc_info: 예외 정보 포함 여부
         """
-        logger.error(f"[{self.exchangename}] {msg}", exc_info=exc_info)
+        logger.error(f"{self.exchange_kr} {msg}", exc_info=exc_info)
         self.stats["processing_errors"] += 1
     
     def log_info(self, msg: str) -> None:
@@ -157,7 +169,7 @@ class BaseParser(ABC):
         Args:
             msg: 정보 메시지
         """
-        logger.info(f"[{self.exchangename}] {msg}")
+        logger.info(f"{self.exchange_kr} {msg}")
     
     def log_debug(self, msg: str) -> None:
         """
@@ -166,7 +178,7 @@ class BaseParser(ABC):
         Args:
             msg: 디버그 메시지
         """
-        logger.debug(f"[{self.exchangename}] {msg}")
+        logger.debug(f"{self.exchange_kr} {msg}")
     
     def log_warning(self, msg: str) -> None:
         """
@@ -175,7 +187,7 @@ class BaseParser(ABC):
         Args:
             msg: 경고 메시지
         """
-        logger.warning(f"[{self.exchangename}] {msg}")
+        logger.warning(f"{self.exchange_kr} {msg}")
     
     def get_stats(self) -> Dict[str, int]:
         """

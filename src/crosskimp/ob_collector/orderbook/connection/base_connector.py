@@ -10,11 +10,88 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from abc import ABC, abstractmethod
+from enum import Enum, auto
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.ob_constants import EXCHANGE_NAMES_KR, STATUS_EMOJIS, WEBSOCKET_CONFIG, WEBSOCKET_COMMON_CONFIG, LogMessageType
 from crosskimp.config.paths import LOG_SUBDIRS
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
+
+# ============================
+# 거래소 이름 및 상태 관련 상수
+# ============================
+# 거래소 코드 -> 한글 이름 매핑
+EXCHANGE_NAMES_KR = {
+    "UPBIT": "[업비트]",
+    "BYBIT": "[바이빗]",
+    "BINANCE": "[바이낸스]",
+    "BITHUMB": "[빗썸]",
+    "BINANCE_FUTURE": "[바이낸스 선물]",
+    "BYBIT_FUTURE": "[바이빗 선물]",
+}
+
+# 상태 이모지
+STATUS_EMOJIS = {
+    "ERROR": "🔴",
+    "WARNING": "🟠",
+    "INFO": "🟢",
+    "CONNECTED": "🟢",
+    "DISCONNECTED": "🔴",
+}
+
+# 웹소켓 공통 설정
+WEBSOCKET_COMMON_CONFIG = {
+    "reconnect_strategy": {
+        "initial_delay": 1.0,
+        "max_delay": 60.0,
+        "multiplier": 2.0,
+        "max_attempts": 10
+    },
+    "connection_timeout": 30.0,
+    "message_timeout": 60.0,
+    "ping_interval": 30.0,
+    "ping_timeout": 5.0,
+    "health_check_interval": 10.0
+}
+
+# 거래소별 웹소켓 설정
+WEBSOCKET_CONFIG = {
+    "UPBIT": {
+        "url": "wss://api.upbit.com/websocket/v1",
+        "ping_message": '{"ticket":"PING"}',
+        "ping_interval": 20.0,
+        "market": "KRW"
+    },
+    "BYBIT": {
+        "url": "wss://stream.bybit.com/v5/public/spot",
+        "ping_message": '{"op":"ping"}',
+        "ping_interval": 20.0,
+        "market": "USDT"
+    },
+    "BINANCE": {
+        "url": "wss://stream.binance.com:9443/ws",
+        "ping_message": '{"method":"ping"}',
+        "ping_interval": 30.0,
+        "market": "USDT"
+    },
+    "BITHUMB": {
+        "url": "wss://pubwss.bithumb.com/pub/ws",
+        "ping_message": '{"type":"ping"}',
+        "ping_interval": 20.0,
+        "market": "KRW"
+    },
+    "BINANCE_FUTURE": {
+        "url": "wss://fstream.binance.com/ws",
+        "ping_message": '{"method":"ping"}',
+        "ping_interval": 30.0,
+        "market": "USDT"
+    },
+    "BYBIT_FUTURE": {
+        "url": "wss://stream.bybit.com/v5/public/linear",
+        "ping_message": '{"op":"ping"}',
+        "ping_interval": 20.0,
+        "market": "USDT"
+    }
+}
 
 # 전역 로거 설정
 logger = get_unified_logger()
@@ -140,7 +217,19 @@ class BaseWebsocketConnector(ABC):
         
         직접 설정하면 메트릭 매니저를 통해 업데이트
         """
-        self.metrics.update_connection_state(self.exchangename, "connected" if value else "disconnected")
+        # 현재 저장된 상태 확인 (메트릭스에서 바로 조회)
+        current_state = self.metrics.is_connected(self.exchangename)
+        
+        # 실제 상태 변경이 있을 때만 업데이트 및 로깅
+        if current_state != value:
+            state = "connected" if value else "disconnected"
+            self.metrics.update_connection_state(self.exchangename, state)
+            
+            # 중요한 상태 변경만 로깅 (디버그 레벨 낮춤)
+            if value:
+                self.log_debug(f"연결 상태 변경: 연결됨")
+            else:
+                self.log_debug(f"연결 상태 변경: 연결 끊김")
 
     # 로깅 헬퍼 메서드들
     def log_error(self, msg: str, exc_info: bool = True):
@@ -164,7 +253,7 @@ class BaseWebsocketConnector(ABC):
 
     def log_warning(self, msg: str):
         """경고 로깅"""
-        warning_msg = f"{self.exchange_korean_name} {STATUS_EMOJIS.get('RECONNECTING', '🟠')} {msg}"
+        warning_msg = f"{self.exchange_korean_name} {STATUS_EMOJIS.get('WARNING', '🟠')} {msg}"
         logger.warning(warning_msg)
 
     def update_message_metrics(self, message: str) -> None:
@@ -176,10 +265,17 @@ class BaseWebsocketConnector(ABC):
         """
         # 메시지 통계 업데이트
         self.stats.message_count += 1
-        self.stats.last_message_time = time.time()
+        current_time = time.time()
+        self.stats.last_message_time = current_time
         
-        # 연결 상태 업데이트
-        self.is_connected = True
+        # 연결 상태 업데이트 - 메시지를 받았으면 연결된 상태지만
+        # 매 메시지마다 상태를 업데이트하면 로그가 너무 많이 생성됨
+        # 연결이 끊어진 상태에서 메시지를 받은 경우만 상태 업데이트
+        if not self.is_connected:
+            self.is_connected = True
+        
+        # 메트릭 매니저에 메시지 수신 기록
+        self.metrics.record_message(self.exchangename)
 
     async def send_telegram_notification(self, event_type: str, message: str) -> None:
         """
@@ -194,7 +290,9 @@ class BaseWebsocketConnector(ABC):
             return
             
         try:
-            # 이벤트 타입에 따른 MessageType 결정
+            # 텔레그램 메시지 전송 시 message_type을 문자열로 전달
+            # telegram_notification.py에서는 LogMessageType 객체를 기대하지만,
+            # 문자열도 직접 MessageType으로 변환 가능함
             message_type = self._get_message_type_for_event(event_type)
                 
             # 텔레그램 메시지 전송
@@ -206,7 +304,7 @@ class BaseWebsocketConnector(ABC):
         except Exception as e:
             self.log_error(f"텔레그램 알림 전송 실패: {event_type} - {str(e)}")
 
-    def _get_message_type_for_event(self, event_type: str) -> LogMessageType:
+    def _get_message_type_for_event(self, event_type: str) -> str:
         """
         이벤트 타입에 따른 메시지 타입 반환
         
@@ -214,18 +312,18 @@ class BaseWebsocketConnector(ABC):
             event_type: 이벤트 타입
             
         Returns:
-            LogMessageType: 메시지 타입
+            str: 메시지 타입
         """
         if event_type == "error":
-            return LogMessageType.ERROR
+            return "error"  # MessageType.ERROR 대신 문자열 사용
         elif event_type == "connect":
-            return LogMessageType.INFO
+            return "info"   # MessageType.INFO 대신 문자열 사용
         elif event_type == "disconnect":
-            return LogMessageType.WARNING
+            return "warning"  # MessageType.WARNING 대신 문자열 사용
         elif event_type == "reconnect":
-            return LogMessageType.WARNING
+            return "warning"  # MessageType.WARNING 대신 문자열 사용
         else:
-            return LogMessageType.INFO
+            return "info"   # MessageType.INFO 대신 문자열 사용
 
     @abstractmethod
     async def connect(self) -> bool:

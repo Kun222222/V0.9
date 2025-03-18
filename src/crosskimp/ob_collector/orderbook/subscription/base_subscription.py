@@ -2,15 +2,29 @@ import asyncio
 import json
 import aiohttp
 import logging
+import time
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Dict, Optional, List, Any, Callable, Union, Tuple
+from typing import Dict, Optional, List, Any, Callable, Union, Tuple, Set
+import datetime
+import websockets
 
 # 필요한 로거 임포트 - 실제 구현에 맞게 수정 필요
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 # 메트릭 매니저 임포트 추가
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
+from crosskimp.config.paths import LOG_SUBDIRS
+
+# 한글 거래소 이름 매핑
+EXCHANGE_NAMES_KR = {
+    "UPBIT": "[업비트]",
+    "BYBIT": "[바이빗]",
+    "BINANCE": "[바이낸스]",
+    "BITHUMB": "[빗썸]",
+    "BINANCE_FUTURE": "[바이낸스 선물]",
+    "BYBIT_FUTURE": "[바이빗 선물]",
+}
 
 
 class SnapshotMethod(Enum):
@@ -90,6 +104,10 @@ class BaseSubscription(ABC):
         
         # 원시 데이터 로깅 설정 - 기본적으로 비활성화
         self.log_raw_data = False
+        
+        # 검증기 및 출력 큐
+        self.validator = None
+        self.output_queue = None
     
     def _init_rest_session(self):
         """REST API 세션 초기화 (REST 스냅샷 방식인 경우)"""
@@ -217,18 +235,21 @@ class BaseSubscription(ABC):
             if not symbol or symbol not in self.subscribed_symbols:
                 return
                 
-            # 메시지 타입에 따라 콜백 분기 처리
-            if self.is_snapshot_message(message) and symbol in self.snapshot_callbacks:
-                await self._call_snapshot_callback(symbol, parsed_data)
-            elif self.is_delta_message(message) and symbol in self.delta_callbacks:
-                await self._call_delta_callback(symbol, parsed_data)
+            # 메시지 타입에 따라 직접 처리 메서드 호출
+            if self.is_snapshot_message(message):
+                await self._handle_snapshot(symbol, parsed_data)
+            elif self.is_delta_message(message):
+                await self._handle_delta(symbol, parsed_data)
                 
         except Exception as e:
             # 에러 로깅
             self.logger.error(f"메시지 처리 오류: {str(e)}")
             
-            # 에러 콜백 호출
-            await self._call_error_callbacks(str(e))
+            # 에러 처리
+            if parsed_data and "symbol" in parsed_data:
+                self._handle_error(parsed_data["symbol"], str(e))
+            else:
+                self._handle_error("unknown", str(e))
     
     async def _call_snapshot_callback(self, symbol: str, data: Dict) -> None:
         """스냅샷 콜백 호출"""
@@ -253,44 +274,53 @@ class BaseSubscription(ABC):
     
     @property
     def is_connected(self) -> bool:
-        """연결 상태 확인 (메트릭 매니저 사용)"""
-        return self.metrics_manager.is_connected(self.exchange_code)
+        """연결 상태 확인 (연결 객체에서 직접 참조)"""
+        # 중복 상태 관리를 제거하고 연결 객체의 상태만 참조
+        return self.connection.is_connected if self.connection else False
     
     async def message_loop(self) -> None:
         """
-        메시지 수신 루프 기본 구현
+        메시지 수신 루프
         
-        웹소켓 연결에서 메시지를 지속적으로 수신하고 처리합니다.
+        웹소켓에서 메시지를 계속 수신하고 처리하는 루프입니다.
         """
-        self.logger.info(f"[{self.exchange_code}] 메시지 수신 루프 시작")
+        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self.logger.info("메시지 수신 루프 시작")
         
         while not self.stop_event.is_set():
             try:
                 # 연결 상태 확인
-                if not self.connection.is_connected:
-                    self.logger.warning(f"[{self.exchange_code}] 웹소켓 연결 끊김, 재연결 대기 중")
-                    await asyncio.sleep(1)  # 잠시 대기 후 재시도
+                if not self.is_connected:
+                    self.logger.warning("웹소켓 연결이 끊어짐, 재연결 대기")
+                    await asyncio.sleep(1)
                     continue
                 
-                # 원시 메시지 수신
+                # 메시지 수신
                 message = await self.connection.receive_raw()
                 
                 if not message:
-                    await asyncio.sleep(0.01)  # 짧은 대기로 CPU 사용량 감소
+                    await asyncio.sleep(0.01)  # 짧은 대기 시간 추가 (CPU 사용량 감소)
                     continue
                 
                 # 메시지 처리
                 await self._on_message(message)
                 
             except asyncio.CancelledError:
-                self.logger.info(f"[{self.exchange_code}] 메시지 수신 루프 취소됨")
+                self.logger.info("메시지 수신 루프 취소됨")
                 break
                 
+            except websockets.exceptions.ConnectionClosed as e:
+                self.logger.warning(f"웹소켓 연결 끊김: {e}")
+                # 연결 상태 업데이트
+                self.metrics_manager.update_connection_state(self.exchange_code, "disconnected")
+                await asyncio.sleep(1)
+                
             except Exception as e:
-                self.logger.error(f"[{self.exchange_code}] 메시지 수신 중 오류: {e}")
-                await asyncio.sleep(0.1)  # 오류 발생시 약간 더 긴 대기
-        
-        self.logger.info(f"[{self.exchange_code}] 메시지 수신 루프 종료")
+                self.logger.error(f"메시지 수신 루프 오류: {str(e)}")
+                self.metrics_manager.record_error(self.exchange_code)
+                await asyncio.sleep(0.1)
+                
+        self.logger.info("메시지 수신 루프 종료")
     
     @abstractmethod
     async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
@@ -298,6 +328,7 @@ class BaseSubscription(ABC):
         심볼 구독
         
         단일 심볼 또는 심볼 리스트를 구독합니다.
+        각 거래소별 구현에서는 자체적인 배치 처리 로직을 포함해야 합니다.
         
         Args:
             symbol: 구독할 심볼 또는 심볼 리스트
@@ -311,12 +342,12 @@ class BaseSubscription(ABC):
         pass
     
     @abstractmethod
-    async def unsubscribe(self, symbol: str) -> bool:
+    async def unsubscribe(self, symbol: Optional[str] = None) -> bool:
         """
         구독 취소
         
         Args:
-            symbol: 구독 취소할 심볼
+            symbol: 구독 취소할 심볼. None인 경우 모든 심볼 구독 취소 및 자원 정리
             
         Returns:
             bool: 구독 취소 성공 여부
@@ -338,61 +369,214 @@ class BaseSubscription(ABC):
         # 구독 상태 제거
         self.subscribed_symbols.pop(symbol, None)
     
-    async def close(self) -> None:
+    def set_validator(self, validator) -> None:
         """
-        모든 구독 취소 및 자원 정리 기본 구현
+        검증기 설정
+        
+        Args:
+            validator: 검증기 객체
+        """
+        self.validator = validator
+        
+    def set_output_queue(self, queue) -> None:
+        """
+        출력 큐 설정
+        
+        Args:
+            queue: 출력 큐
+        """
+        self.output_queue = queue
+    
+    async def _handle_snapshot(self, symbol: str, data: Dict) -> None:
+        """
+        스냅샷 처리
+        
+        Args:
+            symbol: 심볼
+            data: 스냅샷 데이터
         """
         try:
-            # 종료 이벤트 설정
-            self.stop_event.set()
+            # 처리 시작 시간 기록
+            start_time = time.time()
             
-            # 메시지 수신 루프 취소
-            if self.message_loop_task and not self.message_loop_task.done():
-                self.message_loop_task.cancel()
-                try:
-                    await self.message_loop_task
-                except asyncio.CancelledError:
-                    pass
+            # 검증기가 없으면 처리 불가
+            if not self.validator:
+                self.logger.error(f"[{self.exchange_code}] 검증기가 설정되지 않았습니다")
+                return
+                
+            # 데이터 검증
+            result = await self.validator.initialize_orderbook(symbol, data)
+            is_valid = result.is_valid
+            orderbook = self.validator.get_orderbook(symbol) if is_valid else None
             
-            # 모든 구독 취소 (타임아웃 설정)
-            symbols = list(self.subscribed_symbols.keys())
-            for symbol in symbols:
-                try:
-                    # 각 구독 취소에 최대 1초의 타임아웃 설정
-                    await asyncio.wait_for(self.unsubscribe(symbol), timeout=1.0)
-                except asyncio.TimeoutError:
-                    self.logger.warning(f"[{self.exchange_code}] {symbol} 구독 취소 타임아웃")
-                    # 타임아웃 발생해도 콜백은 정리
-                    self._cleanup_subscription(symbol)
-                except Exception as e:
-                    self.logger.error(f"[{self.exchange_code}] {symbol} 구독 취소 오류: {str(e)}")
-                    # 오류 발생해도 콜백은 정리
-                    self._cleanup_subscription(symbol)
+            # 출력 큐에 전송
+            self._send_to_output_queue(symbol, orderbook, is_valid)
             
-            # 연결 종료
-            if hasattr(self.connection, 'disconnect'):
-                try:
-                    # 연결 종료에도 타임아웃 설정
-                    await asyncio.wait_for(self.connection.disconnect(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    self.logger.warning(f"[{self.exchange_code}] 연결 종료 타임아웃")
-                except Exception as e:
-                    self.logger.error(f"[{self.exchange_code}] 연결 종료 오류: {str(e)}")
-            
-            # 태스크 취소
-            for task in self.tasks.values():
-                task.cancel()
-            self.tasks.clear()
-            
-            # REST 세션 종료
-            if self.rest_session:
-                await self.rest_session.close()
-                self.rest_session = None
-            
-            self.metrics_manager.update_connection_state(self.exchange_code, "disconnected")
-            self.logger.info(f"[{self.exchange_code}] 모든 구독 취소 및 자원 정리 완료")
+            # 메트릭 및 통계 업데이트
+            self._update_metrics(self.exchange_code, start_time, "snapshot", data)
             
         except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] 자원 정리 중 오류 발생: {e}")
+            self.logger.error(f"[{self.exchange_code}] {symbol} 스냅샷 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
+            
+    async def _handle_delta(self, symbol: str, data: Dict) -> None:
+        """
+        델타 처리
+        
+        Args:
+            symbol: 심볼
+            data: 델타 데이터
+        """
+        try:
+            # 처리 시작 시간 기록
+            start_time = time.time()
+            
+            # 검증기가 없으면 처리 불가
+            if not self.validator:
+                self.logger.error(f"[{self.exchange_code}] 검증기가 설정되지 않았습니다")
+                return
+                
+            # 오더북 업데이트 (세부 구현은 validator에 위임)
+            result = await self.validator.update(symbol, data)
+            
+            # 검증 결과 처리
+            is_valid = result.is_valid
+            orderbook = self.validator.get_orderbook(symbol) if is_valid else None
+            
+            # 출력 큐에 전송
+            self._send_to_output_queue(symbol, orderbook, is_valid)
+            
+            # 메트릭 및 통계 업데이트
+            self._update_metrics(self.exchange_code, start_time, "delta", data)
+            
+        except Exception as e:
+            self.logger.error(f"[{self.exchange_code}] {symbol} 델타 처리 실패: {str(e)}")
+            self.metrics_manager.record_error(self.exchange_code)
+            
+    def _handle_error(self, symbol: str, error: str) -> None:
+        """
+        에러 콜백
+        
+        Args:
+            symbol: 심볼
+            error: 오류 메시지
+        """
+        self.logger.error(f"[{self.exchange_code}] {symbol} 오류 발생: {error}")
+        self.metrics_manager.record_error(self.exchange_code)
+
+    def _update_metrics(self, exchange_code: str, start_time: float, message_type: str, data: Dict) -> None:
+        """
+        메트릭 및 통계 업데이트
+        
+        Args:
+            exchange_code: 거래소 코드
+            start_time: 처리 시작 시간
+            message_type: 메시지 타입 ("snapshot" 또는 "delta")
+            data: 메시지 데이터
+        """
+        try:
+            # 처리 시간 계산 (밀리초)
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            # 추정 데이터 크기 계산 (바이트)
+            data_size = self._estimate_data_size(data)
+            
+            # 메트릭 매니저에 모든 지표 업데이트 위임
+            self.metrics_manager.update_metric(exchange_code, "processing_time", time_ms=processing_time_ms)
+            self.metrics_manager.update_metric(exchange_code, "bytes", size=data_size)
+            self.metrics_manager.update_metric(exchange_code, message_type)
+            self.metrics_manager.update_metric(exchange_code, "connected")
+        except Exception as e:
+            self.logger.error(f"[{exchange_code}] 메트릭 업데이트 실패: {str(e)}")
+            
+    def _estimate_data_size(self, data: Dict) -> int:
+        """
+        데이터 크기 추정 (효율적인 방식)
+        
+        Args:
+            data: 데이터 객체
+            
+        Returns:
+            int: 추정된 바이트 크기
+        """
+        # 빈 데이터 처리
+        if not data:
+            return 0
+            
+        size = 0
+        
+        # bids와 asks가 있는 경우 (오더북 데이터)
+        if "bids" in data and isinstance(data["bids"], list):
+            # 각 호가 항목의 대략적인 크기 (숫자 + 콤마 + 대괄호)
+            size += len(data["bids"]) * 20  # 호가당 평균 20바이트로 추정
+            
+        if "asks" in data and isinstance(data["asks"], list):
+            size += len(data["asks"]) * 20
+        
+        # 기타 메타데이터의 대략적인 크기
+        size += 100  # 타임스탬프, 시퀀스 번호 등 (고정 100바이트로 추정)
+        
+        return size
+        
+    def _send_to_output_queue(self, symbol: str, orderbook: Any, is_valid: bool) -> None:
+        """
+        검증된 오더북 데이터를 출력 큐에 전송
+        
+        Args:
+            symbol: 심볼
+            orderbook: 오더북 데이터
+            is_valid: 데이터 유효성 여부
+        """
+        if is_valid and self.output_queue and orderbook:
+            # 오더북 데이터가 객체일 경우 dict로 변환
+            data = orderbook.to_dict() if hasattr(orderbook, 'to_dict') else orderbook
+            
+            self.output_queue.put_nowait({
+                "exchange": self.exchange_code,
+                "symbol": symbol,
+                "timestamp": time.time(),
+                "data": data
+            })
+            
+    def log_error(self, msg: str, exc_info: bool = False) -> None:
+        """
+        오류 로깅
+        
+        Args:
+            msg: 오류 메시지
+            exc_info: 예외 정보 포함 여부
+        """
+        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self.logger.error(f"{exchange_kr} {msg}", exc_info=exc_info)
+        self.metrics_manager.record_error(self.exchange_code)
+
+    def log_warning(self, msg: str) -> None:
+        """
+        경고 로깅
+        
+        Args:
+            msg: 경고 메시지
+        """
+        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self.logger.warning(f"{exchange_kr} {msg}")
+
+    def log_info(self, msg: str) -> None:
+        """
+        정보 로깅
+        
+        Args:
+            msg: 정보 메시지
+        """
+        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self.logger.info(f"{exchange_kr} {msg}")
+
+    def log_debug(self, msg: str) -> None:
+        """
+        디버그 로깅
+        
+        Args:
+            msg: 디버그 메시지
+        """
+        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self.logger.debug(f"{exchange_kr} {msg}")
 

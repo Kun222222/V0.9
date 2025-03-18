@@ -44,8 +44,8 @@ class Exchange(Enum):
     BYBIT = "bybit"            # 바이빗 현물
     UPBIT = "upbit"            # 업비트 현물
     BITHUMB = "bithumb"        # 빗썸 현물
-    BINANCE_FUTURE = "binancefuture"  # 바이낸스 선물
-    BYBIT_FUTURE = "bybitfuture"      # 바이빗 선물
+    BINANCE_FUTURE = "binance_future"  # 바이낸스 선물
+    BYBIT_FUTURE = "bybit_future"      # 바이빗 선물
 
 # ============================
 # 거래소 한글 이름

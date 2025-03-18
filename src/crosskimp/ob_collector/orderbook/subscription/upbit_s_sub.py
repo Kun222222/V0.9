@@ -13,11 +13,7 @@ from typing import Dict, List, Any, Optional, Callable, Union
 import websockets.exceptions
 from enum import Enum
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import (
-    BaseSubscription, 
-    SnapshotMethod, 
-    DeltaMethod
-)
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, SnapshotMethod, DeltaMethod
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.logger.logger import create_raw_logger
 from crosskimp.config.paths import LOG_SUBDIRS
@@ -26,11 +22,13 @@ from crosskimp.config.paths import LOG_SUBDIRS
 # 업비트 구독 관련 상수
 # ============================
 # 거래소 코드
-EXCHANGE_CODE = "upbit"
+EXCHANGE_CODE = "UPBIT"  # 대문자로 변경
+# EXCHANGE_NAME_KR은 base_subscription.py에서 사용하므로 여기서는 제거
 
 # 웹소켓 설정
 REST_URL = "https://api.upbit.com/v1/orderbook"  # https://docs.upbit.com/reference/호가-정보-조회
 WS_URL = "wss://api.upbit.com/websocket/v1"     # https://docs.upbit.com/reference/websocket-orderbook
+MAX_SYMBOLS_PER_SUBSCRIPTION = 15  # 구독당 최대 심볼 수 (업비트 API 권장)
 
 class UpbitSubscription(BaseSubscription):
     """
@@ -55,6 +53,9 @@ class UpbitSubscription(BaseSubscription):
         """
         # 부모 클래스 초기화 (exchange_code 전달)
         super().__init__(connection, EXCHANGE_CODE, parser)
+        
+        # 구독 관련 설정
+        self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
         
         # 로깅 설정
         self.log_raw_data = False  # 원시 데이터 로깅 비활성화
@@ -81,9 +82,9 @@ class UpbitSubscription(BaseSubscription):
             
             # 로거 설정
             self.raw_logger = create_raw_logger(EXCHANGE_CODE)
-            self.logger.info(f"{EXCHANGE_CODE} raw 로거 초기화 완료")
+            self.log_info("raw 로거 초기화 완료")
         except Exception as e:
-            self.logger.error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
+            self.log_error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
             self.log_raw_data = False
     
     def _get_snapshot_method(self) -> SnapshotMethod:
@@ -141,7 +142,7 @@ class UpbitSubscription(BaseSubscription):
         ]
         
         symbols_str = ", ".join(symbols) if len(symbols) <= 5 else f"{len(symbols)}개 심볼"
-        self.logger.debug(f"[구독 메시지] {symbols_str} 구독 메시지 생성")
+        self.log_debug(f"[구독 메시지] {symbols_str} 구독 메시지 생성")
         return message
     
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
@@ -193,7 +194,7 @@ class UpbitSubscription(BaseSubscription):
             return is_orderbook
             
         except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] 스냅샷 메시지 확인 중 오류: {e}")
+            self.log_error(f"스냅샷 메시지 확인 중 오류: {e}")
             return False
     
     def log_raw_message(self, message: str) -> None:
@@ -214,7 +215,7 @@ class UpbitSubscription(BaseSubscription):
                 symbol = data.get('code', data.get('symbol', 'unknown'))
                 self.raw_logger.debug(f"[{timestamp}] Raw message received for {symbol}")
             except Exception as e:
-                self.logger.error(f"원본 메시지 로깅 실패: {e}")
+                self.log_error(f"원본 메시지 로깅 실패: {e}")
         # 로깅 비활성화 상태면 아무것도 하지 않음
     
     async def _on_message(self, message: str) -> None:
@@ -240,7 +241,7 @@ class UpbitSubscription(BaseSubscription):
             # 간단한 시퀀스 검증 (타임스탬프 기반)
             timestamp = parsed_data.get("timestamp")
             if not self._validate_timestamp(symbol, timestamp):
-                self.logger.warning(f"[{self.exchange_code}] {symbol} 타임스탬프 역전 감지: skip")
+                self.log_warning(f"{symbol} 타임스탬프 역전 감지: skip")
                 return
             
             # 유효한 데이터만 사용
@@ -279,7 +280,7 @@ class UpbitSubscription(BaseSubscription):
                 await self.snapshot_callbacks[symbol](symbol, validated_data)
                 
         except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] 메시지 처리 실패: {str(e)}")
+            self.log_error(f"메시지 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
     
     def _validate_timestamp(self, symbol: str, timestamp: int) -> bool:
@@ -334,13 +335,13 @@ class UpbitSubscription(BaseSubscription):
                 symbols = [symbol]
                 
             if not symbols:
-                self.logger.warning(f"[{self.exchange_code}] 구독할 심볼이 없습니다.")
+                self.log_warning("구독할 심볼이 없습니다.")
                 return False
                 
             # 이미 구독 중인 심볼 필터링
             new_symbols = [s for s in symbols if s not in self.subscribed_symbols]
             if not new_symbols:
-                self.logger.info(f"[{self.exchange_code}] 모든 심볼이 이미 구독 중입니다.")
+                self.log_info("모든 심볼이 이미 구독 중입니다.")
                 return True
                 
             # 콜백 함수 등록
@@ -356,34 +357,41 @@ class UpbitSubscription(BaseSubscription):
             
             # 연결 확인 및 연결
             if not hasattr(self.connection, 'is_connected') or not self.connection.is_connected:
-                self.logger.info(f"[{self.exchange_code}] 웹소켓 연결 시작")
+                self.log_info("웹소켓 연결 시작")
                 if not await self.connection.connect():
                     raise Exception("웹소켓 연결 실패")
                 
                 # 연결 상태 메트릭 업데이트
                 self.metrics_manager.update_connection_state(self.exchange_code, "connected")
             
-            # 구독 메시지 생성 및 전송
-            subscribe_message = await self.create_subscribe_message(new_symbols)
-            if not await self.connection.send_message(json.dumps(subscribe_message)):
-                raise Exception("구독 메시지 전송 실패")
+            # 배치 단위로 구독 처리
+            total_batches = (len(new_symbols) + self.max_symbols_per_subscription - 1) // self.max_symbols_per_subscription
+            self.log_info(f"구독 시작 | 총 {len(new_symbols)}개 심볼, {total_batches}개 배치로 나눔")
             
-            # 구독 상태 업데이트
-            for sym in new_symbols:
-                self.subscribed_symbols[sym] = True
-            
-            self.logger.info(f"[{self.exchange_code}] 구독 성공: {len(new_symbols)}개 심볼")
+            for i in range(0, len(new_symbols), self.max_symbols_per_subscription):
+                batch_symbols = new_symbols[i:i + self.max_symbols_per_subscription]
+                batch_num = (i // self.max_symbols_per_subscription) + 1
+                
+                # 구독 메시지 생성 및 전송
+                subscribe_message = await self.create_subscribe_message(batch_symbols)
+                if not await self.connection.send_message(json.dumps(subscribe_message)):
+                    raise Exception(f"배치 {batch_num}/{total_batches} 구독 메시지 전송 실패")
+                
+                self.log_info(f"구독 요청 전송 | 배치 {batch_num}/{total_batches}, {len(batch_symbols)}개 심볼")
+                
+                # 요청 간 짧은 딜레이 추가
+                await asyncio.sleep(0.1)
             
             # 첫 번째 구독 시 메시지 수신 루프 시작
             if not self.message_loop_task or self.message_loop_task.done():
-                self.logger.info(f"[{self.exchange_code}] 첫 번째 구독으로 메시지 수신 루프 시작")
+                self.log_info("첫 번째 구독으로 메시지 수신 루프 시작")
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
             return True
             
         except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] 구독 중 오류 발생: {str(e)}")
+            self.log_error(f"구독 중 오류 발생: {str(e)}")
             # 에러 메트릭 업데이트
             self.metrics_manager.record_error(self.exchange_code)
             
@@ -395,36 +403,87 @@ class UpbitSubscription(BaseSubscription):
                     await on_error(symbol, str(e))
             return False
     
-    async def unsubscribe(self, symbol: str) -> bool:
+    async def unsubscribe(self, symbol: Optional[str] = None) -> bool:
         """
         구독 취소
         
         업비트는 구독 취소 메시지를 별도로 보내지 않고, 연결을 끊거나 새로운 구독 메시지를 보내는 방식으로 처리합니다.
-        따라서 이 메서드는 내부적으로 구독 상태만 업데이트합니다.
         
         Args:
-            symbol: 구독 취소할 심볼
+            symbol: 구독 취소할 심볼. None인 경우 모든 심볼 구독 취소 및 자원 정리
             
         Returns:
             bool: 구독 취소 성공 여부
         """
         try:
+            # symbol이 None이면 모든 심볼 구독 취소 및 자원 정리
+            if symbol is None:
+                # 종료 이벤트 설정
+                self.stop_event.set()
+                
+                # 메시지 수신 루프 취소
+                if self.message_loop_task and not self.message_loop_task.done():
+                    self.message_loop_task.cancel()
+                    try:
+                        await self.message_loop_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # 모든 심볼 목록 저장
+                symbols = list(self.subscribed_symbols.keys())
+                
+                # 빈 구독 메시지를 보내 모든 구독 취소
+                empty_message = [
+                    {"ticket": f"upbit_unsubscribe_all_{int(time.time())}"},
+                    {"type": "orderbook", "codes": []},
+                    {"format": "DEFAULT"}
+                ]
+                if self.connection and self.connection.is_connected:
+                    await self.connection.send_message(json.dumps(empty_message))
+                
+                # 내부적으로 구독 상태 정리
+                for sym in symbols:
+                    self._cleanup_subscription(sym)
+                    
+                self.log_info("모든 심볼 구독 취소 완료")
+                
+                # 연결 종료 처리
+                if hasattr(self.connection, 'disconnect'):
+                    try:
+                        await asyncio.wait_for(self.connection.disconnect(), timeout=2.0)
+                    except (asyncio.TimeoutError, Exception) as e:
+                        self.log_warning(f"연결 종료 중 오류: {str(e)}")
+                
+                # 태스크 취소
+                for task in self.tasks.values():
+                    task.cancel()
+                self.tasks.clear()
+                
+                # REST 세션 종료
+                if self.rest_session:
+                    await self.rest_session.close()
+                    self.rest_session = None
+                
+                self.log_info("모든 자원 정리 완료")
+                return True
+            
+            # 특정 심볼 구독 취소    
             if symbol not in self.subscribed_symbols:
-                self.logger.warning(f"[{self.exchange_code}] {symbol} 구독 중이 아닙니다.")
+                self.log_warning(f"{symbol} 구독 중이 아닙니다.")
                 return True
             
             # 부모 클래스의 _cleanup_subscription 메서드 사용
             self._cleanup_subscription(symbol)
-            self.logger.info(f"[{self.exchange_code}] {symbol} 구독 취소 완료")
+            self.log_info(f"{symbol} 구독 취소 완료")
             
             # 모든 구독이 취소된 경우 상태 업데이트
             if not self.subscribed_symbols:
-                self.logger.info(f"[{self.exchange_code}] 모든 구독이 취소되었습니다.")
+                self.log_info("모든 구독이 취소되었습니다.")
                 
             return True
             
         except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] {symbol} 구독 취소 중 오류 발생: {e}")
+            self.log_error(f"구독 취소 중 오류 발생: {e}")
             # 에러 메트릭 업데이트
             self.metrics_manager.record_error(self.exchange_code)
             return False

@@ -9,12 +9,17 @@ import time
 from typing import Dict, List, Optional, Tuple, Any
 
 from crosskimp.ob_collector.orderbook.parser.base_parser import BaseParser
+from crosskimp.logger.logger import get_unified_logger
 
 # ============================
 # 업비트 파서 관련 상수
 # ============================
 # 기본 설정
 EXCHANGE_CODE = "UPBIT"  # 거래소 코드
+# BaseParser에 EXCHANGE_NAMES_KR이 정의되어 있으므로 여기서는 제거
+
+# 로거 인스턴스 획득
+logger = get_unified_logger()
 
 
 class UpbitParser(BaseParser):
@@ -31,6 +36,7 @@ class UpbitParser(BaseParser):
         업비트 파서 초기화
         """
         super().__init__(EXCHANGE_CODE)
+        self.log_info("파서 초기화 완료")
 
     def parse_message(self, raw_message: str) -> Optional[Dict[str, Any]]:
         """
@@ -43,6 +49,9 @@ class UpbitParser(BaseParser):
             Optional[Dict[str, Any]]: 파싱된 오더북 데이터 또는 None
         """
         try:
+            # 통계 업데이트
+            self.stats["total_parsed"] += 1
+            
             # 바이트 메시지 디코딩
             if isinstance(raw_message, bytes):
                 raw_message = raw_message.decode("utf-8")
@@ -58,6 +67,7 @@ class UpbitParser(BaseParser):
             symbol = data.get("code", "").replace("KRW-","")
             if not symbol:
                 self.log_error("심볼 정보 누락")
+                self.stats["invalid_parsed"] += 1
                 return None
 
             # 타임스탬프 추출
@@ -68,11 +78,15 @@ class UpbitParser(BaseParser):
 
             # 유효성 검사
             if not bids_dict or not asks_dict:
+                self.stats["invalid_parsed"] += 1
                 return None
                 
             # 딕셔너리 형식에서 리스트 형식으로 변환 ({'price': p, 'size': s} -> [p, s])
             bids = [[item['price'], item['size']] for item in bids_dict]
             asks = [[item['price'], item['size']] for item in asks_dict]
+            
+            # 파싱 성공 카운트 증가
+            self.stats["valid_parsed"] += 1
             
             # 표준화된 오더북 데이터 반환
             return {
@@ -86,9 +100,11 @@ class UpbitParser(BaseParser):
             }
         except json.JSONDecodeError:
             self.log_error(f"JSON 파싱 실패: {raw_message[:100]}...")
+            self.stats["invalid_parsed"] += 1
             return None
         except Exception as e:
             self.log_error(f"메시지 파싱 실패: {str(e)}")
+            self.stats["invalid_parsed"] += 1
             return None
 
     def _extract_orderbook_data(self, units: List[Dict[str, Any]], symbol: str) -> Tuple[List[Dict[str, float]], List[Dict[str, float]]]:
