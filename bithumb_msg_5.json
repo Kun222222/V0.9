@@ -1,0 +1,101 @@
+{
+  "type": "orderbook",
+  "code": "KRW-XRP",
+  "total_ask_size": 684017.6391,
+  "total_bid_size": 522915.0749,
+  "orderbook_units": [
+    {
+      "ask_price": 3435,
+      "bid_price": 3434,
+      "ask_size": 4592.9352,
+      "bid_size": 5334.856
+    },
+    {
+      "ask_price": 3436,
+      "bid_price": 3433,
+      "ask_size": 9592.6383,
+      "bid_size": 2156.7906
+    },
+    {
+      "ask_price": 3437,
+      "bid_price": 3432,
+      "ask_size": 7342.3869,
+      "bid_size": 53483.7767
+    },
+    {
+      "ask_price": 3438,
+      "bid_price": 3431,
+      "ask_size": 39692.9625,
+      "bid_size": 54022.6642
+    },
+    {
+      "ask_price": 3439,
+      "bid_price": 3430,
+      "ask_size": 15631.4059,
+      "bid_size": 54824.3203
+    },
+    {
+      "ask_price": 3440,
+      "bid_price": 3429,
+      "ask_size": 40081.821,
+      "bid_size": 33083.1497
+    },
+    {
+      "ask_price": 3441,
+      "bid_price": 3428,
+      "ask_size": 46774.4052,
+      "bid_size": 131967.5149
+    },
+    {
+      "ask_price": 3442,
+      "bid_price": 3427,
+      "ask_size": 9682.5664,
+      "bid_size": 86648.9731
+    },
+    {
+      "ask_price": 3443,
+      "bid_price": 3426,
+      "ask_size": 31787.0235,
+      "bid_size": 4619.8146
+    },
+    {
+      "ask_price": 3444,
+      "bid_price": 3425,
+      "ask_size": 11213.9028,
+      "bid_size": 11473.4615
+    },
+    {
+      "ask_price": 3445,
+      "bid_price": 3424,
+      "ask_size": 50390.2701,
+      "bid_size": 23735.8833
+    },
+    {
+      "ask_price": 3446,
+      "bid_price": 3423,
+      "ask_size": 26050.5427,
+      "bid_size": 7799.7948
+    },
+    {
+      "ask_price": 3447,
+      "bid_price": 3422,
+      "ask_size": 239653.7477,
+      "bid_size": 25025.3762
+    },
+    {
+      "ask_price": 3448,
+      "bid_price": 3421,
+      "ask_size": 17288.2082,
+      "bid_size": 21064.0955
+    },
+    {
+      "ask_price": 3449,
+      "bid_price": 3420,
+      "ask_size": 134242.8227,
+      "bid_size": 7674.6035
+    }
+  ],
+  "level": 1,
+  "timestamp": 1742385675530,
+  "stream_type": "REALTIME"
+}

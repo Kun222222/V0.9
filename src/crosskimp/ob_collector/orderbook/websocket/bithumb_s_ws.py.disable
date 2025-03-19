@@ -10,7 +10,7 @@ from crosskimp.config.ob_constants import Exchange, WEBSOCKET_CONFIG
 
 from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
 from crosskimp.ob_collector.orderbook.orderbook.bithumb_s_ob import BithumbSpotOrderBookManager
-# from crosskimp.ob_collector.orderbook.parser.bithumb_s_pa import BithumbParser
+from crosskimp.ob_collector.orderbook.parser.bithumb_s_pa import BithumbParser
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -41,7 +41,7 @@ class BithumbSpotWebsocket(BithumbWebSocketConnector):
         super().__init__(settings)
         self.manager = BithumbSpotOrderBookManager(depth=self.depth)
         self.manager.set_websocket(self)  # 웹소켓 연결 설정
-        # self.parser = BithumbParser()  # 파서 초기화
+        self.parser = BithumbParser()  # 파서 초기화
 
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         super().set_output_queue(queue)  # 부모 클래스의 메서드 호출 (기본 큐 설정 및 로깅)

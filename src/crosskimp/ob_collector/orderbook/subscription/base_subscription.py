@@ -357,10 +357,14 @@ class BaseSubscription(ABC):
             # 처리 시작 시간 기록
             start_time = time.time()
             
-            # 검증기가 없으면 처리 불가
+            # 검증기가 없으면 콜백으로 직접 전달
             if not self.validator:
                 exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
-                self.logger.error(f"{exchange_kr} 검증기가 설정되지 않았습니다")
+                self.logger.debug(f"{exchange_kr} 검증기 없음, 원본 데이터를 콜백으로 직접 전달")
+                
+                # 콜백 직접 호출
+                if symbol in self.snapshot_callbacks:
+                    await self.snapshot_callbacks[symbol](symbol, data)
                 return
                 
             # 데이터 검증
@@ -368,8 +372,9 @@ class BaseSubscription(ABC):
             is_valid = result.is_valid
             orderbook = self.validator.get_orderbook(symbol) if is_valid else None
             
-            # 출력 큐에 전송
-            self._send_to_output_queue(symbol, orderbook, is_valid)
+            # 스냅샷 콜백으로 전달
+            if is_valid and symbol in self.snapshot_callbacks:
+                await self.snapshot_callbacks[symbol](symbol, orderbook if orderbook else data)
             
             # 메트릭 및 통계 업데이트
             self._update_metrics(self.exchange_code, start_time, "snapshot", data)
@@ -378,6 +383,10 @@ class BaseSubscription(ABC):
             exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
             self.logger.error(f"{exchange_kr} {symbol} 스냅샷 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
+            
+            # 에러 콜백 호출
+            if symbol in self.error_callbacks:
+                await self.error_callbacks[symbol](symbol, str(e))
             
     async def _handle_delta(self, symbol: str, data: Dict) -> None:
         """
@@ -391,10 +400,17 @@ class BaseSubscription(ABC):
             # 처리 시작 시간 기록
             start_time = time.time()
             
-            # 검증기가 없으면 처리 불가
+            # 검증기가 없으면 콜백으로 직접 전달
             if not self.validator:
                 exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
-                self.logger.error(f"{exchange_kr} 검증기가 설정되지 않았습니다")
+                self.logger.debug(f"{exchange_kr} 검증기 없음, 원본 데이터를 콜백으로 직접 전달")
+                
+                # 콜백 직접 호출
+                if symbol in self.delta_callbacks:
+                    await self.delta_callbacks[symbol](symbol, data)
+                # 델타 콜백이 없으면 스냅샷 콜백으로 전달 (선택적)
+                elif symbol in self.snapshot_callbacks:
+                    await self.snapshot_callbacks[symbol](symbol, data)
                 return
                 
             # 오더북 업데이트 (세부 구현은 validator에 위임)
@@ -404,8 +420,12 @@ class BaseSubscription(ABC):
             is_valid = result.is_valid
             orderbook = self.validator.get_orderbook(symbol) if is_valid else None
             
-            # 출력 큐에 전송
-            self._send_to_output_queue(symbol, orderbook, is_valid)
+            # 델타 콜백으로 전달
+            if is_valid and symbol in self.delta_callbacks:
+                await self.delta_callbacks[symbol](symbol, orderbook if orderbook else data)
+            # 델타 콜백이 없으면 스냅샷 콜백으로 전달 (선택적)
+            elif is_valid and symbol in self.snapshot_callbacks:
+                await self.snapshot_callbacks[symbol](symbol, orderbook if orderbook else data)
             
             # 메트릭 및 통계 업데이트
             self._update_metrics(self.exchange_code, start_time, "delta", data)
@@ -414,6 +434,10 @@ class BaseSubscription(ABC):
             exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
             self.logger.error(f"{exchange_kr} {symbol} 델타 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
+            
+            # 에러 콜백 호출
+            if symbol in self.error_callbacks:
+                await self.error_callbacks[symbol](symbol, str(e))
             
     def _handle_error(self, symbol: str, error: str) -> None:
         """
@@ -486,11 +510,15 @@ class BaseSubscription(ABC):
         """
         검증된 오더북 데이터를 출력 큐에 전송
         
+        Warning: 이 메서드는 더 이상 사용되지 않으며 콜백을 통한 처리로 대체됩니다.
+        콜백이 제공되지 않은 경우에만 사용됩니다.
+        
         Args:
             symbol: 심볼
             orderbook: 오더북 데이터
             is_valid: 데이터 유효성 여부
         """
+        # 더 이상 사용하지 않는 메서드이지만 하위 호환성을 위해 유지
         if is_valid and self.output_queue and orderbook:
             # 오더북 데이터가 객체일 경우 dict로 변환
             data = orderbook.to_dict() if hasattr(orderbook, 'to_dict') else orderbook

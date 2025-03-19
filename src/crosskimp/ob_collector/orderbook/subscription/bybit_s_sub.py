@@ -321,7 +321,9 @@ class BybitSubscription(BaseSubscription):
             else:
                 # 델타 메시지지만 완전한 오더북으로 델타 콜백 호출
                 if symbol in self.delta_callbacks:
-                    self.log_debug(f"{symbol} 델타 적용 후 오더북 업데이트 (시간: {timestamp}, 시퀀스: {sequence})")
+                    # 디버그 로그 제거 - 너무 많은 로그 출력 방지
+                    # self.log_debug(f"{symbol} 델타 적용 후 오더북 업데이트 (시간: {timestamp}, 시퀀스: {sequence})")
+                    pass
                     await self._call_callback(symbol, full_orderbook, is_snapshot=False)
                     
         except Exception as e:
@@ -406,6 +408,8 @@ class BybitSubscription(BaseSubscription):
         """
         심볼 구독
         
+        단일 심볼 또는 심볼 리스트를 구독합니다.
+        
         Args:
             symbol: 구독할 심볼 또는 심볼 리스트
             on_snapshot: 스냅샷 수신 시 호출할 콜백 함수
@@ -438,6 +442,8 @@ class BybitSubscription(BaseSubscription):
                     self.snapshot_callbacks[sym] = on_snapshot
                 if on_delta is not None:
                     self.delta_callbacks[sym] = on_delta
+                elif on_snapshot is not None:  # 델타 콜백 없을 경우 스냅샷 콜백으로 대체
+                    self.delta_callbacks[sym] = on_snapshot
                 if on_error is not None:
                     self.error_callbacks[sym] = on_error
                 

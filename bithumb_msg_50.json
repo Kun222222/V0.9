@@ -1,0 +1,101 @@
+{
+  "type": "orderbook",
+  "code": "KRW-XRP",
+  "total_ask_size": 689802.8949,
+  "total_bid_size": 455342.4181,
+  "orderbook_units": [
+    {
+      "ask_price": 3435,
+      "bid_price": 3434,
+      "ask_size": 7789.6306,
+      "bid_size": 4205.8159
+    },
+    {
+      "ask_price": 3436,
+      "bid_price": 3433,
+      "ask_size": 29655.0341,
+      "bid_size": 1068.5599
+    },
+    {
+      "ask_price": 3437,
+      "bid_price": 3432,
+      "ask_size": 14538.8265,
+      "bid_size": 52402.5373
+    },
+    {
+      "ask_price": 3438,
+      "bid_price": 3431,
+      "ask_size": 21801.0146,
+      "bid_size": 33340.9828
+    },
+    {
+      "ask_price": 3439,
+      "bid_price": 3430,
+      "ask_size": 15846.9378,
+      "bid_size": 17087.8035
+    },
+    {
+      "ask_price": 3440,
+      "bid_price": 3429,
+      "ask_size": 38750.3885,
+      "bid_size": 33920.0958
+    },
+    {
+      "ask_price": 3441,
+      "bid_price": 3428,
+      "ask_size": 45170.674,
+      "bid_size": 58571.1933
+    },
+    {
+      "ask_price": 3442,
+      "bid_price": 3427,
+      "ask_size": 33313.1821,
+      "bid_size": 98484.5892
+    },
+    {
+      "ask_price": 3443,
+      "bid_price": 3426,
+      "ask_size": 26597.7279,
+      "bid_size": 30215.6092
+    },
+    {
+      "ask_price": 3444,
+      "bid_price": 3425,
+      "ask_size": 10051.2082,
+      "bid_size": 23997.2866
+    },
+    {
+      "ask_price": 3445,
+      "bid_price": 3424,
+      "ask_size": 30571.5984,
+      "bid_size": 38886.6898
+    },
+    {
+      "ask_price": 3446,
+      "bid_price": 3423,
+      "ask_size": 26050.5427,
+      "bid_size": 8179.989
+    },
+    {
+      "ask_price": 3447,
+      "bid_price": 3422,
+      "ask_size": 238135.0986,
+      "bid_size": 24088.7749
+    },
+    {
+      "ask_price": 3448,
+      "bid_price": 3421,
+      "ask_size": 17288.2082,
+      "bid_size": 23203.2675
+    },
+    {
+      "ask_price": 3449,
+      "bid_price": 3420,
+      "ask_size": 134242.8227,
+      "bid_size": 7689.2234
+    }
+  ],
+  "level": 1,
+  "timestamp": 1742385681565,
+  "stream_type": "REALTIME"
+}

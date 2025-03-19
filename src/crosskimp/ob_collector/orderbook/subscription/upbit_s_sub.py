@@ -391,7 +391,12 @@ class UpbitSubscription(BaseSubscription):
             for sym in new_symbols:
                 if on_snapshot is not None:
                     self.snapshot_callbacks[sym] = on_snapshot
-                # 업비트는 델타를 사용하지 않으므로 델타 콜백은 등록하지 않음
+                # 업비트는 스냅샷만 제공하므로 델타 콜백은 등록하지 않음
+                # 하지만 델타 콜백이 제공된 경우 일관성 유지를 위해 저장
+                if on_delta is not None:
+                    self.delta_callbacks[sym] = on_delta
+                elif on_snapshot is not None:  # 델타 콜백 없을 경우 스냅샷 콜백으로 대체
+                    self.delta_callbacks[sym] = on_snapshot
                 if on_error is not None:
                     self.error_callbacks[sym] = on_error
                 

@@ -380,6 +380,8 @@ class BybitFutureSubscription(BaseSubscription):
         """
         심볼 구독
         
+        단일 심볼 또는 심볼 리스트를 구독합니다.
+        
         Args:
             symbol: 구독할 심볼 또는 심볼 리스트
             on_snapshot: 스냅샷 수신 시 호출할 콜백 함수
@@ -401,7 +403,7 @@ class BybitFutureSubscription(BaseSubscription):
                 return False
                 
             # 이미 구독 중인 심볼 필터링
-            new_symbols = [s for s in symbols if s not in self.orderbooks]
+            new_symbols = [s for s in symbols if s not in self.subscribed_symbols]
             if not new_symbols:
                 self.log_info("모든 심볼이 이미 구독 중입니다.")
                 return True
@@ -412,11 +414,13 @@ class BybitFutureSubscription(BaseSubscription):
                     self.snapshot_callbacks[sym] = on_snapshot
                 if on_delta is not None:
                     self.delta_callbacks[sym] = on_delta
+                elif on_snapshot is not None:  # 델타 콜백 없을 경우 스냅샷 콜백으로 대체
+                    self.delta_callbacks[sym] = on_snapshot
                 if on_error is not None:
                     self.error_callbacks[sym] = on_error
                 
                 # 구독 상태 초기화
-                self.orderbooks[sym] = True
+                self.subscribed_symbols[sym] = True
             
             # 연결 확인 및 연결
             if not self._is_connected():
