@@ -5,10 +5,11 @@ import json
 import time
 from websockets import connect
 import websockets
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, Optional, Any
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, WebSocketError, ReconnectStrategy
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -37,7 +38,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
         Args:
             settings: 설정 딕셔너리
         """
-        super().__init__(settings, "BYBIT")  # 거래소 코드 대문자로 변경
+        super().__init__(settings, Exchange.BYBIT.value)  # Exchange 열거형 사용
         self.ws_url = WS_URL
         
         # 거래소 전용 설정

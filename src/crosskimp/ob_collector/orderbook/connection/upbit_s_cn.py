@@ -5,17 +5,17 @@ import time
 import json
 from websockets import connect
 import websockets.exceptions
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any
 
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 
 # ============================
 # 업비트 웹소켓 연결 관련 상수
 # ============================
-# 거래소 정보
-EXCHANGE_CODE = "UPBIT"  # 거래소 코드 대문자로 통일
-# EXCHANGE_NAME_KR은 base_connector.py에서 사용하므로 여기서는 제거
+# 거래소 정보 - Exchange 열거형 사용
+# 거래소 코드 대문자로 통일 부분 제거
 
 # 웹소켓 연결 설정
 WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
@@ -46,7 +46,7 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         Args:
             settings: 설정 딕셔너리
         """
-        super().__init__(settings, EXCHANGE_CODE)
+        super().__init__(settings, Exchange.UPBIT.value)
         self.ws_url = WS_URL
         
         # 업비트 전용 설정

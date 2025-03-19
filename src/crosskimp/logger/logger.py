@@ -25,30 +25,13 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Optional, List, Union, Any
 
-# 경로 관련 상수는 paths.py에서 직접 임포트
-from crosskimp.config.paths import PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS, ensure_directories
-
-from crosskimp.config.constants import (
+# paths.py 대신 constants_v3.py에서 모든 경로 관련 상수와 함수 임포트
+from crosskimp.config.constants_v3 import (
     LOG_SYSTEM, LOG_FORMAT, DEBUG_LOG_FORMAT, LOG_ENCODING, LOG_MODE,
     DEFAULT_CONSOLE_LEVEL, DEFAULT_FILE_LEVEL, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    LOG_CLEANUP_DAYS
+    LOG_CLEANUP_DAYS, PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS, ensure_directories,
+    EXCHANGE_NAMES_KR
 )
-
-# ============================
-# 로그 디렉토리 설정
-# ============================
-# constants.py에서 정의한 LOGS_DIR 사용
-BASE_LOG_DIR = LOGS_DIR
-
-# constants.py에서 정의한 LOG_SUBDIRS 사용
-LOG_DIRS = {
-    'base': BASE_LOG_DIR,                  # 일반 로그가 저장됨
-    'queue': LOG_SUBDIRS['queue'],         # 큐 데이터 로그가 저장됨
-    'error': LOG_SUBDIRS['error'],         # 에러 로그가 저장됨
-    'telegram': LOG_SUBDIRS['telegram'],   # 텔레그램 로그가 저장됨
-    'metrics': LOGS_DIR,                   # 메트릭 데이터가 저장됨 (@logs 디렉토리에 직접 저장)
-    'archive': LOG_SUBDIRS['archive']      # 압축된 로그 파일이 저장됨
-}
 
 # ============================
 # 로깅 상태 및 캐시
@@ -57,7 +40,6 @@ _loggers = {}  # 싱글톤 패턴을 위한 로거 캐시
 _unified_logger = None  # 통합 로거 인스턴스
 _initialized = False  # 로깅 시스템 초기화 여부
 _lock = threading.RLock()  # 스레드 안전한 재진입 락
-_directories_ensured = False  # 디렉토리 생성 여부 확인 플래그
 _internal_logger = None  # 내부 로깅용 로거
 
 # ============================
@@ -90,31 +72,20 @@ def _get_internal_logger():
     
     return _internal_logger
 
-def ensure_log_directories() -> None:
-    """로그 디렉토리 존재 여부 확인 및 생성"""
-    global _directories_ensured
-    
-    with _lock:
-        if not _directories_ensured:
-            # paths.py에 정의된 ensure_directories 함수 호출
-            ensure_directories()
-            _directories_ensured = True
-            _get_internal_logger().info(f"{LOG_SYSTEM} 로그 디렉토리 생성 완료")
-
 def cleanup_old_logs(max_days: int = LOG_CLEANUP_DAYS) -> None:
     """오래된 로그 파일 정리 및 압축 (최적화 버전)"""
     internal_logger = _get_internal_logger()
     
     try:
         current_time = time.time()
-        archive_dir = LOG_DIRS['archive']
+        archive_dir = LOG_SUBDIRS['archive']
         
         # 압축 대상 및 삭제 대상 파일 목록 미리 수집
         compress_files = []
         delete_files = []
         
         # 모든 로그 디렉토리 순회
-        for dir_name, dir_path in LOG_DIRS.items():
+        for dir_name, dir_path in LOG_SUBDIRS.items():
             if dir_name == 'archive' or not os.path.exists(dir_path):
                 continue
                 
@@ -309,7 +280,7 @@ def create_logger(
     level: int = DEFAULT_FILE_LEVEL,
     console_level: int = DEFAULT_CONSOLE_LEVEL,
     format_str: str = LOG_FORMAT,
-    add_console: bool = False,  # 기본값을 False로 변경
+    add_console: bool = False,
     add_error_file: bool = True
 ) -> logging.Logger:
     """
@@ -341,14 +312,7 @@ def create_logger(
     
     current_time = get_current_time_str()
     
-    # 로그 디렉토리 존재 여부 확인 및 생성
-    if not os.path.exists(log_dir):
-        try:
-            os.makedirs(log_dir, mode=0o755)
-            internal_logger.info(f"{LOG_SYSTEM} 로그 디렉토리 생성: {log_dir}")
-        except Exception as e:
-            internal_logger.error(f"{LOG_SYSTEM} 로그 디렉토리 생성 실패: {log_dir} | {str(e)}")
-            return logger
+    # 로그 디렉토리 존재 확인은 constants_v3.py의 ensure_directories()로 대체하므로 제거
     
     # 일반 로그 핸들러
     log_file = f"{log_dir}/{current_time}_{name}.log"
@@ -373,7 +337,7 @@ def create_logger(
     
     # 에러 전용 로그 파일 추가
     if add_error_file:
-        error_log_file = f"{LOG_DIRS['error']}/{current_time}_{name}_error.log"
+        error_log_file = f"{LOG_SUBDIRS['error']}/{current_time}_{name}_error.log"
         try:
             error_handler = SafeRotatingFileHandler(
                 filename=error_log_file,
@@ -393,7 +357,7 @@ def create_logger(
         except Exception as e:
             internal_logger.error(f"{LOG_SYSTEM} 에러 로그 파일 생성 실패: {error_log_file} | {str(e)}")
     
-    # 콘솔 핸들러 추가 (기본값이 False로 변경됨)
+    # 콘솔 핸들러 추가
     if add_console:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(console_level)
@@ -414,8 +378,11 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
     """
     logger_name = f"{exchange_name}_raw_logger"
     
+    # 한글 거래소 이름 사용 (상수에서 가져옴)
+    exchange_name_kr = EXCHANGE_NAMES_KR.get(exchange_name, f"[{exchange_name}]")
+    
     # 'raw' 디렉토리 대신 'raw_data/{exchange_name}' 디렉토리에 로그 생성
-    raw_data_dir = os.path.join(BASE_LOG_DIR, 'raw_data', exchange_name)
+    raw_data_dir = os.path.join(LOGS_DIR, 'raw_data', exchange_name)
     os.makedirs(raw_data_dir, exist_ok=True)
     
     logger = create_logger(
@@ -428,7 +395,7 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
         add_error_file=False
     )
     
-    logger.debug(f"{LOG_SYSTEM} {exchange_name} raw 로거 초기화 완료 (raw_data 디렉토리)")
+    logger.debug(f"{exchange_name_kr} raw 로거 초기화 완료 (raw_data 디렉토리)")
     return logger
 
 # ============================
@@ -444,8 +411,8 @@ def initialize_logging() -> None:
             return
             
         try:
-            # 로그 디렉토리 생성 (한 번만 수행)
-            ensure_log_directories()
+            # 로그 디렉토리 생성 (constants_v3.py의 함수 직접 호출)
+            ensure_directories()
             
             # 오래된 로그 파일 정리
             cleanup_old_logs()
@@ -469,14 +436,14 @@ def get_unified_logger() -> logging.Logger:
     
     with _lock:
         if _unified_logger is None:
-            ensure_log_directories()
+            ensure_directories()
             _unified_logger = create_logger(
                 name='unified_logger',
-                log_dir=LOG_DIRS['base'],
+                log_dir=LOGS_DIR,
                 level=DEFAULT_FILE_LEVEL,
-                console_level=DEFAULT_FILE_LEVEL,  # 콘솔 레벨을 파일 레벨과 동일하게 설정
+                console_level=DEFAULT_FILE_LEVEL,
                 format_str=LOG_FORMAT,
-                add_console=True,  # 통합 로거만 콘솔 출력 활성화
+                add_console=True,
                 add_error_file=True
             )
             _unified_logger.info(f"{LOG_SYSTEM} 통합 로거 초기화 완료")
@@ -490,10 +457,10 @@ def get_queue_logger() -> logging.Logger:
     with _lock:
         try:
             if logger_name not in _loggers or not _loggers[logger_name].handlers:
-                ensure_log_directories()
+                ensure_directories()
                 _loggers[logger_name] = create_logger(
                     name=logger_name,
-                    log_dir=LOG_DIRS['queue'],
+                    log_dir=LOG_SUBDIRS['queue'],
                     level=logging.DEBUG,
                     console_level=DEFAULT_CONSOLE_LEVEL,
                     format_str=DEBUG_LOG_FORMAT,
@@ -512,26 +479,38 @@ def get_logger(name: str, log_dir: Optional[str] = None, add_console: bool = Fal
     """
     이름으로 로거 인스턴스 가져오기
     - 이미 생성된 로거가 있으면 반환, 없으면 새로 생성
-    - 기본적으로 통합 로거를 반환하도록 변경 (불필요한 로그 파일 생성 방지)
+    - 특별한 로거가 아니면 통합 로거를 반환 (불필요한 로그 파일 생성 방지)
     
     Args:
         name: 로거 이름
-        log_dir: 로그 파일 저장 디렉토리 (기본값: BASE_LOG_DIR)
+        log_dir: 로그 파일 저장 디렉토리 (기본값: LOGS_DIR)
         add_console: 콘솔 출력 활성화 여부 (기본값: False)
         
     Returns:
         logging.Logger: 로거 인스턴스
     """
     # 특별한 로거가 아니면 통합 로거 반환 (불필요한 로그 파일 생성 방지)
-    if name not in ['unified_logger', 'queue_logger', 'metrics_logger', 'error_logger', 'telegram_logger']:
+    special_loggers = ['unified_logger', 'queue_logger', 'metrics_logger', 
+                       'error_logger', 'telegram_logger']
+    if name not in special_loggers:
         return get_unified_logger()
         
     with _lock:
         if name not in _loggers or not _loggers[name].handlers:
-            ensure_log_directories()
+            ensure_directories()
+            
+            # 로그 디렉토리 설정
+            if log_dir is None:
+                if name == 'metrics_logger':
+                    log_dir = LOGS_DIR
+                elif name in ['error_logger', 'telegram_logger']:
+                    log_dir = LOG_SUBDIRS.get(name.split('_')[0], LOGS_DIR)
+                else:
+                    log_dir = LOGS_DIR
+            
             _loggers[name] = create_logger(
                 name=name,
-                log_dir=log_dir or LOG_DIRS['base'],
+                log_dir=log_dir,
                 level=DEFAULT_FILE_LEVEL,
                 console_level=DEFAULT_CONSOLE_LEVEL,
                 format_str=LOG_FORMAT,
@@ -574,14 +553,13 @@ def shutdown_logging() -> None:
                 except Exception:
                     pass
 
-# 모듈 초기화 시 한 번만 로깅
-if not _initialized:
-    # 루트 로거 설정 - 콘솔 출력 방지
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()  # 기존 핸들러 제거
-    
-    # 내부 로거 초기화
-    _get_internal_logger().info(f"{LOG_SYSTEM} logger.py 모듈 초기화 완료")
+# 모듈 초기화 시 내부 로거 초기화 및 루트 로거 설정
+# 루트 로거 설정 - 콘솔 출력 방지
+root_logger = logging.getLogger()
+root_logger.handlers.clear()  # 기존 핸들러 제거
+
+# 내부 로거 초기화
+_get_internal_logger().info(f"{LOG_SYSTEM} logger.py 모듈 초기화 완료")
 
 # 모듈 내보내기
 __all__ = [
@@ -590,6 +568,5 @@ __all__ = [
     'get_queue_logger',
     'get_logger',
     'shutdown_logging',
-    'LOG_DIRS',
     'get_current_time_str'
 ]

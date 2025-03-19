@@ -2,29 +2,21 @@
 
 import os, asyncio, time
 import logging
-from datetime import datetime, timedelta
-from typing import Tuple, Dict, Optional
+from datetime import datetime
 import signal
 import sys
 
-from crosskimp.logger.logger import get_unified_logger, get_logger
+from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.core.aggregator import Aggregator
+from crosskimp.config.constants_v3 import LOG_SYSTEM, EXCHANGE_NAMES_KR, get_settings
+from crosskimp.ob_collector.orderbook.order_manager import create_order_manager
+from crosskimp.telegrambot.telegram_notification import send_telegram_message
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.config.config_loader import get_settings, initialize_config, add_config_observer, shutdown_config
-from crosskimp.config.constants import LOG_SYSTEM, WEBSOCKET_CONFIG, LOAD_TIMEOUT, SAVE_TIMEOUT, Exchange, EXCHANGE_NAMES_KR
-from crosskimp.ob_collector.orderbook.order_manager import OrderManager, create_order_manager
-
-from crosskimp.telegrambot.telegram_notification import send_telegram_message, send_error_notification, send_system_status_notification
-from crosskimp.telegrambot.bot_constants import MessageType, TELEGRAM_START_MESSAGE, TELEGRAM_STOP_MESSAGE
-
-# 시스템 관리 모듈 가져오기
-from crosskimp.system_manager.scheduler import calculate_next_midnight, format_remaining_time, schedule_task
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
 # 환경에 따른 로깅 설정
-# 디버깅을 위해 항상 DEBUG 레벨로 설정
 logger.setLevel(logging.DEBUG)
 logger.info(f"{LOG_SYSTEM} 디버깅을 위해 로그 레벨을 DEBUG로 설정했습니다.")
 
@@ -35,71 +27,43 @@ else:
     # 개발 환경 로그
     logger.warning(f"{LOG_SYSTEM} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
 
-# 거래소별 로거 초기화
-def initialize_exchange_loggers():
-    """거래소별 로거 초기화"""
-    # 거래소별 로거를 생성하지 않도록 수정
-    # 통합 로거만 사용
-    logger.debug(f"{LOG_SYSTEM} 거래소별 로거 초기화 생략 (통합 로거만 사용)")
+async def send_startup_message():
+    """시작 메시지 전송"""
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    message = f"""🚀 <b>오더북 수집기 시작</b>
 
-# 거래소 로거 초기화 실행
-initialize_exchange_loggers()
+<b>시간:</b> {current_time}
+<b>환경:</b> {'프로덕션' if os.getenv('CROSSKIMP_ENV') == 'production' else '개발'}
+<b>상태:</b> 시스템 초기화 중...
 
-async def websocket_callback(exchange_name: str, data: dict):
-    """웹소켓 메시지 수신 콜백"""
-    try:
-        sym = data.get("symbol")
-        if sym:
-            # DEBUG 레벨이 필요한 경우에만 로깅 (개발 환경에서만)
-            if logger.level <= logging.DEBUG:
-                logger.debug(f"{exchange_name} 메시지 수신: {sym}")
-    except Exception as e:
-        logger.error(f"{LOG_SYSTEM} 콜백 오류: {e}")
+⏳ 오더북 데이터 수집을 시작합니다. 모든 거래소 연결이 완료되면 알려드립니다.
+"""
+    # 비동기 태스크로 실행하여 초기화 과정을 블로킹하지 않도록 함
+    asyncio.create_task(send_telegram_message(data={"message": message}))
 
-async def reset_websockets(aggregator, settings):
-    """웹소켓 재시작 및 심볼 필터링 재실행"""
-    try:
-        logger.info(f"{LOG_SYSTEM} 웹소켓 재시작 시작")
-        async with asyncio.timeout(300):  # 5분 타임아웃
-            
-            # 심볼 필터링 재실행
-            filtered_data = await aggregator.run_filtering()
-            logger.info(f"{LOG_SYSTEM} 필터링된 심볼: {filtered_data}")
-            
-            # 다음 자정에 다시 실행되도록 예약
-            tomorrow = calculate_next_midnight()
-            await schedule_task(
-                "daily_websocket_reset",
-                tomorrow,
-                reset_websockets,
-                aggregator, settings
-            )
-            logger.info(f"{LOG_SYSTEM} 다음 웹소켓 재시작 예약됨: {tomorrow.strftime('%Y-%m-%d %H:%M:%S')}")
-    except Exception as e:
-        logger.error(f"{LOG_SYSTEM} 웹소켓 재시작 중 오류 발생: {e}")
-        # 오류 발생 시 1시간 후 다시 시도
-        next_try = datetime.now() + timedelta(hours=1)
-        await schedule_task(
-            "retry_websocket_reset",
-            next_try,
-            reset_websockets,
-            aggregator, settings
-        )
-        logger.info(f"{LOG_SYSTEM} 웹소켓 재시작 재시도 예약됨: {next_try.strftime('%Y-%m-%d %H:%M:%S')}")
+async def send_shutdown_message():
+    """종료 메시지 전송"""
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    message = f"""🔴 <b>오더북 수집기 종료</b>
 
-async def on_settings_changed(new_settings: dict):
-    """설정 파일 변경 감지 콜백"""
-    logger.info(f"{LOG_SYSTEM} 설정 변경 감지, 새 설정 적용 중...")
-    # 여기에 설정 변경 시 필요한 작업 추가
-    # 예: 웹소켓 재연결, 필터링 재실행 등
+<b>시간:</b> {current_time}
+<b>상태:</b> 안전하게 종료되었습니다
+
+📊 오더북 데이터 수집이 중단되었습니다. 
+⚙️ 모든 리소스가 정상적으로 정리되었습니다.
+"""
+    await send_telegram_message(data={"message": message})
 
 async def shutdown():
     """종료 처리"""
     try:
         logger.info(f"{LOG_SYSTEM} 프로그램 종료 처리 시작")
         
-        # 텔레그램 종료 메시지 전송 (settings 파라미터 없이)
-        await send_telegram_message(None, MessageType.SHUTDOWN, TELEGRAM_STOP_MESSAGE)
+        # 텔레그램 종료 메시지 전송 (await로 완료될 때까지 기다림)
+        await send_shutdown_message()
+        
+        # 메시지가 실제로 전송될 시간을 추가로 확보
+        await asyncio.sleep(1.5)
         
         logger.info(f"{LOG_SYSTEM} 프로그램 종료 처리 완료")
         
@@ -113,6 +77,9 @@ async def shutdown():
 class OrderbookCollector:
     """
     오더북 수집기 클래스
+    
+    Aggregator에서 필터링된 심볼을 받아 OrderManager로 전달하는 
+    데이터 흐름을 관리합니다.
     """
     
     def __init__(self, settings: dict):
@@ -126,6 +93,7 @@ class OrderbookCollector:
         self.aggregator = None
         self.order_managers = {}  # 거래소별 OrderManager 저장
         self.stop_event = asyncio.Event()
+        self.usdtkrw_monitor = None  # USDT/KRW 모니터링 객체
         
         # 시그널 핸들러 설정
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -142,92 +110,94 @@ class OrderbookCollector:
             logger.info(f"{LOG_SYSTEM} 강제 종료")
             sys.exit(1)
     
-    async def initialize(self):
-        """초기화"""
-        try:
-            # Aggregator 초기화
-            self.aggregator = Aggregator(self.settings)
-            
-            logger.info(f"{LOG_SYSTEM} 오더북 수집기 초기화 완료")
-            return True
-            
-        except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 초기화 실패: {str(e)}")
-            return False
-    
-    async def start(self):
-        """시작"""
-        try:
-            # 심볼 필터링
-            filtered_data = await self.aggregator.run_filtering()
-            if not filtered_data:
-                logger.error(f"{LOG_SYSTEM} 필터링된 심볼이 없습니다.")
-                return False
-            
-            # 각 거래소별 OrderManager 초기화 및 시작
-            for exchange, symbols in filtered_data.items():
-                if not symbols:
-                    logger.info(f"{exchange} 심볼이 없어 OrderManager를 초기화하지 않습니다.")
-                    continue
-                
-                # OrderManager 생성
-                manager = create_order_manager(exchange, self.settings)
-                if not manager:
-                    logger.error(f"{exchange} OrderManager 생성 실패")
-                    continue
-                
-                # 초기화 및 시작
-                await manager.initialize()
-                await manager.start(symbols)
-                
-                # OrderManager 저장
-                self.order_managers[exchange] = manager
-                
-                logger.info(f"{exchange} OrderManager 시작 완료")
-            
-            logger.info(f"{LOG_SYSTEM} 오더북 수집기 시작 완료")
-            return True
-            
-        except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 시작 실패: {str(e)}")
-            return False
-    
-    async def stop(self):
-        """중지"""
-        try:
-            # 모든 OrderManager 중지
-            for exchange, manager in self.order_managers.items():
-                await manager.stop()
-                logger.info(f"{exchange} OrderManager 중지 완료")
-            
-            self.order_managers.clear()
-            logger.info(f"{LOG_SYSTEM} 오더북 수집기 중지 완료")
-            
-        except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 중지 실패: {str(e)}")
-    
     async def run(self):
         """실행"""
         try:
-            # 초기화
-            if not await self.initialize():
+            # USDT/KRW 모니터 시작
+            self.usdtkrw_monitor = WsUsdtKrwMonitor()
+            usdtkrw_task = asyncio.create_task(self.usdtkrw_monitor.start())
+            logger.info(f"{LOG_SYSTEM} USDT/KRW 가격 모니터링 시작")
+            
+            # Aggregator 초기화 및 심볼 필터링
+            logger.info(f"{LOG_SYSTEM} Aggregator 초기화 및 심볼 필터링 시작")
+            self.aggregator = Aggregator(self.settings)
+            filtered_data = await self.aggregator.run_filtering()
+            
+            if not filtered_data:
+                logger.error(f"{LOG_SYSTEM} 필터링된 심볼이 없습니다.")
                 return
             
-            # 시작
-            if not await self.start():
-                await self.stop()
-                return
+            # 필터링 결과 로그 출력
+            log_msg = f"{LOG_SYSTEM} 필터링된 심볼: "
+            for exchange_code, symbols in filtered_data.items():
+                log_msg += f"\n{EXCHANGE_NAMES_KR[exchange_code]} - {len(symbols)}개: {', '.join(symbols[:5])}"
+                if len(symbols) > 5:
+                    log_msg += f" 외 {len(symbols)-5}개"
+            logger.info(log_msg)
+            
+            # OrderManager 초기화 및 시작
+            await self._start_order_managers(filtered_data)
             
             # 종료 이벤트 대기
             logger.info(f"{LOG_SYSTEM} 프로그램을 종료하려면 Ctrl+C를 누르세요")
             await self.stop_event.wait()
             
-            # 중지
-            await self.stop()
+            # 종료 처리
+            await self._stop_order_managers()
+            
+            # USDT/KRW 모니터 종료
+            if self.usdtkrw_monitor:
+                await self.usdtkrw_monitor.stop()
+                logger.info(f"{LOG_SYSTEM} USDT/KRW 가격 모니터링 종료")
+            
+            # 태스크 취소
+            usdtkrw_task.cancel()
             
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 실행 중 오류 발생: {str(e)}")
-            await self.stop()
+            await self._stop_order_managers()
+            
+            # USDT/KRW 모니터 종료
+            if self.usdtkrw_monitor:
+                await self.usdtkrw_monitor.stop()
+    
+    async def _start_order_managers(self, filtered_data):
+        """
+        OrderManager 초기화 및 시작
+        
+        Args:
+            filtered_data: 필터링된 심볼 데이터
+        """
+        for exchange, symbols in filtered_data.items():
+            if not symbols:
+                logger.info(f"{EXCHANGE_NAMES_KR[exchange]} 심볼이 없어 OrderManager를 초기화하지 않습니다.")
+                continue
+            
+            # OrderManager 생성
+            manager = create_order_manager(exchange, self.settings)
+            if not manager:
+                logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패")
+                continue
+            
+            # 초기화 및 시작
+            await manager.initialize()
+            await manager.start(symbols)
+            
+            # OrderManager 저장
+            self.order_managers[exchange] = manager
+            
+            logger.info(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 시작 완료")
+        
+        logger.info(f"{LOG_SYSTEM} 오더북 수집기 시작 완료")
+    
+    async def _stop_order_managers(self):
+        """OrderManager 종료"""
+        for exchange, manager in self.order_managers.items():
+            await manager.stop()
+            logger.info(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 중지 완료")
+        
+        self.order_managers.clear()
+        logger.info(f"{LOG_SYSTEM} 오더북 수집기 중지 완료")
 
 async def async_main():
     """비동기 메인 함수"""
@@ -239,8 +209,8 @@ async def async_main():
         elapsed = time.time() - start_time
         logger.info(f"{LOG_SYSTEM} 설정 로드 완료 (소요 시간: {elapsed:.3f}초)")
         
-        # 텔레그램 시작 메시지 전송 (settings 파라미터 없이)
-        asyncio.create_task(send_telegram_message(None, MessageType.STARTUP, TELEGRAM_START_MESSAGE))
+        # 텔레그램 시작 메시지 전송
+        await send_startup_message()
         
         # 오더북 수집기 생성 및 실행
         collector = OrderbookCollector(settings)

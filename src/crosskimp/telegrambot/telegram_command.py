@@ -1,16 +1,11 @@
-import logging
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
-import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import telegram.error
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, CallbackContext
 from crosskimp.telegrambot.bot_constants import COMMAND_BOT_TOKEN, ADMIN_USER_IDS, BotCommands, WELCOME_MESSAGE, HELP_MESSAGE, PROGRAM_STARTED, PROGRAM_STOPPED, PROGRAM_ALREADY_RUNNING, PROGRAM_NOT_RUNNING, UNAUTHORIZED_USER, setup_logger
-
-# 시스템 관리 모듈 가져오기
 from crosskimp.telegrambot.system_commands import register_system_commands, AUTHORIZED_USERS
 from crosskimp.system_manager.process_manager import start_process, stop_process, restart_process, get_process_status, PROCESS_INFO
 

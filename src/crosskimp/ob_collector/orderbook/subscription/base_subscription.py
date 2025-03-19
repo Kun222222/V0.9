@@ -1,48 +1,15 @@
 import asyncio
-import json
-import aiohttp
-import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List, Any, Callable, Union, Tuple, Set
-import datetime
+from typing import Dict, Optional, List, Any, Union
 import websockets
 
-# 필요한 로거 임포트 - 실제 구현에 맞게 수정 필요
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
-# 메트릭 매니저 임포트 추가
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
-from crosskimp.config.paths import LOG_SUBDIRS
-
-# 한글 거래소 이름 매핑
-EXCHANGE_NAMES_KR = {
-    "UPBIT": "[업비트]",
-    "BYBIT": "[바이빗]",
-    "BINANCE": "[바이낸스]",
-    "BITHUMB": "[빗썸]",
-    "BINANCE_FUTURE": "[바이낸스 선물]",
-    "BYBIT_FUTURE": "[바이빗 선물]",
-}
-
+from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR
 
 class BaseSubscription(ABC):
-    """
-    오더북 구독 기본 클래스
-    
-    각 거래소별 구독 패턴을 처리할 수 있는 추상 클래스입니다.
-    - 업비트: 웹소켓을 통해 스냅샷 형태로 계속 수신
-    - 빗섬: REST 스냅샷 > 웹소켓 델타
-    - 바이빗(현물, 선물): 웹소켓 스냅샷 > 웹소켓 델타
-    - 바이낸스(현물, 선물): REST 스냅샷 > 웹소켓 델타
-    
-    책임:
-    - 구독 관리 (구독, 구독 취소)
-    - 메시지 처리 및 파싱
-    - 콜백 호출
-    - 원시 데이터 로깅
-    - 메트릭 관리
-    """
     
     def __init__(self, connection: BaseWebsocketConnector, exchange_code: str):
         """
@@ -187,7 +154,8 @@ class BaseSubscription(ABC):
                 
         except Exception as e:
             # 에러 로깅
-            self.logger.error(f"메시지 처리 오류: {str(e)}")
+            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+            self.logger.error(f"{exchange_kr} 메시지 처리 오류: {str(e)}")
             
             # 에러 처리
             symbol = self._extract_symbol_from_message(message)
@@ -275,13 +243,13 @@ class BaseSubscription(ABC):
         웹소켓에서 메시지를 계속 수신하고 처리하는 루프입니다.
         """
         exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
-        self.logger.info("메시지 수신 루프 시작")
+        self.logger.info(f"{exchange_kr} 메시지 수신 루프 시작")
         
         while not self.stop_event.is_set():
             try:
                 # 연결 상태 확인
                 if not self.is_connected:
-                    self.logger.warning("웹소켓 연결이 끊어짐, 재연결 대기")
+                    self.logger.warning(f"{exchange_kr} 웹소켓 연결이 끊어짐, 재연결 대기")
                     await asyncio.sleep(1)
                     continue
                 
@@ -296,21 +264,21 @@ class BaseSubscription(ABC):
                 await self._on_message(message)
                 
             except asyncio.CancelledError:
-                self.logger.info("메시지 수신 루프 취소됨")
+                self.logger.info(f"{exchange_kr} 메시지 수신 루프 취소됨")
                 break
                 
             except websockets.exceptions.ConnectionClosed as e:
-                self.logger.warning(f"웹소켓 연결 끊김: {e}")
+                self.logger.warning(f"{exchange_kr} 웹소켓 연결 끊김: {e}")
                 # 연결 상태 업데이트
                 self.metrics_manager.update_connection_state(self.exchange_code, "disconnected")
                 await asyncio.sleep(1)
                 
             except Exception as e:
-                self.logger.error(f"메시지 수신 루프 오류: {str(e)}")
+                self.logger.error(f"{exchange_kr} 메시지 수신 루프 오류: {str(e)}")
                 self.metrics_manager.record_error(self.exchange_code)
                 await asyncio.sleep(0.1)
                 
-        self.logger.info("메시지 수신 루프 종료")
+        self.logger.info(f"{exchange_kr} 메시지 수신 루프 종료")
     
     @abstractmethod
     async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
@@ -391,7 +359,8 @@ class BaseSubscription(ABC):
             
             # 검증기가 없으면 처리 불가
             if not self.validator:
-                self.logger.error(f"[{self.exchange_code}] 검증기가 설정되지 않았습니다")
+                exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+                self.logger.error(f"{exchange_kr} 검증기가 설정되지 않았습니다")
                 return
                 
             # 데이터 검증
@@ -406,7 +375,8 @@ class BaseSubscription(ABC):
             self._update_metrics(self.exchange_code, start_time, "snapshot", data)
             
         except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] {symbol} 스냅샷 처리 실패: {str(e)}")
+            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+            self.logger.error(f"{exchange_kr} {symbol} 스냅샷 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
             
     async def _handle_delta(self, symbol: str, data: Dict) -> None:
@@ -423,7 +393,8 @@ class BaseSubscription(ABC):
             
             # 검증기가 없으면 처리 불가
             if not self.validator:
-                self.logger.error(f"[{self.exchange_code}] 검증기가 설정되지 않았습니다")
+                exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+                self.logger.error(f"{exchange_kr} 검증기가 설정되지 않았습니다")
                 return
                 
             # 오더북 업데이트 (세부 구현은 validator에 위임)
@@ -440,7 +411,8 @@ class BaseSubscription(ABC):
             self._update_metrics(self.exchange_code, start_time, "delta", data)
             
         except Exception as e:
-            self.logger.error(f"[{self.exchange_code}] {symbol} 델타 처리 실패: {str(e)}")
+            exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+            self.logger.error(f"{exchange_kr} {symbol} 델타 처리 실패: {str(e)}")
             self.metrics_manager.record_error(self.exchange_code)
             
     def _handle_error(self, symbol: str, error: str) -> None:
@@ -451,7 +423,8 @@ class BaseSubscription(ABC):
             symbol: 심볼
             error: 오류 메시지
         """
-        self.logger.error(f"[{self.exchange_code}] {symbol} 오류 발생: {error}")
+        exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self.logger.error(f"{exchange_kr} {symbol} 오류 발생: {error}")
         self.metrics_manager.record_error(self.exchange_code)
 
     def _update_metrics(self, exchange_code: str, start_time: float, message_type: str, data: Dict) -> None:
@@ -477,7 +450,8 @@ class BaseSubscription(ABC):
             self.metrics_manager.update_metric(exchange_code, message_type)
             self.metrics_manager.update_metric(exchange_code, "connected")
         except Exception as e:
-            self.logger.error(f"[{exchange_code}] 메트릭 업데이트 실패: {str(e)}")
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
+            self.logger.error(f"{exchange_kr} 메트릭 업데이트 실패: {str(e)}")
             
     def _estimate_data_size(self, data: Dict) -> int:
         """

@@ -9,16 +9,11 @@
 
 import asyncio
 import time
-import json
-import struct
-import logging
-from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Set, Callable, Tuple, Union
+from typing import Dict, List, Any, Optional, Set, Callable
 from datetime import datetime
-from contextlib import asynccontextmanager
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.paths import LOG_SUBDIRS
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 
@@ -27,9 +22,9 @@ from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMet
 from crosskimp.ob_collector.orderbook.connection.upbit_s_cn import UpbitWebSocketConnector
 from crosskimp.ob_collector.orderbook.connection.bybit_s_cn import BybitWebSocketConnector
 from crosskimp.ob_collector.orderbook.connection.bybit_f_cn import BybitFutureWebSocketConnector
-from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
-from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
-from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
+# from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
+# from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
+# from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
 
 # 구독 컴포넌트
 from crosskimp.ob_collector.orderbook.subscription.upbit_s_sub import UpbitSubscription
@@ -39,49 +34,26 @@ from crosskimp.ob_collector.orderbook.subscription.bybit_f_sub import BybitFutur
 # from crosskimp.ob_collector.orderbook.subscription.binance_f_sub import BinanceFutureSubscription
 # from crosskimp.ob_collector.orderbook.subscription.bithumb_s_sub import BithumbSubscription
 
-# ============================
-# 거래소 이름 및 상수
-# ============================
-# 거래소 코드 -> 한글 이름 매핑 (모두 대문자로 통일)
-EXCHANGE_NAMES_KR = {
-    "UPBIT": "[업비트]",
-    "BYBIT": "[바이빗]",
-    "BINANCE": "[바이낸스]",
-    "BITHUMB": "[빗썸]",
-    "BINANCE_FUTURE": "[바이낸스 선물]",
-    "BYBIT_FUTURE": "[바이빗 선물]",
-}
-
-# 로깅 관련 상수
-LOG_SYSTEM = {
-    "warning": "⚠️",
-    "error": "❌",
-    "info": "ℹ️",
-    "success": "✅",
-    "wait": "⏳",
-    "system": "🔧"
-}
-
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
 # 컴포넌트 클래스 매핑
 EXCHANGE_CONNECTORS = {
-    "UPBIT": UpbitWebSocketConnector,
-    "BYBIT": BybitWebSocketConnector,
-    "BYBIT_FUTURE": BybitFutureWebSocketConnector,
-    "BINANCE": BinanceWebSocketConnector,
-    "BINANCE_FUTURE": BinanceFutureWebSocketConnector,
-    "BITHUMB": BithumbWebSocketConnector
+    Exchange.UPBIT.value: UpbitWebSocketConnector,
+    Exchange.BYBIT.value: BybitWebSocketConnector,
+    Exchange.BYBIT_FUTURE.value: BybitFutureWebSocketConnector,
+    # Exchange.BINANCE.value: BinanceWebSocketConnector,
+    # Exchange.BINANCE_FUTURE.value: BinanceFutureWebSocketConnector,
+    # Exchange.BITHUMB.value: BithumbWebSocketConnector
 }
 
 EXCHANGE_SUBSCRIPTIONS = {
-    "UPBIT": UpbitSubscription,
-    "BYBIT": BybitSubscription,
-    "BYBIT_FUTURE": BybitFutureSubscription,
-    # "BINANCE": BinanceSubscription,
-    # "BINANCE_FUTURE": BinanceFutureSubscription,
-    # "BITHUMB": BithumbSubscription
+    Exchange.UPBIT.value: UpbitSubscription,
+    Exchange.BYBIT.value: BybitSubscription,
+    Exchange.BYBIT_FUTURE.value: BybitFutureSubscription,
+    # Exchange.BINANCE.value: BinanceSubscription,
+    # Exchange.BINANCE_FUTURE.value: BinanceFutureSubscription,
+    # Exchange.BITHUMB.value: BithumbSubscription
 }
 
 class OrderManager:
@@ -98,14 +70,14 @@ class OrderManager:
 
         Args:
             settings: 설정 정보
-            exchange_code: 거래소 코드 (대문자로 전달 필요)
+            exchange_code: 거래소 코드
         """
         # 설정 저장
         self.settings = settings
         
-        # 거래소 정보 (대문자로 전달 받음)
-        self.exchange_code = exchange_code  # 대문자로 전달받아야 함
-        self.exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        # 거래소 정보
+        self.exchange_code = exchange_code
+        self.exchange_name_kr = EXCHANGE_NAMES_KR[exchange_code]
         
         # 출력 큐
         self.output_queue = None
@@ -115,9 +87,6 @@ class OrderManager:
         
         # 연결 상태 콜백
         self.connection_status_callback = None
-        
-        # 거래소별 컴포넌트 설정
-        self.config = self._get_exchange_config()
         
         # 로거 설정
         self.logger = logger
@@ -140,34 +109,7 @@ class OrderManager:
         # 외부 콜백
         self.start_time = time.time()
         
-        logger.info(f"{self.exchange_name_kr} 오더북 관리자 초기화")
-    
-    def _get_exchange_config(self) -> dict:
-        """
-        거래소별 기본 설정 가져오기
-        
-        Returns:
-            dict: 거래소별 기본 설정
-        """
-        # 간소화된 거래소별 특성 매핑
-        EXCHANGE_FEATURES = {
-            "UPBIT": {"supports_delta": False},
-            "BYBIT": {"supports_delta": True},
-            "BYBIT_FUTURE": {"supports_delta": True},
-            "BINANCE": {"supports_delta": True},
-            "BINANCE_FUTURE": {"supports_delta": True},
-            "BITHUMB": {"supports_delta": False}
-        }
-        
-        # 해당 거래소 설정 가져오기
-        if self.exchange_code not in EXCHANGE_FEATURES:
-            logger.error(f"지원하지 않는 거래소 코드: {self.exchange_code}")
-            return {}
-            
-        return {
-            "components": {}, # 더 이상 동적 임포트에 사용되지 않음
-            "supports_delta": EXCHANGE_FEATURES[self.exchange_code].get("supports_delta", True)
-        }
+        logger.info(f"ℹ️ {self.exchange_name_kr} 오더북 관리자 초기화")
     
     async def initialize(self) -> bool:
         """
@@ -183,7 +125,7 @@ class OrderManager:
             
             # 필요한 컴포넌트가 없는 경우
             if not conn_class or not sub_class:
-                logger.error(f"{self.exchange_name_kr} 필요한 컴포넌트 클래스를 찾을 수 없습니다")
+                logger.error(f"❌ {self.exchange_name_kr} 필요한 컴포넌트 클래스를 찾을 수 없습니다")
                 return False
             
             # 검증기 클래스 가져오기 (선택적)
@@ -193,14 +135,14 @@ class OrderManager:
             try:
                 self.connection = conn_class(self.settings)
             except Exception as e:
-                logger.error(f"{self.exchange_name_kr} 연결 객체 생성 실패: {str(e)}")
+                logger.error(f"❌ {self.exchange_name_kr} 연결 객체 생성 실패: {str(e)}")
                 return False
             
             # 구독 객체 생성 (파서 사용하지 않음)
             try:
                 self.subscription = sub_class(self.connection)
             except Exception as e:
-                logger.error(f"{self.exchange_name_kr} 구독 객체 생성 실패: {str(e)}")
+                logger.error(f"❌ {self.exchange_name_kr} 구독 객체 생성 실패: {str(e)}")
                 self.connection = None  # 생성된 객체 정리
                 return False
             
@@ -210,7 +152,7 @@ class OrderManager:
                 if self.subscription:
                     self.subscription.set_validator(self.validator)
             except Exception as e:
-                logger.warning(f"{self.exchange_name_kr} 검증기 객체 생성 실패: {str(e)}")
+                logger.warning(f"⚠️ {self.exchange_name_kr} 검증기 객체 생성 실패: {str(e)}")
                 # 검증기 없이도 계속 진행
             
             # 리소스 연결
@@ -223,11 +165,11 @@ class OrderManager:
                     lambda status: self.update_connection_status(self.exchange_code, status)
                 )
             
-            logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 완료")
+            logger.info(f"ℹ️ {self.exchange_name_kr} 컴포넌트 초기화 완료")
             return True
             
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}", exc_info=True)
+            logger.error(f"❌ {self.exchange_name_kr} 초기화 실패: {str(e)}", exc_info=True)
             return False
     
     async def start(self, symbols: List[str]) -> bool:
@@ -242,16 +184,16 @@ class OrderManager:
         """
         try:
             if not symbols:
-                logger.warning(f"{self.exchange_name_kr} 심볼이 없어 오더북 수집을 시작하지 않습니다")
+                logger.warning(f"⏳ {self.exchange_name_kr} 심볼이 없어 오더북 수집을 시작하지 않습니다")
                 return False
                 
             # 필수 컴포넌트 검증
             if not self.connection:
-                logger.error(f"{self.exchange_name_kr} 연결 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
+                logger.error(f"❌ {self.exchange_name_kr} 연결 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
                 return False
                 
             if not self.subscription:
-                logger.error(f"{self.exchange_name_kr} 구독 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
+                logger.error(f"❌ {self.exchange_name_kr} 구독 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
                 return False
             
             # 이미 실행 중인 경우 처리
@@ -259,7 +201,7 @@ class OrderManager:
                 # 새로운 심볼만 추가
                 new_symbols = [s for s in symbols if s not in self.symbols]
                 if new_symbols:
-                    logger.info(f"{self.exchange_name_kr} 추가 심볼 구독: {len(new_symbols)}개")
+                    logger.info(f"ℹ️ {self.exchange_name_kr} 추가 심볼 구독: {len(new_symbols)}개")
                     self.symbols.update(new_symbols)
                     await self.subscription.subscribe(new_symbols)
                 return True
@@ -281,7 +223,7 @@ class OrderManager:
                 self.tasks["subscription"] = subscription_task
                 
                 # 심볼 개수 로깅
-                logger.info(f"{self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
+                logger.info(f"ℹ️ {self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
                 
                 # 메트릭 업데이트 태스크 시작
                 self._start_metric_tasks()
@@ -289,12 +231,12 @@ class OrderManager:
                 return True
             except Exception as e:
                 self.is_running = False
-                logger.error(f"{self.exchange_name_kr} 연결 및 구독 중 오류: {str(e)}", exc_info=True)
+                logger.error(f"❌ {self.exchange_name_kr} 연결 및 구독 중 오류: {str(e)}", exc_info=True)
                 return False
             
         except Exception as e:
             self.is_running = False
-            logger.error(f"{self.exchange_name_kr} 오더북 수집 시작 실패: {str(e)}", exc_info=True)
+            logger.error(f"❌ {self.exchange_name_kr} 오더북 수집 시작 실패: {str(e)}", exc_info=True)
             return False
     
     async def stop(self) -> None:
@@ -320,10 +262,10 @@ class OrderManager:
             self.is_running = False
             self.symbols.clear()
             
-            logger.info(f"{self.exchange_name_kr} 오더북 수집 중지 완료")
+            logger.info(f"ℹ️ {self.exchange_name_kr} 오더북 수집 중지 완료")
             
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 중지 중 오류 발생: {str(e)}")
+            logger.error(f"❌ {self.exchange_name_kr} 중지 중 오류 발생: {str(e)}")
     
     def set_output_queue(self, queue: asyncio.Queue) -> None:
         """
@@ -341,7 +283,7 @@ class OrderManager:
         if self.subscription:
             self.subscription.set_output_queue(queue)
             
-        logger.debug(f"{self.exchange_name_kr} 출력 큐 설정 완료")
+        logger.debug(f"ℹ️ {self.exchange_name_kr} 출력 큐 설정 완료")
     
     @property
     def is_connected(self) -> bool:
@@ -380,36 +322,6 @@ class OrderManager:
         if self.connection_status_callback:
             self.connection_status_callback(exchange, status)
     
-    async def _handle_snapshot(self, symbol: str, data: Dict) -> None:
-        """
-        스냅샷 처리 - 이제 BaseSubscription에서 처리
-        
-        Args:
-            symbol: 심볼
-            data: 스냅샷 데이터
-        """
-        pass
-    
-    async def _handle_delta(self, symbol: str, data: Dict) -> None:
-        """
-        델타 처리 - 이제 BaseSubscription에서 처리
-        
-        Args:
-            symbol: 심볼
-            data: 델타 데이터
-        """
-        pass
-    
-    def _on_error(self, symbol: str, error: str) -> None:
-        """
-        에러 콜백 - 이제 BaseSubscription에서 처리
-        
-        Args:
-            symbol: 심볼
-            error: 오류 메시지
-        """
-        pass
-    
     def set_connection_status_callback(self, callback: Callable) -> None:
         """
         연결 상태 콜백 설정
@@ -426,7 +338,7 @@ class OrderManager:
                 lambda status: self.update_connection_status(self.exchange_code, status)
             )
         
-        logger.debug(f"{self.exchange_name_kr} 연결 상태 콜백 설정 완료")
+        logger.debug(f"ℹ️ {self.exchange_name_kr} 연결 상태 콜백 설정 완료")
 
     def _start_metric_tasks(self) -> None:
         """
@@ -438,7 +350,7 @@ class OrderManager:
         )
         
         # 다른 메트릭 태스크가 필요하면 여기에 추가
-        logger.debug(f"{self.exchange_name_kr} 메트릭 태스크 시작")
+        logger.debug(f"ℹ️ {self.exchange_name_kr} 메트릭 태스크 시작")
 
     async def _check_connection_task(self) -> None:
         """
@@ -466,7 +378,7 @@ class OrderManager:
                     
                     # 오래 연결이 끊어진 경우 재연결 시도
                     if elapsed > limit:
-                        logger.warning(f"{self.exchange_name_kr} 연결이 {int(elapsed)}초 동안 없음, 재연결 시도 중")
+                        logger.warning(f"⏳ {self.exchange_name_kr} 연결이 {int(elapsed)}초 동안 없음, 재연결 시도 중")
                         
                         # 재연결 및 구독 시도
                         try:
@@ -474,15 +386,15 @@ class OrderManager:
                             if self.symbols:
                                 await self.subscription.subscribe(list(self.symbols))
                         except Exception as e:
-                            logger.error(f"{self.exchange_name_kr} 재연결 실패: {str(e)}")
+                            logger.error(f"❌ {self.exchange_name_kr} 재연결 실패: {str(e)}")
                 
                 # 지정된 간격만큼 대기
                 await asyncio.sleep(check_interval)
                 
         except asyncio.CancelledError:
-            logger.debug(f"{self.exchange_name_kr} 연결 상태 검사 태스크 취소됨")
+            logger.debug(f"ℹ️ {self.exchange_name_kr} 연결 상태 검사 태스크 취소됨")
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 연결 상태 검사 중 오류: {str(e)}")
+            logger.error(f"❌ {self.exchange_name_kr} 연결 상태 검사 중 오류: {str(e)}")
 
     async def get_status(self) -> Dict[str, Any]:
         """
@@ -534,25 +446,26 @@ def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager
         Optional[OrderManager]: OrderManager 인스턴스 또는 None
     """
     try:
-        # 지원하는 거래소 목록 (언더스코어가 있는 형식으로 통일)
-        supported_exchanges = ["UPBIT", "BYBIT", "BINANCE", "BITHUMB", "BINANCE_FUTURE", "BYBIT_FUTURE"]
-        
-        # 항상 대문자로 처리
-        exchange_code = exchange.upper()
+        # 지원하는 거래소 목록
+        supported_exchanges = [
+            Exchange.UPBIT.value, 
+            Exchange.BYBIT.value, 
+            Exchange.BINANCE.value, 
+            Exchange.BITHUMB.value, 
+            Exchange.BINANCE_FUTURE.value, 
+            Exchange.BYBIT_FUTURE.value
+        ]
         
         # 지원하는 거래소인지 확인
-        if exchange_code not in supported_exchanges:
-            exchange_korean = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
-            logger.warning(f"{exchange_korean} 지원되지 않는 거래소")
+        if exchange not in supported_exchanges:
+            logger.warning(f"⚠️ {EXCHANGE_NAMES_KR[exchange]} 지원되지 않는 거래소")
             return None
         
         # OrderManager 인스턴스 생성
-        return OrderManager(settings, exchange_code)
+        return OrderManager(settings, exchange)
         
     except Exception as e:
-        exchange_code = exchange.upper()
-        exchange_korean = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
-        logger.error(f"{exchange_korean} OrderManager 생성 실패: {str(e)}", exc_info=True)
+        logger.error(f"❌ {EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패: {str(e)}", exc_info=True)
         return None
 
 
@@ -577,18 +490,14 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
         
         # 각 거래소별 처리
         for exchange, symbols in filtered_data.items():
-            # 대문자로 통일
-            exchange_code = exchange.upper()
-            exchange_korean = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
-            
             if not symbols:
-                logger.info(f"{exchange_korean} 심볼이 없어 OrderManager를 초기화하지 않습니다.")
+                logger.info(f"⚠️ {EXCHANGE_NAMES_KR[exchange]} 심볼이 없어 OrderManager를 초기화하지 않습니다.")
                 continue
                 
             # OrderManager 생성
-            manager = create_order_manager(exchange_code, settings)
+            manager = create_order_manager(exchange, settings)
             if not manager:
-                logger.error(f"{exchange_korean} OrderManager 생성 실패")
+                logger.error(f"❌ {EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패")
                 continue
                 
             # 출력 큐 공유
@@ -602,22 +511,22 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
             # 초기화 수행
             init_success = await manager.initialize()
             if not init_success:
-                logger.error(f"{exchange_korean} 초기화 실패, 해당 거래소는 건너뜁니다.")
+                logger.error(f"❌ {EXCHANGE_NAMES_KR[exchange]} 초기화 실패, 해당 거래소는 건너뜁니다.")
                 continue
             
             # 시작 수행
             start_success = await manager.start(symbols)
             if not start_success:
-                logger.error(f"{exchange_korean} 시작 실패, 해당 거래소는 건너뜁니다.")
+                logger.error(f"❌ {EXCHANGE_NAMES_KR[exchange]} 시작 실패, 해당 거래소는 건너뜁니다.")
                 continue
             
             # WebsocketManager에 OrderManager 저장
-            ws_manager.order_managers[exchange_code] = manager
+            ws_manager.order_managers[exchange] = manager
             
-            logger.info(f"{exchange_korean} OrderManager가 WebsocketManager와 통합되었습니다.")
+            logger.info(f"ℹ️ {EXCHANGE_NAMES_KR[exchange]} OrderManager가 WebsocketManager와 통합되었습니다.")
         
         return True
         
     except Exception as e:
-        logger.error(f"OrderManager 통합 중 오류 발생: {str(e)}", exc_info=True)
+        logger.error(f"❌ OrderManager 통합 중 오류 발생: {str(e)}", exc_info=True)
         return False

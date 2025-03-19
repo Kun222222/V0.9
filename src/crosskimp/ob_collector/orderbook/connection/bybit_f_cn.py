@@ -5,10 +5,11 @@ import json
 import time
 from websockets import connect
 import websockets
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -16,8 +17,6 @@ logger = get_unified_logger()
 # ============================
 # 바이빗 선물 웹소켓 연결 관련 상수
 # ============================
-EXCHANGE_CODE = "BYBIT_FUTURE"
-EXCHANGE_KOREAN_NAME = "[바이빗 선물]"
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
 PING_INTERVAL = 20  # 핑 전송 간격 (초)
 PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초) - 현물과 동일하게 10초로 설정
@@ -31,10 +30,9 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
     
     def __init__(self, settings: dict):
         """초기화"""
-        super().__init__(settings, EXCHANGE_CODE)
+        super().__init__(settings, Exchange.BYBIT_FUTURE.value)
         
         # 웹소켓 URL 및 기본 설정
-        self.exchange_korean_name = EXCHANGE_KOREAN_NAME
         self.ws_url = WS_URL if not settings.get("testnet") else "wss://stream-testnet.bybit.com/v5/public/linear"
         
         # 상태 및 설정값

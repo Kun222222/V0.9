@@ -1,11 +1,29 @@
 import asyncio
 import json
 import websockets
-from typing import Dict, Optional, Callable
-from datetime import datetime
+from typing import Dict, Callable
+import time
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants import Exchange, EXCHANGE_NAMES_KR, WEBSOCKET_URLS, WEBSOCKET_CONFIG
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
+
+# 웹소켓 URL 정의
+WEBSOCKET_URLS = {
+    Exchange.UPBIT.value: "wss://api.upbit.com/websocket/v1",
+    Exchange.BITHUMB.value: "wss://pubwss.bithumb.com/pub/ws"
+}
+
+# 웹소켓 설정
+WEBSOCKET_CONFIG = {
+    "upbit": {
+        "ping_interval": 30,
+        "ping_timeout": 10
+    },
+    "bithumb": {
+        "ping_interval": 30,
+        "ping_timeout": 10
+    }
+}
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -44,19 +62,19 @@ class WsUsdtKrwMonitor:
             Exchange.BITHUMB.value: False
         }
         
-        logger.info("[USDT/KRW] WebSocket 모니터 초기화 완료")
+        logger.info("USDT/KRW 웹소켓 모니터가 초기화되었습니다.")
     
     def add_price_callback(self, callback: Callable[[float], None]):
         """가격 변경 콜백 등록"""
         if callback not in self._price_callbacks:
             self._price_callbacks.append(callback)
-            logger.debug("[USDT/KRW] 가격 콜백 등록됨")
+            logger.debug("USDT/KRW 가격 콜백이 등록되었습니다.")
     
     def remove_price_callback(self, callback: Callable[[float], None]):
         """가격 변경 콜백 제거"""
         if callback in self._price_callbacks:
             self._price_callbacks.remove(callback)
-            logger.debug("[USDT/KRW] 가격 콜백 제거됨")
+            logger.debug("USDT/KRW 가격 콜백이 제거되었습니다.")
 
     async def _notify_price_change(self, exchange: str):
         """가격 변경 알림"""
@@ -65,12 +83,12 @@ class WsUsdtKrwMonitor:
             try:
                 callback(price)
             except Exception as e:
-                logger.error(f"[USDT/KRW] 가격 콜백 실행 중 오류: {str(e)}")
+                logger.error(f"USDT/KRW 가격 콜백 실행 중 오류가 발생했습니다: {str(e)}")
 
     async def start(self):
         """모니터링 시작"""
         try:
-            logger.info("[USDT/KRW] WebSocket 모니터링 시작")
+            logger.info("USDT/KRW 웹소켓 모니터링을 시작합니다.")
             
             # 웹소켓 연결 및 모니터링 태스크 생성
             tasks = [
@@ -81,13 +99,17 @@ class WsUsdtKrwMonitor:
             
             await asyncio.gather(*tasks)
         except Exception as e:
-            logger.error(f"[USDT/KRW] WebSocket 모니터 시작 실패: {str(e)}", exc_info=True)
+            logger.error(f"USDT/KRW 웹소켓 모니터 시작 중 오류가 발생했습니다: {str(e)}", exc_info=True)
     
     async def _status_monitor(self):
         """연결 상태 및 가격 모니터링"""
+        last_log_time = 0  # 마지막 로깅 시간 추적
+        log_interval = 10  # 10초마다 로깅
+        
         while not self.stop_event.is_set():
             try:
-                status_msg = "[USDT/KRW] 현재 가격 | "
+                current_time = time.time()
+                status_msg = "USDT/KRW 현재 가격 | "
                 
                 for exchange in [Exchange.UPBIT.value, Exchange.BITHUMB.value]:
                     # 연결 상태 이모지
@@ -98,10 +120,14 @@ class WsUsdtKrwMonitor:
                     else:
                         status_msg += f"{status_emoji} {EXCHANGE_NAMES_KR[exchange]}: 가격 없음 | "
                 
-                logger.info(status_msg.rstrip(" | "))
-                await asyncio.sleep(1.0)  # 1초마다 상태 업데이트
+                # 10초마다 가격 정보 로깅
+                if current_time - last_log_time >= log_interval:
+                    logger.info(status_msg.rstrip(" | "))
+                    last_log_time = current_time
+                
+                await asyncio.sleep(1.0)  # 1초마다 상태 확인
             except Exception as e:
-                logger.error(f"[USDT/KRW] 상태 모니터링 중 오류: {str(e)}")
+                logger.error(f"USDT/KRW 상태 모니터링 중 오류가 발생했습니다: {str(e)}")
                 await asyncio.sleep(1.0)
     
     async def _connect_upbit(self):
@@ -121,7 +147,7 @@ class WsUsdtKrwMonitor:
                     self.connections[Exchange.UPBIT.value] = websocket
                     self.connection_status[Exchange.UPBIT.value] = True
                     await websocket.send(json.dumps(subscribe_fmt))
-                    logger.info(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} WebSocket 연결됨")
+                    logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 웹소켓 연결에 성공했습니다.")
                     
                     while not self.stop_event.is_set():
                         try:
@@ -129,11 +155,11 @@ class WsUsdtKrwMonitor:
                             await self._handle_upbit_message(json.loads(data))
                         except Exception as e:
                             if not self.stop_event.is_set():
-                                logger.error(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 메시지 처리 중 오류: {str(e)}")
+                                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 메시지 처리 중 오류가 발생했습니다: {str(e)}")
                             break
             except Exception as e:
                 if not self.stop_event.is_set():
-                    logger.error(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} WebSocket 연결 오류: {str(e)}")
+                    logger.error(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 웹소켓 연결 중 오류가 발생했습니다: {str(e)}")
                     await asyncio.sleep(self.retry_delay)
             finally:
                 self.connection_status[Exchange.UPBIT.value] = False
@@ -152,7 +178,7 @@ class WsUsdtKrwMonitor:
                     self.connections[Exchange.BITHUMB.value] = websocket
                     self.connection_status[Exchange.BITHUMB.value] = True
                     await websocket.send(json.dumps(subscribe_fmt))
-                    logger.info(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} WebSocket 연결됨")
+                    logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 웹소켓 연결에 성공했습니다.")
                     
                     while not self.stop_event.is_set():
                         try:
@@ -160,11 +186,11 @@ class WsUsdtKrwMonitor:
                             await self._handle_bithumb_message(json.loads(data))
                         except Exception as e:
                             if not self.stop_event.is_set():
-                                logger.error(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 메시지 처리 중 오류: {str(e)}")
+                                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 메시지 처리 중 오류가 발생했습니다: {str(e)}")
                             break
             except Exception as e:
                 if not self.stop_event.is_set():
-                    logger.error(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} WebSocket 연결 오류: {str(e)}")
+                    logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 웹소켓 연결 중 오류가 발생했습니다: {str(e)}")
                     await asyncio.sleep(self.retry_delay)
             finally:
                 self.connection_status[Exchange.BITHUMB.value] = False
@@ -176,10 +202,10 @@ class WsUsdtKrwMonitor:
                 price = float(data["trade_price"])
                 if price > 0:
                     self.prices[Exchange.UPBIT.value] = price
-                    logger.debug(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 가격 업데이트: {price:,.2f} KRW")
+                    logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
                     await self._notify_price_change(Exchange.UPBIT.value)
         except Exception as e:
-            logger.error(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 메시지 파싱 오류: {str(e)}")
+            logger.error(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 메시지 파싱 중 오류가 발생했습니다: {str(e)}")
     
     async def _handle_bithumb_message(self, data: dict):
         """빗썸 웹소켓 메시지 처리"""
@@ -190,10 +216,10 @@ class WsUsdtKrwMonitor:
                     price = float(content["closePrice"])
                     if price > 0:
                         self.prices[Exchange.BITHUMB.value] = price
-                        logger.debug(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 가격 업데이트: {price:,.2f} KRW")
+                        logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
                         await self._notify_price_change(Exchange.BITHUMB.value)
         except Exception as e:
-            logger.error(f"[USDT/KRW] {EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 메시지 파싱 오류: {str(e)}")
+            logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 메시지 파싱 중 오류가 발생했습니다: {str(e)}")
     
     def get_price(self, exchange: str) -> float:
         """특정 거래소의 현재 가격 조회"""
@@ -213,7 +239,7 @@ class WsUsdtKrwMonitor:
             try:
                 await websocket.close()
                 self.connection_status[exchange] = False
-                logger.info(f"[USDT/KRW] {EXCHANGE_NAMES_KR[exchange]} WebSocket 연결 종료")
+                logger.info(f"{EXCHANGE_NAMES_KR[exchange]} 웹소켓 연결이 종료되었습니다.")
             except Exception as e:
-                logger.error(f"[USDT/KRW] {EXCHANGE_NAMES_KR[exchange]} WebSocket 종료 중 오류: {str(e)}")
-        logger.info("[USDT/KRW] WebSocket 모니터링 종료") 
+                logger.error(f"{EXCHANGE_NAMES_KR[exchange]} 웹소켓 종료 중 오류가 발생했습니다: {str(e)}")
+        logger.info("USDT/KRW 웹소켓 모니터링이 종료되었습니다.") 

@@ -2,95 +2,24 @@
 
 import asyncio
 import time
-import json
-import logging
-from typing import Dict, List, Any, Optional, Callable
+from typing import Optional
 from asyncio import Event
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 from abc import ABC, abstractmethod
-from enum import Enum, auto
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.paths import LOG_SUBDIRS
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 
 # ============================
-# 거래소 이름 및 상태 관련 상수
-# ============================
-# 거래소 코드 -> 한글 이름 매핑
-EXCHANGE_NAMES_KR = {
-    "UPBIT": "[업비트]",
-    "BYBIT": "[바이빗]",
-    "BINANCE": "[바이낸스]",
-    "BITHUMB": "[빗썸]",
-    "BINANCE_FUTURE": "[바이낸스 선물]",
-    "BYBIT_FUTURE": "[바이빗 선물]",
-}
-
 # 상태 이모지
+# ============================
 STATUS_EMOJIS = {
     "ERROR": "🔴",
     "WARNING": "🟠",
     "INFO": "🟢",
     "CONNECTED": "🟢",
     "DISCONNECTED": "🔴",
-}
-
-# 웹소켓 공통 설정
-WEBSOCKET_COMMON_CONFIG = {
-    "reconnect_strategy": {
-        "initial_delay": 1.0,
-        "max_delay": 60.0,
-        "multiplier": 2.0,
-        "max_attempts": 10
-    },
-    "connection_timeout": 30.0,
-    "message_timeout": 60.0,
-    "ping_interval": 30.0,
-    "ping_timeout": 5.0,
-    "health_check_interval": 10.0
-}
-
-# 거래소별 웹소켓 설정
-WEBSOCKET_CONFIG = {
-    "UPBIT": {
-        "url": "wss://api.upbit.com/websocket/v1",
-        "ping_message": '{"ticket":"PING"}',
-        "ping_interval": 20.0,
-        "market": "KRW"
-    },
-    "BYBIT": {
-        "url": "wss://stream.bybit.com/v5/public/spot",
-        "ping_message": '{"op":"ping"}',
-        "ping_interval": 20.0,
-        "market": "USDT"
-    },
-    "BINANCE": {
-        "url": "wss://stream.binance.com:9443/ws",
-        "ping_message": '{"method":"ping"}',
-        "ping_interval": 30.0,
-        "market": "USDT"
-    },
-    "BITHUMB": {
-        "url": "wss://pubwss.bithumb.com/pub/ws",
-        "ping_message": '{"type":"ping"}',
-        "ping_interval": 20.0,
-        "market": "KRW"
-    },
-    "BINANCE_FUTURE": {
-        "url": "wss://fstream.binance.com/ws",
-        "ping_message": '{"method":"ping"}',
-        "ping_interval": 30.0,
-        "market": "USDT"
-    },
-    "BYBIT_FUTURE": {
-        "url": "wss://stream.bybit.com/v5/public/linear",
-        "ping_message": '{"op":"ping"}',
-        "ping_interval": 20.0,
-        "market": "USDT"
-    }
 }
 
 # 전역 로거 설정
@@ -181,7 +110,8 @@ class BaseWebsocketConnector(ABC):
         """
         self.exchangename = exchangename
         self.settings = settings
-        self.exchange_korean_name = EXCHANGE_NAMES_KR.get(exchangename, f"[{exchangename}]")
+        
+        self.exchange_name_kr = EXCHANGE_NAMES_KR[exchangename]
 
         # 기본 상태 변수
         self.ws = None
@@ -238,22 +168,22 @@ class BaseWebsocketConnector(ABC):
         self.stats.last_error_time = time.time()
         self.stats.last_error_message = msg
         
-        error_msg = f"{self.exchange_korean_name} {STATUS_EMOJIS.get('ERROR', '🔴')} {msg}"
+        error_msg = f"{self.exchange_name_kr} {STATUS_EMOJIS.get('ERROR', '🔴')} {msg}"
         logger.error(error_msg, exc_info=exc_info)
 
     def log_info(self, msg: str):
         """정보 로깅"""
-        info_msg = f"{self.exchange_korean_name} {msg}"
+        info_msg = f"{self.exchange_name_kr} {msg}"
         logger.info(info_msg)
 
     def log_debug(self, msg: str):
         """디버그 로깅"""
-        debug_msg = f"{self.exchange_korean_name} {msg}"
+        debug_msg = f"{self.exchange_name_kr} {msg}"
         logger.debug(debug_msg)
 
     def log_warning(self, msg: str):
         """경고 로깅"""
-        warning_msg = f"{self.exchange_korean_name} {STATUS_EMOJIS.get('WARNING', '🟠')} {msg}"
+        warning_msg = f"{self.exchange_name_kr} {STATUS_EMOJIS.get('WARNING', '🟠')} {msg}"
         logger.warning(warning_msg)
 
     def update_message_metrics(self, message: str) -> None:

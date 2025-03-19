@@ -10,6 +10,7 @@ bot_constants.py에 정의된 함수들을 사용하여 텔레그램 메시지�
 """
 
 from typing import Dict, Union, Any, Optional
+from enum import Enum
 from crosskimp.telegrambot.bot_constants import (
     # 메시지 타입 및 아이콘
     MessageType, MessageIcon,
@@ -23,7 +24,21 @@ from crosskimp.telegrambot.bot_constants import (
     # 텔레그램 토큰 및 채팅 ID
     NOTIFICATION_BOT_TOKEN, NOTIFICATION_CHAT_IDS
 )
-from crosskimp.config.ob_constants import LogMessageType
+
+# LogMessageType을 직접 정의
+class LogMessageType(Enum):
+    """로깅 메시지 타입 정의"""
+    INFO = "info"
+    ERROR = "error"
+    WARNING = "warning"
+    DEBUG = "debug"
+    CRITICAL = "critical"
+    CONNECTION = "connection"
+    RECONNECT = "reconnect"
+    DISCONNECT = "disconnect"
+    TRADE = "trade"
+    MARKET = "market"
+    SYSTEM = "system"
 
 # 로거 초기화
 logger = setup_logger()

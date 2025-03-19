@@ -7,25 +7,16 @@
 import json
 import time
 import asyncio
-import os
 import datetime
-from typing import Dict, List, Any, Optional, Callable, Union
+from typing import Dict, List, Any, Optional, Union
 import websockets.exceptions
-from enum import Enum
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.logger.logger import create_raw_logger
-from crosskimp.config.paths import LOG_SUBDIRS
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR, LOG_SUBDIRS
 
-# ============================
-# 업비트 구독 관련 상수
-# ============================
-# 거래소 코드
-EXCHANGE_CODE = "UPBIT"  # 대문자로 변경
-# EXCHANGE_NAME_KR은 base_subscription.py에서 사용하므로 여기서는 제거
-
-# 웹소켓 설정
+# 업비트 웹소켓 관련 설정
 REST_URL = "https://api.upbit.com/v1/orderbook"  # https://docs.upbit.com/reference/호가-정보-조회
 WS_URL = "wss://api.upbit.com/websocket/v1"     # https://docs.upbit.com/reference/websocket-orderbook
 MAX_SYMBOLS_PER_SUBSCRIPTION = 15  # 구독당 최대 심볼 수 (업비트 API 권장)
@@ -51,7 +42,7 @@ class UpbitSubscription(BaseSubscription):
             connection: 웹소켓 연결 객체
         """
         # 부모 클래스 초기화 (exchange_code 전달)
-        super().__init__(connection, EXCHANGE_CODE)
+        super().__init__(connection, Exchange.UPBIT.value)
         
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
@@ -72,15 +63,15 @@ class UpbitSubscription(BaseSubscription):
         try:
             # 로그 디렉토리 설정
             raw_data_dir = LOG_SUBDIRS['raw_data']
-            log_dir = raw_data_dir / EXCHANGE_CODE
+            log_dir = raw_data_dir / Exchange.UPBIT.value
             log_dir.mkdir(exist_ok=True, parents=True)
             
             # 로그 파일 경로 설정
             current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log_file_path = log_dir / f"{EXCHANGE_CODE}_raw_{current_datetime}.log"
+            self.log_file_path = log_dir / f"{Exchange.UPBIT.value}_raw_{current_datetime}.log"
             
             # 로거 설정
-            self.raw_logger = create_raw_logger(EXCHANGE_CODE)
+            self.raw_logger = create_raw_logger(Exchange.UPBIT.value)
             self.log_info("raw 로거 초기화 완료")
         except Exception as e:
             self.log_error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
@@ -149,7 +140,7 @@ class UpbitSubscription(BaseSubscription):
         업비트는 모든 오더북 메시지가 스냅샷 형태이므로,
         메시지 타입이 orderbook인지 확인합니다.
         
-        Args:로깅용으로 10개로 제한
+        Args:
             message: 수신된 메시지
             
         Returns:

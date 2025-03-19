@@ -8,19 +8,12 @@ import asyncio
 import json
 import time
 import datetime
-from typing import Dict, List, Optional, Union, Any, Callable
+from typing import Dict, List, Optional, Union, Any
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.logger.logger import create_raw_logger
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
-from crosskimp.config.paths import LOG_SUBDIRS
-
-# ============================
-# 바이빗 선물 구독 관련 상수
-# ============================
-# 거래소 정보
-EXCHANGE_CODE = "BYBIT_FUTURE"  # 거래소 코드
-EXCHANGE_NAME_KR = "[바이빗 선물]"  # 한글 로깅용 이름
+from crosskimp.config.constants_v3 import Exchange, LOG_SUBDIRS
 
 # 웹소켓 설정
 WS_URL = "wss://stream.bybit.com/v5/public/linear"  # 웹소켓 URL 
@@ -45,7 +38,7 @@ class BybitFutureSubscription(BaseSubscription):
             connection: 바이빗 선물 웹소켓 연결 객체
         """
         # 부모 클래스 초기화 (exchange_code 전달)
-        super().__init__(connection, EXCHANGE_CODE)
+        super().__init__(connection, Exchange.BYBIT_FUTURE.value)
         
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
@@ -57,7 +50,7 @@ class BybitFutureSubscription(BaseSubscription):
         self._setup_raw_logging()
         
         # 바이빗 오더북 검증기 초기화
-        self.validator = BaseOrderBookValidator(EXCHANGE_CODE)
+        self.validator = BaseOrderBookValidator(self.exchange_code)
         
         # 각 심볼별 전체 오더북 상태 저장용
         self.orderbooks = {}  # symbol -> {"bids": {...}, "asks": {...}, "timestamp": ..., "sequence": ...}
@@ -67,18 +60,18 @@ class BybitFutureSubscription(BaseSubscription):
         try:
             # 로그 디렉토리 설정
             raw_data_dir = LOG_SUBDIRS['raw_data']
-            log_dir = raw_data_dir / EXCHANGE_CODE
+            log_dir = raw_data_dir / self.exchange_code
             log_dir.mkdir(exist_ok=True, parents=True)
             
             # 로그 파일 경로 설정
             current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log_file_path = log_dir / f"{EXCHANGE_CODE}_raw_{current_datetime}.log"
+            self.log_file_path = log_dir / f"{self.exchange_code}_raw_{current_datetime}.log"
             
             # 로거 설정
-            self.raw_logger = create_raw_logger(EXCHANGE_CODE)
-            self.logger.info(f"{EXCHANGE_NAME_KR} raw 로거 초기화 완료")
+            self.raw_logger = create_raw_logger(self.exchange_code)
+            self.log_info("raw 로거 초기화 완료")
         except Exception as e:
-            self.logger.error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
+            self.log_error(f"Raw 로깅 설정 실패: {str(e)}", exc_info=True)
             self.log_raw_data = False
 
     async def create_subscribe_message(self, symbol: Union[str, List[str]]) -> Dict:
@@ -101,7 +94,7 @@ class BybitFutureSubscription(BaseSubscription):
             args.append(f"orderbook.{self.depth_level}.{market}")
         
         symbols_str = ", ".join(symbols) if len(symbols) <= 5 else f"{len(symbols)}개 심볼"
-        self.logger.info(f"{EXCHANGE_NAME_KR} {symbols_str} 구독 메시지 생성")
+        self.log_info(f"{symbols_str} 구독 메시지 생성")
         
         # 구독 메시지 생성
         return {
@@ -154,7 +147,7 @@ class BybitFutureSubscription(BaseSubscription):
             
             # 구독 응답 처리
             if data.get("op") == "subscribe":
-                # self.logger.debug(f"{EXCHANGE_NAME_KR} 구독 응답 수신: {data}")
+                # self.log_debug(f"구독 응답 수신: {data}")
                 return
                 
             # 오더북 메시지 처리
@@ -243,7 +236,7 @@ class BybitFutureSubscription(BaseSubscription):
                                 
                                 # 시퀀스 확인
                                 if sequence <= self.orderbooks[symbol]["sequence"]:
-                                    self.logger.warning(f"{EXCHANGE_NAME_KR} {symbol} 이전 시퀀스의 델타 메시지 수신, 무시 ({sequence} <= {self.orderbooks[symbol]['sequence']})")
+                                    self.log_warning(f"{symbol} 이전 시퀀스의 델타 메시지 수신, 무시 ({sequence} <= {self.orderbooks[symbol]['sequence']})")
                                     return
                                 
                                 # 기존 오더북 가져오기
@@ -316,11 +309,11 @@ class BybitFutureSubscription(BaseSubscription):
                                 # 메트릭 업데이트 추가
                                 self.metrics_manager.update_message_stats(self.exchange_code, "delta")
                             else:
-                                self.logger.warning(f"{EXCHANGE_NAME_KR} {symbol} 스냅샷 없이 델타 수신, 무시")
+                                self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
         except json.JSONDecodeError:
-            self.logger.error(f"{EXCHANGE_NAME_KR} JSON 파싱 실패: {message[:100]}...")
+            self.log_error(f"JSON 파싱 실패: {message[:100]}...")
         except Exception as e:
-            self.logger.error(f"{EXCHANGE_NAME_KR} 메시지 처리 중 오류: {str(e)}")
+            self.log_error(f"메시지 처리 중 오류: {str(e)}")
 
     def _parse_message(self, message: str) -> Optional[Dict]:
         """
@@ -380,7 +373,7 @@ class BybitFutureSubscription(BaseSubscription):
             return None
             
         except Exception as e:
-            self.logger.error(f"{EXCHANGE_NAME_KR} 메시지 파싱 실패: {str(e)} | 원본: {message[:100]}...")
+            self.log_error(f"메시지 파싱 실패: {str(e)} | 원본: {message[:100]}...")
             return None
 
     async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
@@ -404,13 +397,13 @@ class BybitFutureSubscription(BaseSubscription):
                 symbols = [symbol]
                 
             if not symbols:
-                self.logger.warning(f"{EXCHANGE_NAME_KR} 구독할 심볼이 없습니다.")
+                self.log_warning("구독할 심볼이 없습니다.")
                 return False
                 
             # 이미 구독 중인 심볼 필터링
             new_symbols = [s for s in symbols if s not in self.orderbooks]
             if not new_symbols:
-                self.logger.info(f"{EXCHANGE_NAME_KR} 모든 심볼이 이미 구독 중입니다.")
+                self.log_info("모든 심볼이 이미 구독 중입니다.")
                 return True
                 
             # 콜백 함수 등록
@@ -427,7 +420,7 @@ class BybitFutureSubscription(BaseSubscription):
             
             # 연결 확인 및 연결
             if not self._is_connected():
-                self.logger.info(f"{EXCHANGE_NAME_KR} 웹소켓 연결 시작")
+                self.log_info("웹소켓 연결 시작")
                 if not await self.connection.connect():
                     raise Exception("웹소켓 연결 실패")
                 
@@ -436,7 +429,7 @@ class BybitFutureSubscription(BaseSubscription):
             
             # 배치 단위로 구독 처리
             total_batches = (len(new_symbols) + self.max_symbols_per_subscription - 1) // self.max_symbols_per_subscription
-            self.logger.info(f"{EXCHANGE_NAME_KR} 구독 시작 | 총 {len(new_symbols)}개 심볼, {total_batches}개 배치로 나눔")
+            self.log_info(f"구독 시작 | 총 {len(new_symbols)}개 심볼, {total_batches}개 배치로 나눔")
             
             for i in range(0, len(new_symbols), self.max_symbols_per_subscription):
                 batch_symbols = new_symbols[i:i + self.max_symbols_per_subscription]
@@ -447,21 +440,21 @@ class BybitFutureSubscription(BaseSubscription):
                 if not await self.connection.send_message(json.dumps(subscribe_message)):
                     raise Exception(f"배치 {batch_num}/{total_batches} 구독 메시지 전송 실패")
                 
-                self.logger.info(f"{EXCHANGE_NAME_KR} 구독 요청 전송 | 배치 {batch_num}/{total_batches}, {len(batch_symbols)}개 심볼")
+                self.log_info(f"구독 요청 전송 | 배치 {batch_num}/{total_batches}, {len(batch_symbols)}개 심볼")
                 
                 # 요청 간 짧은 딜레이 추가
                 await asyncio.sleep(0.1)
             
             # 첫 번째 구독 시 메시지 수신 루프 시작
             if not self.message_loop_task or self.message_loop_task.done():
-                self.logger.info(f"{EXCHANGE_NAME_KR} 첫 번째 구독으로 메시지 수신 루프 시작")
+                self.log_info("첫 번째 구독으로 메시지 수신 루프 시작")
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
             return True
             
         except Exception as e:
-            self.logger.error(f"{EXCHANGE_NAME_KR} 구독 중 오류 발생: {str(e)}")
+            self.log_error(f"구독 중 오류 발생: {str(e)}")
             # 에러 메트릭 업데이트
             self.metrics_manager.record_error(self.exchange_code)
             
@@ -504,7 +497,7 @@ class BybitFutureSubscription(BaseSubscription):
         """
         try:
             if symbol not in self.orderbooks:
-                self.logger.warning(f"{EXCHANGE_NAME_KR} {symbol} 구독 중이 아닙니다.")
+                self.log_warning(f"{symbol} 구독 중이 아닙니다.")
                 return True
                 
             # 부모 클래스의 _cleanup_subscription 메서드 사용
@@ -515,11 +508,11 @@ class BybitFutureSubscription(BaseSubscription):
             if not await self.connection.send_message(json.dumps(unsubscribe_message)):
                 raise Exception(f"{symbol} 구독 취소 메시지 전송 실패")
                 
-            self.logger.info(f"{EXCHANGE_NAME_KR} {symbol} 구독 취소 완료")
+            self.log_info(f"{symbol} 구독 취소 완료")
             return True
             
         except Exception as e:
-            self.logger.error(f"{EXCHANGE_NAME_KR} {symbol} 구독 취소 중 오류 발생: {e}")
+            self.log_error(f"{symbol} 구독 취소 중 오류 발생: {e}")
             return False
     
     async def unsubscribe(self, symbol: Optional[str] = None) -> bool:
@@ -550,28 +543,28 @@ class BybitFutureSubscription(BaseSubscription):
                         if self.connection and self.connection.is_connected:
                             await self.connection.send_message(json.dumps(unsubscribe_message))
                     except Exception as e:
-                        self.logger.warning(f"{EXCHANGE_NAME_KR} {sym} 구독 취소 메시지 전송 실패: {e}")
+                        self.log_warning(f"{sym} 구독 취소 메시지 전송 실패: {e}")
                     
                     # 내부적으로 구독 상태 정리
                     self._cleanup_subscription(sym)
                 
-                self.logger.info(f"{EXCHANGE_NAME_KR} 모든 심볼 구독 취소 완료")
+                self.log_info("모든 심볼 구독 취소 완료")
                 
                 # 연결 종료 처리
                 if hasattr(self.connection, 'disconnect'):
                     try:
                         await asyncio.wait_for(self.connection.disconnect(), timeout=2.0)
                     except (asyncio.TimeoutError, Exception) as e:
-                        self.logger.warning(f"{EXCHANGE_NAME_KR} 연결 종료 중 오류: {str(e)}")
+                        self.log_warning(f"연결 종료 중 오류: {str(e)}")
                 
-                self.logger.info(f"{EXCHANGE_NAME_KR} 모든 자원 정리 완료")
+                self.log_info("모든 자원 정리 완료")
                 return True
             
             # 특정 심볼 구독 취소
             return await self._unsubscribe_symbol(symbol)
             
         except Exception as e:
-            self.logger.error(f"{EXCHANGE_NAME_KR} 구독 취소 중 오류 발생: {e}")
+            self.log_error(f"구독 취소 중 오류 발생: {e}")
             # 에러 메트릭 업데이트
             self.metrics_manager.record_error(self.exchange_code)
             return False
@@ -591,7 +584,7 @@ class BybitFutureSubscription(BaseSubscription):
                 await callback(symbol, data)
         except Exception as e:
             callback_type = "스냅샷" if is_snapshot else "델타"
-            self.logger.error(f"{EXCHANGE_NAME_KR} {symbol} {callback_type} 콜백 호출 실패: {str(e)}")
+            self.log_error(f"{symbol} {callback_type} 콜백 호출 실패: {str(e)}")
 
     def is_snapshot_message(self, message: str) -> bool:
         """

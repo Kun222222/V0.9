@@ -1,80 +1,15 @@
 # file: core/aggregator.py
 
-"""
-거래소 심볼 필터링 모듈
-
-이 모듈은 각 거래소의 거래 가능한 심볼을 필터링하고 관리하는 기능을 제공합니다.
-주요 기능:
-1. 거래소별 심볼 및 거래량 조회
-2. 최소 거래량 기준 필터링
-3. 거래소 간 공통 심볼 페어링
-4. 필터링 결과 저장
-
-"""
-
 import asyncio
-import json
-import os
 from datetime import datetime, timezone
 import aiohttp
-from typing import Dict, List, Set, Optional, Tuple
+from typing import Dict, List, Set, Optional
 
 from crosskimp.logger.logger import get_unified_logger
+from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR, LOG_SYSTEM, get_symbol_filters, get_value_from_settings
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
-
-# ============================
-# 상수 정의 (의존성 제거)
-# ============================
-# 거래소 코드 정의
-UPBIT = "upbit"
-BITHUMB = "bithumb"
-BINANCE = "binance"
-BYBIT = "bybit"
-BINANCE_FUTURE = "binance_future"
-BYBIT_FUTURE = "bybit_future"
-
-# 시스템 로그 메시지 프리픽스
-LOG_SYSTEM = "[시스템]"
-
-# 거래소 이름 매핑 (한글명)
-EXCHANGE_NAMES_KR = {
-    UPBIT: "[업비트]",
-    BITHUMB: "[빗썸]",
-    BINANCE: "[바이낸스]",
-    BYBIT: "[바이빗]",
-    BINANCE_FUTURE: "[바이낸스 선물]",
-    BYBIT_FUTURE: "[바이빗 선물]",
-}
-
-# 최소 거래량 (KRW) - 이 값을 수정하여 필터링 기준 변경
-MIN_VOLUME_KRW = 10_000_000_000  # 100억원
-
-# API URL 정의
-UPBIT_URLS = {
-    "market": "https://api.upbit.com/v1/market/all",
-    "ticker": "https://api.upbit.com/v1/ticker"
-}
-
-BITHUMB_URLS = {
-    "ticker": "https://api.bithumb.com/public/ticker/ALL_KRW"
-}
-
-BINANCE_URLS = {
-    "spot": "https://api.binance.com/api/v3/exchangeInfo",
-    "future": "https://fapi.binance.com/fapi/v1/exchangeInfo"
-}
-
-BYBIT_URLS = {
-    "spot": "https://api.bybit.com/v5/market/instruments-info?category=spot",
-    "future": "https://api.bybit.com/v5/market/instruments-info?category=linear"
-}
-
-# API 요청 설정
-REQUEST_TIMEOUT = 10.0  # 초
-CHUNK_SIZE = 99        # Upbit API 제한
-REQUEST_DELAY = 0.5    # 초
 
 # ============================
 # 유틸리티 함수
@@ -100,7 +35,7 @@ async def make_request(
         Optional[Dict]: 응답 데이터 또는 None (실패 시)
     """
     try:
-        async with session.get(url, params=params, timeout=REQUEST_TIMEOUT) as resp:
+        async with session.get(url, params=params, timeout=10.0) as resp:
             if resp.status == 200:
                 return await resp.json()
             logger.error(f"[Request] HTTP {resp.status}: {url}")
@@ -124,15 +59,15 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
     """
     try:
         logger.info(
-            f"{EXCHANGE_NAMES_KR[UPBIT]} 심볼/거래량 조회 시작 | "
-            f"최소거래량={min_volume:,.0f} KRW"
+            f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 심볼 및 거래량 조회를 시작합니다. "
+            f"최소거래량은 {min_volume:,.0f} KRW입니다."
         )
         
         async with aiohttp.ClientSession() as session:
             # 1. KRW 마켓 심볼 조회
-            data = await make_request(session, UPBIT_URLS["market"])
+            data = await make_request(session, "https://api.upbit.com/v1/market/all")
             if not data:
-                logger.error(f"{EXCHANGE_NAMES_KR[UPBIT]} 마켓 정보 조회 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 마켓 정보 조회에 실패했습니다.")
                 return []
                 
             symbols = [
@@ -141,29 +76,25 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 if item["market"].startswith("KRW-")
             ]
             
-            logger.info(f"{EXCHANGE_NAMES_KR[UPBIT]} KRW 마켓 심볼 조회 완료: {len(symbols)}개")
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} KRW 마켓 심볼 조회가 완료되었습니다: 총 {len(symbols)}개")
             
             # 2. 거래량 조회 (청크 단위로 분할)
             volume_dict: Dict[str, float] = {}
-            chunks = [symbols[i:i+CHUNK_SIZE] for i in range(0, len(symbols), CHUNK_SIZE)]
+            chunks = [symbols[i:i+99] for i in range(0, len(symbols), 99)]
             
             for i, chunk in enumerate(chunks, 1):
                 markets = ",".join(f"KRW-{symbol}" for symbol in chunk)
                 logger.info(
-                    f"{EXCHANGE_NAMES_KR[UPBIT]} 거래량 조회 진행 중 | "
-                    f"청크={i}/{len(chunks)}, 심볼={len(chunk)}개"
+                    f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 거래량 조회가 진행 중입니다. "
+                    f"청크 {i}/{len(chunks)}, 심볼 {len(chunk)}개"
                 )
                 
-                data = await make_request(
-                    session,
-                    UPBIT_URLS["ticker"],
-                    {"markets": markets}
-                )
+                data = await make_request(session, "https://api.upbit.com/v1/ticker", {"markets": markets})
                 
                 if not data:
                     logger.warning(
-                        f"{EXCHANGE_NAMES_KR[UPBIT]} 거래량 조회 실패 | "
-                        f"청크={i}/{len(chunks)}, markets={markets}"
+                        f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 거래량 조회에 실패했습니다. "
+                        f"청크 {i}/{len(chunks)}, markets={markets}"
                     )
                     continue
                     
@@ -172,7 +103,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                     volume = float(item.get('acc_trade_price_24h', 0))
                     volume_dict[symbol] = volume
                 
-                await asyncio.sleep(REQUEST_DELAY)
+                await asyncio.sleep(0.5)
 
             # 3. 거래량 필터링
             filtered_symbols = [
@@ -181,17 +112,16 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             ]
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[UPBIT]} 필터링 결과 | "
-                f"전체={len(symbols)}개, "
-                f"거래량 {min_volume:,.0f} KRW 이상={len(filtered_symbols)}개"
+                f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 필터링 결과입니다. "
+                f"전체 {len(symbols)}개 중 거래량 {min_volume:,.0f} KRW 이상은 {len(filtered_symbols)}개입니다."
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[UPBIT]} 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
     except Exception as e:
         logger.error(
-            f"{EXCHANGE_NAMES_KR[UPBIT]} 심볼/거래량 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 심볼 및 거래량 조회에 실패했습니다: {str(e)}",
             exc_info=True
         )
         return []
@@ -211,16 +141,16 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
     """
     try:
         logger.info(
-            f"{EXCHANGE_NAMES_KR[BITHUMB]} 심볼/거래량 조회 시작 | "
-            f"최소거래량={min_volume:,.0f} KRW"
+            f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 심볼 및 거래량 조회를 시작합니다. "
+            f"최소거래량은 {min_volume:,.0f} KRW입니다."
         )
         
         async with aiohttp.ClientSession() as session:
-            data = await make_request(session, BITHUMB_URLS["ticker"])
+            data = await make_request(session, "https://api.bithumb.com/public/ticker/ALL_KRW")
             if not data or data.get("status") != "0000":
                 logger.error(
-                    f"{EXCHANGE_NAMES_KR[BITHUMB]} API 응답 오류 | "
-                    f"status={data.get('status') if data else 'No data'}"
+                    f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} API 응답에 오류가 발생했습니다. "
+                    f"상태코드: {data.get('status') if data else 'No data'}"
                 )
                 return []
             
@@ -236,22 +166,21 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
                         filtered_symbols.append(symbol)
                 except (KeyError, ValueError) as e:
                     logger.warning(
-                        f"{EXCHANGE_NAMES_KR[BITHUMB]} 거래량 파싱 실패 | "
-                        f"symbol={symbol}, error={str(e)}"
+                        f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 거래량 파싱에 실패했습니다. "
+                        f"심볼: {symbol}, 오류: {str(e)}"
                     )
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[BITHUMB]} 필터링 결과 | "
-                f"전체={len(symbols)}개, "
-                f"거래량 {min_volume:,.0f} KRW 이상={len(filtered_symbols)}개"
+                f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 필터링 결과입니다. "
+                f"전체 {len(symbols)}개 중 거래량 {min_volume:,.0f} KRW 이상은 {len(filtered_symbols)}개입니다."
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[BITHUMB]} 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
     except Exception as e:
         logger.error(
-            f"{EXCHANGE_NAMES_KR[BITHUMB]} 심볼/거래량 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 심볼 및 거래량 조회에 실패했습니다: {str(e)}",
             exc_info=True
         )
         return []
@@ -270,13 +199,13 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        logger.info(f"{EXCHANGE_NAMES_KR[BINANCE]} 심볼 조회 시작")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 심볼 조회를 시작합니다.")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot/Margin 심볼
-            data = await make_request(session, BINANCE_URLS["spot"])
+            data = await make_request(session, "https://api.binance.com/api/v3/exchangeInfo")
             if not data:
-                logger.error(f"{EXCHANGE_NAMES_KR[BINANCE]} Spot API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Spot API 응답에 실패했습니다.")
                 return []
                 
             spot_symbols = {
@@ -294,14 +223,14 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             }
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[BINANCE]} Spot/Margin 심볼 조회 완료 | "
-                f"spot={len(spot_symbols)}개, margin={len(margin_symbols)}개"
+                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Spot/Margin 심볼 조회가 완료되었습니다. "
+                f"Spot {len(spot_symbols)}개, Margin {len(margin_symbols)}개"
             )
             
             # 2. Future 심볼
-            data = await make_request(session, BINANCE_URLS["future"])
+            data = await make_request(session, "https://fapi.binance.com/fapi/v1/exchangeInfo")
             if not data:
-                logger.error(f"{EXCHANGE_NAMES_KR[BINANCE]} Future API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Future API 응답에 실패했습니다.")
                 return []
                 
             future_symbols = {
@@ -311,27 +240,27 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             }
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[BINANCE]} Future 심볼 조회 완료 | "
-                f"future={len(future_symbols)}개"
+                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Future 심볼 조회가 완료되었습니다. "
+                f"Future {len(future_symbols)}개"
             )
             
             # 3. 교집합 계산
             common_symbols = spot_symbols & margin_symbols & future_symbols
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[BINANCE]} 심볼 통계 | "
-                f"Spot({len(spot_symbols)}), "
-                f"Margin({len(margin_symbols)}), "
-                f"Future({len(future_symbols)}), "
-                f"공통={len(common_symbols)}"
+                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 심볼 통계입니다. "
+                f"Spot({len(spot_symbols)}개), "
+                f"Margin({len(margin_symbols)}개), "
+                f"Future({len(future_symbols)}개), "
+                f"공통 심볼은 {len(common_symbols)}개입니다."
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[BINANCE]} 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
         logger.error(
-            f"{EXCHANGE_NAMES_KR[BINANCE]} 심볼 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 심볼 조회에 실패했습니다: {str(e)}",
             exc_info=True
         )
         return []
@@ -350,13 +279,13 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        logger.info(f"{EXCHANGE_NAMES_KR[BYBIT]} 심볼 조회 시작")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 심볼 조회를 시작합니다.")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot 심볼
-            data = await make_request(session, BYBIT_URLS["spot"])
+            data = await make_request(session, "https://api.bybit.com/v5/market/instruments-info?category=spot")
             if not data or data.get("retCode") != 0:
-                logger.error(f"{EXCHANGE_NAMES_KR[BYBIT]} Spot API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} Spot API 응답에 실패했습니다.")
                 return []
                 
             spot_symbols = {
@@ -366,9 +295,9 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             }
             
             # 2. Future 심볼
-            data = await make_request(session, BYBIT_URLS["future"])
+            data = await make_request(session, "https://api.bybit.com/v5/market/instruments-info?category=linear")
             if not data or data.get("retCode") != 0:
-                logger.error(f"{EXCHANGE_NAMES_KR[BYBIT]} Future API 응답 실패")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} Future API 응답에 실패했습니다.")
                 return []
                 
             future_symbols = {
@@ -381,16 +310,16 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             common_symbols = spot_symbols & future_symbols
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[BYBIT]} 심볼 통계: "
-                f"Spot({len(spot_symbols)}), Future/Linear({len(future_symbols)})"
+                f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 심볼 통계입니다: "
+                f"Spot({len(spot_symbols)}개), Future/Linear({len(future_symbols)}개)"
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[BYBIT]} 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
         logger.error(
-            f"{EXCHANGE_NAMES_KR[BYBIT]} 심볼 조회 실패: {str(e)}",
+            f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 심볼 조회에 실패했습니다: {str(e)}",
             exc_info=True
         )
         return []
@@ -414,13 +343,13 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
     """
     try:
         listing_times = {
-            BINANCE_FUTURE: {},
-            BYBIT_FUTURE: {}
+            Exchange.BINANCE_FUTURE.value: {},
+            Exchange.BYBIT_FUTURE.value: {}
         }
         
         async with aiohttp.ClientSession() as session:
             # 바이낸스 선물 상장 시간 조회
-            data = await make_request(session, BINANCE_URLS["future"])
+            data = await make_request(session, "https://fapi.binance.com/fapi/v1/exchangeInfo")
             if data and "symbols" in data:
                 for item in data["symbols"]:
                     symbol = item["baseAsset"]
@@ -429,10 +358,10 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
                             int(item["onboardDate"]) / 1000,
                             tz=timezone.utc
                         )
-                        listing_times[BINANCE_FUTURE][symbol] = onboard_date
+                        listing_times[Exchange.BINANCE_FUTURE.value][symbol] = onboard_date
             
             # 바이빗 선물 상장 시간 조회
-            data = await make_request(session, BYBIT_URLS["future"])
+            data = await make_request(session, "https://api.bybit.com/v5/market/instruments-info?category=linear")
             if data and data.get("retCode") == 0:
                 for item in data.get("result", {}).get("list", []):
                     symbol = item["baseCoin"]
@@ -441,7 +370,7 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
                             int(item["launchTime"]) / 1000,
                             tz=timezone.utc
                         )
-                        listing_times[BYBIT_FUTURE][symbol] = launch_time
+                        listing_times[Exchange.BYBIT_FUTURE.value][symbol] = launch_time
             
             # 현재 시간 (UTC)
             now = datetime.now(timezone.utc)
@@ -449,7 +378,7 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
             # 상장 시간 로깅
             logger.info(f"{LOG_SYSTEM} === 선물 거래소 상장 시간 ===")
             for exchange, times in listing_times.items():
-                logger.info(f"\n[{EXCHANGE_NAMES_KR[exchange]}]")
+                logger.info(f"{EXCHANGE_NAMES_KR[exchange]}")
                 for symbol, listing_time in sorted(times.items()):
                     age = now - listing_time
                     days = age.days
@@ -457,15 +386,15 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
                     minutes = (age.seconds % 3600) // 60
                     
                     logger.debug(
-                        f"- {symbol}: {listing_time.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                        f"{symbol}: {listing_time.strftime('%Y-%m-%d %H:%M:%S')} UTC"
                         f" (상장 후 {days}일 {hours}시간 {minutes}분)"
                     )
         
         return listing_times
         
     except Exception as e:
-        logger.error(f"선물 거래소 상장 시간 조회 실패: {str(e)}", exc_info=True)
-        return {BINANCE_FUTURE: {}, BYBIT_FUTURE: {}}
+        logger.error(f"선물 거래소 상장 시간 조회에 실패했습니다: {str(e)}", exc_info=True)
+        return {Exchange.BINANCE_FUTURE.value: {}, Exchange.BYBIT_FUTURE.value: {}}
 
 # ============================
 # 최근 상장 심볼 필터링 함수
@@ -502,7 +431,7 @@ def filter_recently_listed_symbols(
                 if hours_since_listing < min_hours_since_listing:
                     recently_listed.add(symbol)
                     logger.info(
-                        f"{LOG_SYSTEM} 최근 상장 제외: {symbol} "
+                        f"{LOG_SYSTEM} 최근 상장으로 제외합니다: {symbol} "
                         f"(상장 후 {hours_since_listing}시간, "
                         f"기준: {min_hours_since_listing}시간)"
                     )
@@ -527,7 +456,7 @@ def filter_recently_listed_symbols(
         return filtered_data
         
     except Exception as e:
-        logger.error(f"{LOG_SYSTEM} 최근 상장 심볼 필터링 실패: {str(e)}", exc_info=True)
+        logger.error(f"{LOG_SYSTEM} 최근 상장 심볼 필터링에 실패했습니다: {str(e)}", exc_info=True)
         return filtered_data
 
 # ============================
@@ -552,7 +481,7 @@ async def get_paired_symbols(
         Dict[str, Set[str]]: 거래소별 최종 심볼 세트
     """
     try:
-        logger.info("[Pairing] 거래소 간 동시 상장 분석 시작")
+        logger.info("거래소 간 동시 상장 분석을 시작합니다.")
         
         # 1. 국내 거래소 ↔ 해외 거래소 페어링
         pair_bithumb_binance = set(bithumb_symbols) & set(binance_symbols)
@@ -569,22 +498,22 @@ async def get_paired_symbols(
         
         # 3. 최종 심볼 세트 구성
         final_symbols = {
-            BITHUMB: pair_bithumb_binance | pair_bithumb_bybit,
-            UPBIT: pair_upbit_binance | pair_upbit_bybit,
-            BINANCE: pair_bithumb_binance | pair_upbit_binance,
-            BYBIT: pair_bithumb_bybit | pair_upbit_bybit,
-            BINANCE_FUTURE: pair_bithumb_binance | pair_upbit_binance,
-            BYBIT_FUTURE: pair_bithumb_bybit | pair_upbit_bybit
+            Exchange.BITHUMB.value: pair_bithumb_binance | pair_bithumb_bybit,
+            Exchange.UPBIT.value: pair_upbit_binance | pair_upbit_bybit,
+            Exchange.BINANCE.value: pair_bithumb_binance | pair_upbit_binance,
+            Exchange.BYBIT.value: pair_bithumb_bybit | pair_upbit_bybit,
+            Exchange.BINANCE_FUTURE.value: pair_bithumb_binance | pair_upbit_binance,
+            Exchange.BYBIT_FUTURE.value: pair_bithumb_bybit | pair_upbit_bybit
         }
         
         # USDT 추가 (국내 거래소)
-        for exchange in [UPBIT, BITHUMB]:
+        for exchange in [Exchange.UPBIT.value, Exchange.BITHUMB.value]:
             final_symbols[exchange] = set(list(final_symbols[exchange]) + ["USDT"])
         
         return final_symbols
 
     except Exception as e:
-        logger.error(f"[Pairing] 심볼 페어링 실패: {e}")
+        logger.error(f"심볼 페어링에 실패했습니다: {e}")
         return {}
 
 # ============================
@@ -600,16 +529,23 @@ class Aggregator:
         """
         self.settings = settings
         self.exchanges = [
-            BINANCE_FUTURE,
-            BYBIT_FUTURE,
-            BINANCE,
-            BYBIT,
-            UPBIT,
-            BITHUMB
+            Exchange.BINANCE_FUTURE.value,
+            Exchange.BYBIT_FUTURE.value,
+            Exchange.BINANCE.value,
+            Exchange.BYBIT.value,
+            Exchange.UPBIT.value,
+            Exchange.BITHUMB.value
         ]
         
-        # 최소 거래량 - 상수 사용
-        self.min_volume = MIN_VOLUME_KRW
+        # 최소 거래량 설정 가져오기
+        min_volume = get_value_from_settings("trading.settings.min_volume_krw")
+        if min_volume is None:
+            logger.error(f"{LOG_SYSTEM} 필수 설정 누락: trading.settings.min_volume_krw")
+            logger.error(f"{LOG_SYSTEM} settings.json 파일에서 최소 거래량(trading.settings.min_volume_krw)을 설정해야 합니다.")
+            import sys
+            sys.exit(1)  # 에러 코드와 함께 프로그램 종료
+            
+        self.min_volume = min_volume
         
         # 심볼 캐시
         self._binance_symbols_cache: Optional[List[str]] = None
@@ -623,7 +559,7 @@ class Aggregator:
             Dict[str, List[str]]: 거래소별 필터링된 심볼 목록
         """
         try:
-            logger.info(f"{LOG_SYSTEM} === 심볼 필터링 시작 ===")
+            logger.info(f"{LOG_SYSTEM} === 심볼 필터링을 시작합니다 ===")
             logger.info(f"{LOG_SYSTEM} 최소 거래량: {self.min_volume:,} KRW")
             
             # 1. 거래소별 필터링
@@ -632,41 +568,40 @@ class Aggregator:
             # Upbit
             upbit_symbols = await fetch_upbit_symbols_and_volume(self.min_volume)
             if upbit_symbols:
-                filtered_data[UPBIT] = upbit_symbols
+                filtered_data[Exchange.UPBIT.value] = upbit_symbols
             
             # Bithumb
             bithumb_symbols = await fetch_bithumb_symbols_and_volume(self.min_volume)
             if bithumb_symbols:
-                filtered_data[BITHUMB] = bithumb_symbols
+                filtered_data[Exchange.BITHUMB.value] = bithumb_symbols
             
             # Binance
             binance_symbols = await fetch_binance_symbols(self.min_volume)
             if binance_symbols:
-                filtered_data[BINANCE] = binance_symbols
-                filtered_data[BINANCE_FUTURE] = binance_symbols
+                filtered_data[Exchange.BINANCE.value] = binance_symbols
+                filtered_data[Exchange.BINANCE_FUTURE.value] = binance_symbols
             
             # Bybit
             bybit_symbols = await fetch_bybit_symbols(self.min_volume)
             if bybit_symbols:
-                filtered_data[BYBIT] = bybit_symbols
-                filtered_data[BYBIT_FUTURE] = bybit_symbols
+                filtered_data[Exchange.BYBIT.value] = bybit_symbols
+                filtered_data[Exchange.BYBIT_FUTURE.value] = bybit_symbols
             
             # 2. 거래소 간 페어링
             if len(filtered_data) >= 4:
                 paired_data = await get_paired_symbols(
-                    filtered_data.get(UPBIT, []),
-                    filtered_data.get(BITHUMB, []),
-                    filtered_data.get(BINANCE, []),
-                    filtered_data.get(BYBIT, [])
+                    filtered_data.get(Exchange.UPBIT.value, []),
+                    filtered_data.get(Exchange.BITHUMB.value, []),
+                    filtered_data.get(Exchange.BINANCE.value, []),
+                    filtered_data.get(Exchange.BYBIT.value, [])
                 )
                 filtered_data = {k: list(v) for k, v in paired_data.items()}
             
             # 3. 제외 심볼 필터링
-            excluded_symbols = set(self.settings.get("trading", {})
-                                 .get("excluded_symbols", {})
-                                 .get("list", []))
+            symbol_filters = get_symbol_filters()
+            excluded_symbols = set(symbol_filters.get('excluded', []))
             
-            logger.info(f"{LOG_SYSTEM} === 제외할 심볼 === {sorted(list(excluded_symbols))}")
+            logger.info(f"{LOG_SYSTEM} === 제외할 심볼 목록 === {sorted(list(excluded_symbols))}")
             
             for exchange in filtered_data:
                 before_symbols = filtered_data[exchange]
@@ -678,7 +613,7 @@ class Aggregator:
                 removed = set(before_symbols) - set(filtered_data[exchange])
                 if removed:
                     logger.info(
-                        f"{EXCHANGE_NAMES_KR[exchange]} 제외된 심볼: {sorted(list(removed))}"
+                        f"{EXCHANGE_NAMES_KR[exchange]} 제외된 심볼 목록: {sorted(list(removed))}"
                     )
             
             # 4. 선물 거래소 상장 시간 조회
@@ -701,6 +636,6 @@ class Aggregator:
             return filtered_data
 
         except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 심볼 필터링 실패: {e}")
+            logger.error(f"{LOG_SYSTEM} 심볼 필터링에 실패했습니다: {e}")
             return {}
 
