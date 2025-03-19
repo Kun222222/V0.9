@@ -109,7 +109,7 @@ class UpbitSubscription(BaseSubscription):
                 
                 # 구독 메시지 생성 및 전송
                 subscribe_message = await self.create_subscribe_message(batch_symbols)
-                if not await self.connection.send_message(json.dumps(subscribe_message)):
+                if not await self.send_message(json.dumps(subscribe_message)):
                     raise Exception(f"배치 {batch_num}/{total_batches} 구독 메시지 전송 실패")
                 
                 self.log_info(f"구독 요청 전송 | 배치 {batch_num}/{total_batches}, {len(batch_symbols)}개 심볼")
@@ -139,6 +139,11 @@ class UpbitSubscription(BaseSubscription):
             bool: 구독 성공 여부
         """
         try:
+            # 웹소켓 연결 확보
+            if not await self._ensure_websocket():
+                self.log_error("웹소켓 연결이 없어 구독 실패")
+                return False
+            
             # 심볼 전처리
             symbols = await self._preprocess_symbols(symbol)
             if not symbols:
@@ -345,7 +350,7 @@ class UpbitSubscription(BaseSubscription):
             
             # 콜백 호출
             if symbol in self.snapshot_callbacks:
-                await self.snapshot_callbacks[symbol](symbol, orderbook_data)
+                await self._call_callback(symbol, orderbook_data, callback_type="snapshot")
                 
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")

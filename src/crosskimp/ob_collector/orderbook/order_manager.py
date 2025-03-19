@@ -382,21 +382,16 @@ class OrderManager:
                 
                 # 연결이 끊어졌을 때 처리
                 if not is_connected and self.is_running:
-                    # 마지막 연결 시간 체크
-                    elapsed = time.time() - self.connection.last_activity_time
-                    limit = self.settings.get("reconnect_threshold", 60)
+                    # 재연결 시도
+                    logger.warning(f"{self.exchange_name_kr} 연결이 끊어짐, 재연결 시도 중")
                     
-                    # 오래 연결이 끊어진 경우 재연결 시도
-                    if elapsed > limit:
-                        logger.warning(f"{self.exchange_name_kr} 연결이 {int(elapsed)}초 동안 없음, 재연결 시도 중")
-                        
-                        # 재연결 및 구독 시도
-                        try:
-                            await self.connection.reconnect()
-                            if self.symbols:
-                                await self.subscription.subscribe(list(self.symbols))
-                        except Exception as e:
-                            logger.error(f"{self.exchange_name_kr} 재연결 실패: {str(e)}")
+                    # 재연결 및 구독 시도
+                    try:
+                        await self.connection.reconnect()
+                        if self.symbols:
+                            await self.subscription.subscribe(list(self.symbols))
+                    except Exception as e:
+                        logger.error(f"{self.exchange_name_kr} 재연결 실패: {str(e)}")
                 
                 # 지정된 간격만큼 대기
                 await asyncio.sleep(check_interval)
@@ -424,8 +419,7 @@ class OrderManager:
         if self.connection:
             connection_info = {
                 "is_connected": self.connection.is_connected,
-                "last_activity": datetime.fromtimestamp(self.connection.last_activity_time).isoformat(),
-                "reconnect_count": self.connection.reconnect_count
+                "reconnect_count": self.connection.reconnect_count if hasattr(self.connection, 'reconnect_count') else 0
             }
         
         # 종합 상태 정보

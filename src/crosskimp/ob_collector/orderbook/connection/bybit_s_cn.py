@@ -30,6 +30,10 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
     바이빗 웹소켓 연결 관리 클래스
     
     바이빗 거래소의 웹소켓 연결을 관리하는 클래스입니다.
+    
+    책임:
+    - 웹소켓 연결 관리 (연결, 재연결, 연결 종료)
+    - 연결 상태 모니터링 및 건강 상태 확인
     """
     def __init__(self, settings: dict):
         """
@@ -55,7 +59,12 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             multiplier=2.0,       # 대기 시간 증가 배수
             max_attempts=0        # 0 = 무제한 재시도
         )
+        
+        # 헬스 체크 태스크
+        self.health_check_task = None
 
+    # 웹소켓 연결 관리
+    # ==================================
     async def connect(self) -> bool:
         """
         웹소켓 연결 시도
@@ -86,6 +95,11 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                     # 연결 성공 - 부모 클래스의 setter 사용
                     self.is_connected = True
                     self.log_info("🟢 웹소켓 연결 성공")
+                    
+                    # 헬스 체크 태스크 시작
+                    if not self.health_check_task or self.health_check_task.done():
+                        self.health_check_task = asyncio.create_task(self.health_check())
+                    
                     return True
                     
                 except Exception as e:
@@ -107,62 +121,27 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             bool: 종료 성공 여부
         """
         try:
+            # 헬스 체크 태스크 종료
+            if self.health_check_task and not self.health_check_task.done():
+                self.health_check_task.cancel()
+                try:
+                    await self.health_check_task
+                except asyncio.CancelledError:
+                    pass
+            
+            # 웹소켓 연결 종료
             if self.ws:
                 await self.ws.close()
+                self.ws = None
             
             # 연결 상태 업데이트 (부모 클래스의 setter 사용)
             self.is_connected = False
+            self.log_info("웹소켓 연결 종료됨")
             return True
             
         except Exception as e:
             self.log_error(f"웹소켓 연결 종료 실패: {str(e)}")
             return False
-
-    async def send_message(self, message: str) -> bool:
-        """
-        웹소켓을 통해 메시지 전송
-        
-        Args:
-            message: 전송할 메시지
-            
-        Returns:
-            bool: 전송 성공 여부
-        """
-        try:
-            if not self.ws or not self.is_connected:
-                self.log_error("웹소켓이 연결되지 않음")
-                return False
-                
-            await self.ws.send(message)
-            return True
-        except Exception as e:
-            self.log_error(f"메시지 전송 실패: {str(e)}")
-            return False
-
-    async def health_check(self) -> None:
-        """
-        웹소켓 상태 체크 (백그라운드 태스크)
-        """
-        while not self.stop_event.is_set():
-            try:
-                current_time = time.time()
-                
-                # 메시지 타임아웃 체크 - 이미 연결된 상태이고 최근에 메시지를 받은 적이 있는 경우만 체크
-                if self.is_connected and self.stats.last_message_time > 0:
-                    time_since_last_message = current_time - self.stats.last_message_time
-                    
-                    # 타임아웃 발생 시 에러 로그 출력 및 재연결
-                    if time_since_last_message > self.message_timeout:
-                        error_msg = f"웹소켓 메시지 타임아웃: 마지막 메시지로부터 {time_since_last_message:.1f}초 경과"
-                        self.log_error(error_msg)
-                        await self.send_telegram_notification("error", error_msg)
-                        await self.reconnect()
-                
-                await asyncio.sleep(self.health_check_interval)
-                
-            except Exception as e:
-                self.log_error(f"웹소켓 상태 체크 중 오류: {str(e)}")
-                await asyncio.sleep(1)
 
     async def reconnect(self) -> bool:
         """
@@ -189,36 +168,50 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
         except Exception as e:
             self.log_error(f"웹소켓 재연결 실패: {str(e)}")
             return False
-
-    async def receive_raw(self) -> Optional[str]:
+    
+    async def get_websocket(self):
         """
-        웹소켓에서 원시 메시지 수신
+        현재 연결된 웹소켓 객체 반환
+        
+        Subscription 클래스에서 직접 웹소켓 객체에 접근할 수 있도록 함
         
         Returns:
-            Optional[str]: 수신된 원시 메시지 또는 None
+            웹소켓 객체 또는 None
         """
-        try:
-            if not self.ws or not self.is_connected:
-                return None
-                
-            message = await self.ws.recv()
-            
-            if message:
-                self.update_message_metrics(message)
-                
-            return message
-            
-        except websockets.exceptions.ConnectionClosed:
-            self.log_error("웹소켓 연결 끊김")
-            # 연결 상태 업데이트 (부모 클래스의 setter 사용)
-            self.is_connected = False
-            return None
-            
-        except Exception as e:
-            self.log_error(f"메시지 수신 실패: {e}")
-            self.metrics.record_error(self.exchangename)
-            return None
+        if self.is_connected and self.ws:
+            return self.ws
+        return None
 
+    # 상태 모니터링
+    # ==================================
+    async def health_check(self) -> None:
+        """
+        웹소켓 상태 체크 (백그라운드 태스크)
+        
+        - 주기적으로 연결 상태 확인
+        - 연결 이상 시 재연결 수행
+        """
+        self.log_info("상태 모니터링 시작")
+        
+        while not self.stop_event.is_set():
+            try:
+                # 연결이 끊어진 상태면 체크 중단
+                if not self.is_connected:
+                    await asyncio.sleep(self.health_check_interval)
+                    continue
+                
+                # 대기
+                await asyncio.sleep(self.health_check_interval)
+                
+            except asyncio.CancelledError:
+                self.log_info("상태 모니터링 태스크 취소됨")
+                break
+                
+            except Exception as e:
+                self.log_error(f"웹소켓 상태 체크 중 오류: {str(e)}")
+                await asyncio.sleep(1)    
+    # PING/PONG 관리
+    # ==================================
     async def _send_ping(self) -> None:
         """
         PING 메시지 전송
@@ -231,26 +224,12 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                     "req_id": str(int(time.time() * 1000)),
                     "op": "ping"
                 }
-                await self.send_message(json.dumps(ping_message))
-                self.stats.last_ping_time = time.time()
+                await self.ws.send(json.dumps(ping_message))
                 self.log_debug(f"PING 메시지 전송")
         except Exception as e:
             self.log_error(f"PING 메시지 전송 실패: {str(e)}")
-
-    def _handle_pong(self, data: dict) -> bool:
-        """
-        PONG 메시지 처리
-        
-        Args:
-            data: PONG 메시지 데이터
             
-        Returns:
-            bool: PONG 메시지 처리 성공 여부
-        """
-        try:
-            self.stats.last_pong_time = time.time()
-            self.log_debug(f"PONG 응답 수신")
-            return True
-        except Exception as e:
-            self.log_error(f"PONG 메시지 처리 실패: {str(e)}")
-            return False
+            # 연결 문제로 핑 전송 실패 시 재연결 시도
+            if isinstance(e, websockets.exceptions.ConnectionClosed):
+                self.log_warning("PING 전송 실패로 재연결 시도")
+                await self.reconnect()

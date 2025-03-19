@@ -1,4 +1,4 @@
-# file: core/websocket/base_websocket.py
+# file: orderbook/connection/base_connector.py
 
 import asyncio
 import time
@@ -97,7 +97,6 @@ class BaseWebsocketConnector(ABC):
     
     책임:
     - 웹소켓 연결 관리 (연결, 재연결, 종료)
-    - 원시 메시지 수신 및 전송
     - 연결 상태 모니터링
     """
     def __init__(self, settings: dict, exchangename: str):
@@ -108,9 +107,9 @@ class BaseWebsocketConnector(ABC):
             settings: 설정 딕셔너리
             exchangename: 거래소 이름
         """
+        # 기본 정보
         self.exchangename = exchangename
         self.settings = settings
-        
         self.exchange_name_kr = EXCHANGE_NAMES_KR[exchangename]
 
         # 기본 상태 변수
@@ -134,7 +133,8 @@ class BaseWebsocketConnector(ABC):
         # 연결 상태 콜백 (WebsocketManager와 호환)
         self.connection_status_callback = None
 
-    # is_connected 속성 대신 메트릭 매니저를 통해 조회하는 프로퍼티로 변경
+    # 속성 관리 (Property)
+    # ==================================
     @property
     def is_connected(self) -> bool:
         """연결 상태 확인"""
@@ -161,7 +161,60 @@ class BaseWebsocketConnector(ABC):
             else:
                 self.log_debug(f"연결 상태 변경: 연결 끊김")
 
-    # 로깅 헬퍼 메서드들
+    # 웹소켓 연결 관리
+    # ==================================
+    @abstractmethod
+    async def connect(self) -> bool:
+        """
+        웹소켓 연결 수행
+        
+        Returns:
+            bool: 연결 성공 여부
+        """
+        pass
+        
+    @abstractmethod
+    async def disconnect(self) -> bool:
+        """
+        웹소켓 연결 종료
+        
+        Returns:
+            bool: 종료 성공 여부
+        """
+        pass
+    
+    @abstractmethod
+    async def reconnect(self) -> bool:
+        """
+        웹소켓 재연결
+        
+        Returns:
+            bool: 재연결 성공 여부
+        """
+        pass
+    
+    async def get_websocket(self):
+        """
+        현재 연결된 웹소켓 객체 반환
+        
+        Returns:
+            websocket: 연결된 웹소켓 객체 또는 None
+        """
+        if self.is_connected and self.ws:
+            return self.ws
+        return None
+
+    # 상태 모니터링
+    # ==================================
+    @abstractmethod
+    async def health_check(self) -> None:
+        """
+        웹소켓 상태 체크 (백그라운드 태스크)
+        """
+        pass
+
+    # 로깅 및 알림
+    # ==================================
     def log_error(self, msg: str, exc_info: bool = True):
         """오류 로깅"""
         self.stats.error_count += 1
@@ -186,27 +239,6 @@ class BaseWebsocketConnector(ABC):
         warning_msg = f"{self.exchange_name_kr} {STATUS_EMOJIS.get('WARNING', '🟠')} {msg}"
         logger.warning(warning_msg)
 
-    def update_message_metrics(self, message: str) -> None:
-        """
-        메시지 수신 시 통계 업데이트
-        
-        Args:
-            message: 수신된 메시지
-        """
-        # 메시지 통계 업데이트
-        self.stats.message_count += 1
-        current_time = time.time()
-        self.stats.last_message_time = current_time
-        
-        # 연결 상태 업데이트 - 메시지를 받았으면 연결된 상태지만
-        # 매 메시지마다 상태를 업데이트하면 로그가 너무 많이 생성됨
-        # 연결이 끊어진 상태에서 메시지를 받은 경우만 상태 업데이트
-        if not self.is_connected:
-            self.is_connected = True
-        
-        # 메트릭 매니저에 메시지 수신 기록
-        self.metrics.record_message(self.exchangename)
-
     async def send_telegram_notification(self, event_type: str, message: str) -> None:
         """
         텔레그램 알림 전송
@@ -221,8 +253,6 @@ class BaseWebsocketConnector(ABC):
             
         try:
             # 텔레그램 메시지 전송 시 message_type을 문자열로 전달
-            # telegram_notification.py에서는 LogMessageType 객체를 기대하지만,
-            # 문자열도 직접 MessageType으로 변환 가능함
             message_type = self._get_message_type_for_event(event_type)
                 
             # 텔레그램 메시지 전송
@@ -254,63 +284,3 @@ class BaseWebsocketConnector(ABC):
             return "warning"  # MessageType.WARNING 대신 문자열 사용
         else:
             return "info"   # MessageType.INFO 대신 문자열 사용
-
-    @abstractmethod
-    async def connect(self) -> bool:
-        """
-        웹소켓 연결 수행
-        
-        Returns:
-            bool: 연결 성공 여부
-        """
-        pass
-        
-    @abstractmethod
-    async def disconnect(self) -> bool:
-        """
-        웹소켓 연결 종료
-        
-        Returns:
-            bool: 종료 성공 여부
-        """
-        pass
-        
-    @abstractmethod
-    async def send_message(self, message: str) -> bool:
-        """
-        웹소켓을 통해 메시지 전송
-        
-        Args:
-            message: 전송할 메시지
-            
-        Returns:
-            bool: 전송 성공 여부
-        """
-        pass
-        
-    @abstractmethod
-    async def health_check(self) -> None:
-        """
-        웹소켓 상태 체크 (백그라운드 태스크)
-        """
-        pass
-        
-    @abstractmethod
-    async def reconnect(self) -> bool:
-        """
-        웹소켓 재연결
-        
-        Returns:
-            bool: 재연결 성공 여부
-        """
-        pass
-    
-    @abstractmethod
-    async def receive_raw(self) -> Optional[str]:
-        """
-        웹소켓에서 원시 메시지 수신 (추상 메소드)
-        
-        Returns:
-            Optional[str]: 수신된 원시 메시지 또는 None
-        """
-        pass

@@ -94,7 +94,7 @@ class BybitFutureSubscription(BaseSubscription):
             json_msg = json.dumps(msg)
             
             # 메시지 전송
-            success = await self.connection.send_message(json_msg)
+            success = await self.send_message(json_msg)
             
             if not success:
                 self.log_error(f"구독 메시지 전송 실패: {symbols[:3]}...")
@@ -130,9 +130,10 @@ class BybitFutureSubscription(BaseSubscription):
             # 콜백 등록
             await self._register_callbacks(symbols, on_snapshot, on_delta, on_error)
             
-            # 연결 확인 및 연결
-            if not await self._ensure_connection():
-                raise Exception("웹소켓 연결 실패")
+            # 웹소켓 연결 확보
+            if not await self._ensure_websocket():
+                self.log_error("웹소켓 연결이 없어 구독 실패")
+                return False
             
             # 구독 요청 전송
             if not await self._send_subscription_requests(symbols):
@@ -352,11 +353,13 @@ class BybitFutureSubscription(BaseSubscription):
                             
                             # 스냅샷 또는 델타 메시지 각각에 맞는 처리
                             if symbol in self.snapshot_callbacks:
-                                await self._call_callback(symbol, orderbook_data, is_snapshot=True)
+                                # 디버그 로그 제거 - 너무 많은 로그 출력 방지
+                                # self.log_debug(f"{symbol} 스냅샷 수신 (시간: {timestamp}, 시퀀스: {sequence})")
+                                await self._call_callback(symbol, orderbook_data, callback_type="snapshot")
                                 # 메트릭 업데이트
                                 self.metrics_manager.update_message_stats(self.exchange_code, "snapshot")
                             elif symbol in self.delta_callbacks:
-                                await self._call_callback(symbol, orderbook_data, is_snapshot=False)
+                                await self._call_callback(symbol, orderbook_data, callback_type="delta")
                                 # 메트릭 업데이트
                                 self.metrics_manager.update_message_stats(self.exchange_code, "delta")
                         
@@ -425,10 +428,11 @@ class BybitFutureSubscription(BaseSubscription):
                                 self.log_orderbook_data(symbol, orderbook_data)
                                 
                                 # 델타 콜백 호출
-                                await self._call_callback(symbol, orderbook_data, is_snapshot=False)
+                                await self._call_callback(symbol, orderbook_data, callback_type="delta")
                                 # 메트릭 업데이트 추가
                                 self.metrics_manager.update_message_stats(self.exchange_code, "delta")
                             else:
+                                # 스냅샷 없이 델타 수신 로그는 중요하므로 유지
                                 self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
         except json.JSONDecodeError:
             self.log_error(f"JSON 파싱 실패: {message[:100]}...")

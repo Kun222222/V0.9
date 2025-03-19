@@ -105,14 +105,10 @@ class WebsocketMetricsManager:
                 
                 # 메시지 관련
                 "message_count": 0,
-                "orderbook_count": 0,
                 "error_count": 0,
                 "last_message_time": 0.0,
-                "processing_times": [],
-                "avg_processing_time": 0.0,
                 
                 # 성능 관련
-                "bytes_received": 0,
                 "processing_rate": 0,
                 "last_rate_calc_time": time.time(),
                 "message_count_at_last_calc": 0
@@ -143,15 +139,6 @@ class WebsocketMetricsManager:
                 
             elif event_type == "error":
                 self._handle_error_event(exchange_code, current_time)
-                
-            elif event_type == "orderbook":
-                self._handle_orderbook_event(exchange_code, current_time)
-                
-            elif event_type == "processing_time":
-                self._handle_processing_time_event(exchange_code, kwargs.get("time_ms", 0))
-                
-            elif event_type == "bytes":
-                self._handle_bytes_event(exchange_code, kwargs.get("size", 0))
                 
             # 처리율 계산 (일정 간격마다)
             self._calculate_processing_rate(exchange_code, current_time)
@@ -213,27 +200,6 @@ class WebsocketMetricsManager:
             self.metrics[exchange_code]["last_rate_calc_time"] = current_time
             self.metrics[exchange_code]["message_count_at_last_calc"] = current_count
 
-    def _handle_orderbook_event(self, exchange_code: str, current_time: float):
-        """오더북 이벤트 처리"""
-        self.metrics[exchange_code]["orderbook_count"] += 1
-        self.metrics[exchange_code]["last_update_time"] = current_time
-
-    def _handle_processing_time_event(self, exchange_code: str, time_ms: float):
-        """처리 시간 이벤트 처리"""
-        self.metrics[exchange_code]["processing_times"].append(time_ms)
-        # 리스트가 너무 길어지지 않도록 최근 100개만 유지
-        if len(self.metrics[exchange_code]["processing_times"]) > 100:
-            self.metrics[exchange_code]["processing_times"] = self.metrics[exchange_code]["processing_times"][-100:]
-        
-        # 평균 처리 시간 계산
-        times = self.metrics[exchange_code]["processing_times"]
-        if times:
-            self.metrics[exchange_code]["avg_processing_time"] = sum(times) / len(times)
-
-    def _handle_bytes_event(self, exchange_code: str, size: int):
-        """바이트 수신 이벤트 처리"""
-        self.metrics[exchange_code]["bytes_received"] += size
-
     def _handle_error_event(self, exchange_code: str, current_time: float):
         """에러 이벤트 처리"""
         self.metrics[exchange_code]["error_count"] += 1
@@ -275,13 +241,10 @@ class WebsocketMetricsManager:
                 "connected": self.metrics[exchange_code]["connected"],
                 "connection_state": self._get_state_name(self.metrics[exchange_code]["connection_state"]),
                 "message_count": self.metrics[exchange_code]["message_count"],
-                "orderbook_count": self.metrics[exchange_code]["orderbook_count"],
                 "error_count": self.metrics[exchange_code]["error_count"],
                 "last_update_time": self.metrics[exchange_code]["last_update_time"],
                 "uptime": current_time - self.metrics[exchange_code]["start_time"],
-                "processing_rate": self.metrics[exchange_code]["processing_rate"],
-                "bytes_received": self.metrics[exchange_code]["bytes_received"],
-                "avg_processing_time": self.metrics[exchange_code]["avg_processing_time"]
+                "processing_rate": self.metrics[exchange_code]["processing_rate"]
             }
             
         return result

@@ -94,7 +94,7 @@ class BithumbSubscription(BaseSubscription):
             json_msg = json.dumps(msg)
             
             # 메시지 전송
-            success = await self.connection.send_message(json_msg)
+            success = await self.send_message(json_msg)
             
             if not success:
                 self.log_error(f"구독 메시지 전송 실패: {symbols[:3]}...")
@@ -130,9 +130,10 @@ class BithumbSubscription(BaseSubscription):
             # 콜백 등록
             await self._register_callbacks(symbols, on_snapshot, on_delta, on_error)
             
-            # 연결 확인 및 연결
-            if not await self._ensure_connection():
-                raise Exception("웹소켓 연결 실패")
+            # 웹소켓 연결 확보
+            if not await self._ensure_websocket():
+                self.log_error("웹소켓 연결이 없어 구독 실패")
+                return False
             
             # 구독 요청 전송
             if not await self._send_subscription_requests(symbols):
@@ -377,9 +378,9 @@ class BithumbSubscription(BaseSubscription):
                         
                         # 콜백 호출
                         if is_snapshot and symbol in self.snapshot_callbacks:
-                            await self.snapshot_callbacks[symbol](symbol, orderbook_data)
+                            await self._call_callback(symbol, orderbook_data, callback_type="snapshot")
                         elif not is_snapshot and symbol in self.delta_callbacks:
-                            await self.delta_callbacks[symbol](symbol, orderbook_data)
+                            await self._call_callback(symbol, orderbook_data, callback_type="delta")
                     else:
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:
@@ -387,7 +388,7 @@ class BithumbSubscription(BaseSubscription):
                 self.metrics_manager.record_error(self.exchange_code)
                 
                 if symbol in self.error_callbacks:
-                    await self.error_callbacks[symbol](symbol, str(e))
+                    await self._call_callback(symbol, str(e), callback_type="error")
                     
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
