@@ -5,7 +5,7 @@
 """
 
 # 경로 관련 상수 가져오기
-from crosskimp.config.paths import (
+from crosskimp.config.constants_v3 import (
     PROJECT_ROOT, SRC_DIR, LOGS_DIR, DATA_DIR, 
     LOG_SUBDIRS, ensure_directories
 )

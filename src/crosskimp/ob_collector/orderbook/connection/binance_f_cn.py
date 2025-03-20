@@ -101,9 +101,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             if not self.wsurl:
                 raise ValueError("WebSocket URL is not set. Call subscribe() first.")
                 
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "connect_attempt")
-                
             self.session = aiohttp.ClientSession()
             self.ws = await connect(
                 self.wsurl,
@@ -113,8 +110,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             )
             self.is_connected = True
             self.stats.connection_start_time = time.time()
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "connect")
             self.log_info("웹소켓 연결 성공")
             
             # 텔레그램 알림 전송
@@ -133,8 +128,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             symbols: 구독할 심볼 목록
         """
         if not symbols:
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "warning")
             return
 
         # wsurl은 이미 _prepare_start에서 설정됨
@@ -142,10 +135,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             self.log_error("WebSocket URL이 설정되지 않았습니다.")
             return
             
-        # 구독 상태 콜백
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "subscribe")
-
         # 심볼 추적
         for sym in symbols:
             self.subscribed_symbols.add(sym.upper())
@@ -176,16 +165,10 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
                 url = f"{self.snapshot_base}?symbol={symbol_upper}&limit={self.snapshot_depth}"
                 self.log_info(f"스냅샷 요청 URL: {url}")
                 
-                if self.connection_status_callback:
-                    self.connection_status_callback(self.exchangename, "snapshot_request")
-                
-                # TCP 커넥터에 DNS 캐시 설정 추가
-                connector = aiohttp.TCPConnector(
+                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(
                     ttl_dns_cache=DNS_CACHE_TTL,  # DNS 캐시 TTL
                     ssl=False  # SSL 검증 비활성화 (필요한 경우)
-                )
-                
-                async with aiohttp.ClientSession(connector=connector) as sess:
+                )) as sess:
                     async with sess.get(url, timeout=SNAPSHOT_REQUEST_TIMEOUT) as resp:
                         if resp.status == 200:
                             raw_data = await resp.json()
@@ -221,9 +204,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             if not snapshot:
                 self.log_error(f"{symbol} 스냅샷 파싱 실패")
                 return None
-                
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "snapshot_parsed")
                 
             return snapshot
             
@@ -286,8 +266,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
                 except:
                     pass
             self.is_connected = False
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "disconnect")
 
     async def process_message(self, message: str) -> None:
         """

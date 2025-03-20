@@ -176,7 +176,7 @@ METRICS_RATE_CALCULATION_INTERVAL = 1.0  # 처리율 계산 주기 (초)
 METRICS_DELAY_THRESHOLD_MS = 1000        # 지연 감지 임계값 (ms)
 METRICS_ALERT_COOLDOWN = 300             # 알림 쿨다운 (초)
 METRICS_MAX_HISTORY = 3600               # 메트릭 보관 기간 (초)
-METRICS_MAX_EVENTS = 100                 # 최대 이벤트 저장 수
+METRICS_MAX_EVENTS = 300                 # 최대 이벤트 저장 수
 METRICS_HEALTH_THRESHOLD = 70            # 상태 점수 임계값
 
 # ============================

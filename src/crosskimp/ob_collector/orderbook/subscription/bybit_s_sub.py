@@ -6,8 +6,7 @@
 
 import json
 import asyncio
-import datetime
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
@@ -115,7 +114,7 @@ class BybitSubscription(BaseSubscription):
             return False
             
     
-    async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
+    async def subscribe(self, symbol):
         """
         심볼 구독
         
@@ -123,9 +122,6 @@ class BybitSubscription(BaseSubscription):
         
         Args:
             symbol: 구독할 심볼 또는 심볼 리스트
-            on_snapshot: 스냅샷 수신 시 호출할 콜백 함수
-            on_delta: 델타 수신 시 호출할 콜백 함수
-            on_error: 에러 발생 시 호출할 콜백 함수
             
         Returns:
             bool: 구독 성공 여부
@@ -141,8 +137,9 @@ class BybitSubscription(BaseSubscription):
             if not symbols:
                 return False
                 
-            # 콜백 등록
-            await self._register_callbacks(symbols, on_snapshot, on_delta, on_error)
+            # 구독 상태 업데이트
+            for sym in symbols:
+                self.subscribed_symbols[sym] = True
             
             # 구독 요청 전송
             if not await self._send_subscription_requests(symbols):
@@ -154,18 +151,14 @@ class BybitSubscription(BaseSubscription):
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
+            # 구독 이벤트 발행
+            self._publish_subscription_status_event(symbols, "subscribed")
+            
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.metrics_manager.record_error(self.exchange_code)
-            
-            if on_error is not None:
-                if isinstance(symbol, list):
-                    for sym in symbol:
-                        await on_error(sym, str(e))
-                else:
-                    await on_error(symbol, str(e))
+            self.metrics_manager.record_metric(self.exchange_code, "error")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -418,23 +411,13 @@ class BybitSubscription(BaseSubscription):
             # 오더북 데이터 로깅 
             self.log_orderbook_data(symbol, orderbook_data)
             
-            # 스냅샷 또는 델타 메시지 각각에 맞는 처리
-            if is_snapshot:
-                # 스냅샷 콜백 호출
-                if symbol in self.snapshot_callbacks:
-                    # 디버그 로그 제거 - 너무 많은 로그 출력 방지
-                    # self.log_debug(f"{symbol} 스냅샷 수신 (시간: {timestamp}, 시퀀스: {sequence})")
-                    await self._call_callback(symbol, orderbook_data, callback_type="snapshot")
-            else:
-                # 델타 메시지지만 완전한 오더북으로 델타 콜백 호출
-                if symbol in self.delta_callbacks:
-                    # 디버그 로그 제거 - 너무 많은 로그 출력 방지
-                    # self.log_debug(f"{symbol} 델타 적용 후 오더북 업데이트 (시간: {timestamp}, 시퀀스: {sequence})")
-                    await self._call_callback(symbol, orderbook_data, callback_type="delta")
+            # 이벤트 발행 (스냅샷 또는 델타)
+            event_type = "snapshot" if is_snapshot else "delta"
+            self.publish_event(symbol, orderbook_data, event_type)
                     
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            self.metrics_manager.record_error(self.exchange_code)
+            self.metrics_manager.record_metric(self.exchange_code, "error")
     
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:

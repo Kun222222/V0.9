@@ -84,10 +84,6 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
         """
         연결 후 처리 (BaseWebsocketConnector 템플릿 메서드 구현)
         """
-        # 재연결 성공 알림
-        if self.connection_status_callback:
-            self.connection_status_callback(self.exchangename, "connect")
-            
         # 재연결 시 이미 구독된 심볼들에 대해 스냅샷 다시 요청
         if self.subscribed_symbols and hasattr(self, 'manager') and self.manager:
             self.log_info(f"재연결 후 스냅샷 다시 요청 (심볼: {len(self.subscribed_symbols)}개)")
@@ -97,8 +93,6 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
                     init_res = await self.manager.initialize_orderbook(sym, snapshot)
                     if init_res.is_valid:
                         self.log_info(f"{sym} 재연결 후 스냅샷 초기화 성공")
-                        if self.connection_status_callback:
-                            self.connection_status_callback(self.exchangename, "snapshot")
                     else:
                         self.log_error(f"{sym} 재연결 후 스냅샷 초기화 실패: {init_res.error_messages}")
                 else:
@@ -150,8 +144,6 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
             symbols: 구독할 심볼 목록
         """
         if not symbols:
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "warning")
             return
 
         chunk_size = SUBSCRIBE_CHUNK_SIZE
@@ -160,8 +152,6 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
             # 파서를 사용하여 구독 메시지 생성
             msg = self.parser.create_subscribe_message(chunk)
             await self.ws.send(json.dumps(msg))
-            if self.connection_status_callback:
-                self.connection_status_callback(self.exchangename, "subscribe")
             self.log_info(f"{len(chunk)}개 심볼 구독 요청 전송")
             await asyncio.sleep(SUBSCRIBE_DELAY)
 

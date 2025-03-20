@@ -8,7 +8,6 @@ import websockets.exceptions
 from typing import Dict, Optional, Tuple, Any
 
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy
-from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 
 # ============================
@@ -62,9 +61,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             max_attempts=0  # 무제한 재시도
         )
         
-        # 메트릭 매니저 싱글톤 인스턴스 사용
-        self.metrics = WebsocketMetricsManager.get_instance()
-        
         # 연결 중 상태 관리 (is_connected와 별개)
         self.connecting = False
         
@@ -116,7 +112,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             return True
             
         except asyncio.TimeoutError as e:
-            self.connecting = False
             self.log_error(f"연결 타임아웃: {str(e)}")
             
             # 연결 실패 처리
@@ -125,7 +120,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                 
         except Exception as e:
             self.log_error(f"연결 오류: {str(e)}", exc_info=True)
-            self.connecting = False
             
             # 연결 실패 처리
             self.is_connected = False
@@ -133,92 +127,3 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             
         finally:
             self.connecting = False
-
-    async def disconnect(self) -> bool:
-        """
-        웹소켓 연결 종료
-        
-        Returns:
-            bool: 종료 성공 여부
-        """
-        try:
-            # 헬스 체크 태스크 취소
-            if self.health_check_task and not self.health_check_task.done():
-                self.health_check_task.cancel()
-                try:
-                    await self.health_check_task
-                except asyncio.CancelledError:
-                    pass
-            
-            if self.ws:
-                await self.ws.close()
-            
-            # 연결 상태 업데이트
-            self.is_connected = False
-            return True
-            
-        except Exception as e:
-            self.log_error(f"웹소켓 연결 종료 실패: {str(e)}")
-            return False
-
-    async def reconnect(self) -> bool:
-        """
-        웹소켓 재연결
-        
-        Returns:
-            bool: 재연결 성공 여부
-        """
-        try:
-            self.stats.reconnect_count += 1
-            reconnect_msg = f"웹소켓 재연결 시도 중 (시도 횟수: {self.stats.reconnect_count})"
-            self.log_info(reconnect_msg)
-            await self.send_telegram_notification("reconnect", reconnect_msg)
-            
-            await self.disconnect()
-            
-            # 재연결 지연 시간 계산
-            delay = self.reconnect_strategy.next_delay()
-            self.log_info(f"재연결 대기: {delay:.1f}초")
-            await asyncio.sleep(delay)
-            
-            success = await self.connect()
-            
-            if success:
-                self.log_info("웹소켓 재연결 성공")
-            else:
-                self.log_error("웹소켓 재연결 실패")
-            
-            return success
-            
-        except Exception as e:
-            self.log_error(f"웹소켓 재연결 실패: {str(e)}")
-            return False
-
-    # 상태 모니터링
-    # ==================================
-    async def health_check(self) -> None:
-        """
-        웹소켓 상태 체크 (백그라운드 태스크)
-        """
-        self.log_info(f"헬스 체크 시작 (간격: {self.health_check_interval}초)")
-        
-        while not self.stop_event.is_set() and self.is_connected:
-            try:
-                # 연결 상태 디버그 로깅은 1분에 한 번 정도만 출력 (타임스탬프 기준)
-                current_time = time.time()
-                if self.is_connected and (current_time % 60) < 1:
-                    uptime = current_time - self.stats.connection_start_time
-                    self.log_debug(
-                        f"헬스 체크: 연결됨, 업타임={uptime:.1f}초, "
-                        f"오류={self.stats.error_count}개"
-                    )
-                
-                await asyncio.sleep(self.health_check_interval)
-                
-            except asyncio.CancelledError:
-                self.log_info("헬스 체크 태스크 취소됨")
-                break
-                
-            except Exception as e:
-                self.log_error(f"웹소켓 상태 체크 중 오류 발생: {str(e)}")
-                await asyncio.sleep(1)

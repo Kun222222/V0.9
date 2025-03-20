@@ -9,11 +9,11 @@ bot_constants.py에 정의된 함수들을 사용하여 텔레그램 메시지�
 최종수정: 2024.03
 """
 
-from typing import Dict, Union, Any, Optional
+from typing import Dict, Union
 from enum import Enum
 from crosskimp.telegrambot.bot_constants import (
     # 메시지 타입 및 아이콘
-    MessageType, MessageIcon,
+    MessageType,
     
     # 텔레그램 API 유틸리티
     setup_logger, send_telegram_message as bot_send_telegram_message,

@@ -96,6 +96,10 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                     self.is_connected = True
                     self.log_info("🟢 웹소켓 연결 성공")
                     
+                    # 텔레그램 알림 전송
+                    connect_msg = "웹소켓 연결 성공"
+                    await self.send_telegram_notification("connect", connect_msg)
+                    
                     # 헬스 체크 태스크 시작
                     if not self.health_check_task or self.health_check_task.done():
                         self.health_check_task = asyncio.create_task(self.health_check())
@@ -113,103 +117,6 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             self.is_connected = False
             return False
 
-    async def disconnect(self) -> bool:
-        """
-        웹소켓 연결 종료
-        
-        Returns:
-            bool: 종료 성공 여부
-        """
-        try:
-            # 헬스 체크 태스크 종료
-            if self.health_check_task and not self.health_check_task.done():
-                self.health_check_task.cancel()
-                try:
-                    await self.health_check_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # 웹소켓 연결 종료
-            if self.ws:
-                await self.ws.close()
-                self.ws = None
-            
-            # 연결 상태 업데이트 (부모 클래스의 setter 사용)
-            self.is_connected = False
-            self.log_info("웹소켓 연결 종료됨")
-            return True
-            
-        except Exception as e:
-            self.log_error(f"웹소켓 연결 종료 실패: {str(e)}")
-            return False
-
-    async def reconnect(self) -> bool:
-        """
-        웹소켓 재연결
-        
-        Returns:
-            bool: 재연결 성공 여부
-        """
-        try:
-            self.stats.reconnect_count += 1
-            reconnect_msg = f"웹소켓 재연결 시도"
-            self.log_info(reconnect_msg)
-            await self.send_telegram_notification("reconnect", reconnect_msg)
-            
-            await self.disconnect()
-            
-            # 재연결 대기 (최소화)
-            delay = self.reconnect_strategy.next_delay()
-            await asyncio.sleep(delay)
-            
-            success = await self.connect()
-            return success
-            
-        except Exception as e:
-            self.log_error(f"웹소켓 재연결 실패: {str(e)}")
-            return False
-    
-    async def get_websocket(self):
-        """
-        현재 연결된 웹소켓 객체 반환
-        
-        Subscription 클래스에서 직접 웹소켓 객체에 접근할 수 있도록 함
-        
-        Returns:
-            웹소켓 객체 또는 None
-        """
-        if self.is_connected and self.ws:
-            return self.ws
-        return None
-
-    # 상태 모니터링
-    # ==================================
-    async def health_check(self) -> None:
-        """
-        웹소켓 상태 체크 (백그라운드 태스크)
-        
-        - 주기적으로 연결 상태 확인
-        - 연결 이상 시 재연결 수행
-        """
-        self.log_info("상태 모니터링 시작")
-        
-        while not self.stop_event.is_set():
-            try:
-                # 연결이 끊어진 상태면 체크 중단
-                if not self.is_connected:
-                    await asyncio.sleep(self.health_check_interval)
-                    continue
-                
-                # 대기
-                await asyncio.sleep(self.health_check_interval)
-                
-            except asyncio.CancelledError:
-                self.log_info("상태 모니터링 태스크 취소됨")
-                break
-                
-            except Exception as e:
-                self.log_error(f"웹소켓 상태 체크 중 오류: {str(e)}")
-                await asyncio.sleep(1)    
     # PING/PONG 관리
     # ==================================
     async def _send_ping(self) -> None:

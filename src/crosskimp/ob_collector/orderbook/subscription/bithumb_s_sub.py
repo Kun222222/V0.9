@@ -8,7 +8,7 @@ import json
 import asyncio
 import datetime
 import time
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.config.constants_v3 import Exchange
@@ -106,7 +106,7 @@ class BithumbSubscription(BaseSubscription):
             self.log_error(f"구독 메시지 전송 중 오류: {str(e)}")
             return False
     
-    async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
+    async def subscribe(self, symbol):
         """
         심볼 구독
         
@@ -114,9 +114,6 @@ class BithumbSubscription(BaseSubscription):
         
         Args:
             symbol: 구독할 심볼 또는 심볼 리스트
-            on_snapshot: 스냅샷 수신 시 호출할 콜백 함수
-            on_delta: 델타 수신 시 호출할 콜백 함수
-            on_error: 에러 발생 시 호출할 콜백 함수
             
         Returns:
             bool: 구독 성공 여부
@@ -126,9 +123,10 @@ class BithumbSubscription(BaseSubscription):
             symbols = await self._preprocess_symbols(symbol)
             if not symbols:
                 return False
-                
-            # 콜백 등록
-            await self._register_callbacks(symbols, on_snapshot, on_delta, on_error)
+            
+            # 구독 상태 업데이트
+            for sym in symbols:
+                self.subscribed_symbols[sym] = True
             
             # 웹소켓 연결 확보
             if not await self._ensure_websocket():
@@ -145,18 +143,14 @@ class BithumbSubscription(BaseSubscription):
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
+            # 구독 이벤트 발행
+            self._publish_subscription_status_event(symbols, "subscribed")
+            
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.metrics_manager.record_error(self.exchange_code)
-            
-            if on_error is not None:
-                if isinstance(symbol, list):
-                    for sym in symbol:
-                        await on_error(sym, str(e))
-                else:
-                    await on_error(symbol, str(e))
+            self.metrics_manager.record_metric(self.exchange_code, "error")
             return False
 
     # 4. 메시지 수신 및 처리 단계
@@ -322,11 +316,11 @@ class BithumbSubscription(BaseSubscription):
             }
             
             # 메트릭 업데이트 - 오더북 메시지 처리
-            self.metrics_manager.update_metric(self.exchange_code, "orderbook")
+            self.metrics_manager.record_metric(self.exchange_code, "orderbook")
             
             # 처리 시간 측정 및 업데이트
             processing_time_ms = (time.time() - start_time) * 1000
-            self.metrics_manager.update_metric(self.exchange_code, "processing_time", time_ms=processing_time_ms)
+            self.metrics_manager.record_metric(self.exchange_code, "processing_time", processing_time=processing_time_ms)
             
             return result
             
@@ -342,8 +336,8 @@ class BithumbSubscription(BaseSubscription):
             
             # 메시지 크기 측정 및 메트릭 업데이트
             message_size = len(message)
-            self.metrics_manager.update_metric(self.exchange_code, "message")
-            self.metrics_manager.update_metric(self.exchange_code, "bytes", size=message_size)
+            self.metrics_manager.record_metric(self.exchange_code, "message")
+            self.metrics_manager.record_metric(self.exchange_code, "bytes", byte_size=message_size)
             
             parsed_data = self._parse_message(message)
             if not parsed_data:
@@ -376,23 +370,21 @@ class BithumbSubscription(BaseSubscription):
                         # 오더북 데이터 로깅
                         self.log_orderbook_data(symbol, orderbook_data)
                         
-                        # 콜백 호출
-                        if is_snapshot and symbol in self.snapshot_callbacks:
-                            await self._call_callback(symbol, orderbook_data, callback_type="snapshot")
-                        elif not is_snapshot and symbol in self.delta_callbacks:
-                            await self._call_callback(symbol, orderbook_data, callback_type="delta")
+                        # 이벤트 발행 (스냅샷 또는 델타)
+                        event_type = "snapshot" if is_snapshot else "delta"
+                        self.publish_event(symbol, orderbook_data, event_type)
                     else:
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:
                 self.log_error(f"{symbol} 오더북 검증 중 오류: {str(e)}")
-                self.metrics_manager.record_error(self.exchange_code)
+                self.metrics_manager.record_metric(self.exchange_code, "error")
                 
-                if symbol in self.error_callbacks:
-                    await self._call_callback(symbol, str(e), callback_type="error")
+                # 오류 이벤트 발행
+                self.publish_event(symbol, str(e), "error")
                     
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
-            self.metrics_manager.record_error(self.exchange_code)
+            self.metrics_manager.record_metric(self.exchange_code, "error")
 
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:

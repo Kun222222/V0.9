@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants import LOG_SYSTEM
+from crosskimp.config.constants_v3 import LOG_SYSTEM
 from crosskimp.system_manager.process_manager import running_processes, PROCESS_INFO, restart_process
 
 # 로거 설정

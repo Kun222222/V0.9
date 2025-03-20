@@ -7,8 +7,7 @@
 import asyncio
 import json
 import time
-import datetime
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
@@ -106,7 +105,7 @@ class BybitFutureSubscription(BaseSubscription):
             self.log_error(f"구독 메시지 전송 중 오류: {str(e)}")
             return False
     
-    async def subscribe(self, symbol, on_snapshot=None, on_delta=None, on_error=None):
+    async def subscribe(self, symbol):
         """
         심볼 구독
         
@@ -114,9 +113,6 @@ class BybitFutureSubscription(BaseSubscription):
         
         Args:
             symbol: 구독할 심볼 또는 심볼 리스트
-            on_snapshot: 스냅샷 수신 시 호출할 콜백 함수
-            on_delta: 델타 수신 시 호출할 콜백 함수
-            on_error: 에러 발생 시 호출할 콜백 함수
             
         Returns:
             bool: 구독 성공 여부
@@ -127,8 +123,9 @@ class BybitFutureSubscription(BaseSubscription):
             if not symbols:
                 return False
                 
-            # 콜백 등록
-            await self._register_callbacks(symbols, on_snapshot, on_delta, on_error)
+            # 구독 상태 업데이트
+            for sym in symbols:
+                self.subscribed_symbols[sym] = True
             
             # 웹소켓 연결 확보
             if not await self._ensure_websocket():
@@ -145,18 +142,14 @@ class BybitFutureSubscription(BaseSubscription):
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
+            # 구독 이벤트 발행
+            self._publish_subscription_status_event(symbols, "subscribed")
+            
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.metrics_manager.record_error(self.exchange_code)
-            
-            if on_error is not None:
-                if isinstance(symbol, list):
-                    for sym in symbol:
-                        await on_error(sym, str(e))
-                else:
-                    await on_error(symbol, str(e))
+            self.metrics_manager.record_metric(self.exchange_code, "error")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -293,7 +286,11 @@ class BybitFutureSubscription(BaseSubscription):
             # 원시 메시지 로깅
             self.log_raw_message(message)
             
-            # JSON 파싱
+            # 메시지 처리 - 메트릭 업데이트 및 디코딩
+            start_time = time.time()
+            self.metrics_manager.record_metric(self.exchange_code, "message")
+            
+            # JSON 메시지 처리
             data = json.loads(message)
             
             # 구독 응답 처리
@@ -351,17 +348,11 @@ class BybitFutureSubscription(BaseSubscription):
                             # 오더북 데이터 로깅
                             self.log_orderbook_data(symbol, orderbook_data)
                             
-                            # 스냅샷 또는 델타 메시지 각각에 맞는 처리
-                            if symbol in self.snapshot_callbacks:
-                                # 디버그 로그 제거 - 너무 많은 로그 출력 방지
-                                # self.log_debug(f"{symbol} 스냅샷 수신 (시간: {timestamp}, 시퀀스: {sequence})")
-                                await self._call_callback(symbol, orderbook_data, callback_type="snapshot")
-                                # 메트릭 업데이트
-                                self.metrics_manager.update_message_stats(self.exchange_code, "snapshot")
-                            elif symbol in self.delta_callbacks:
-                                await self._call_callback(symbol, orderbook_data, callback_type="delta")
-                                # 메트릭 업데이트
-                                self.metrics_manager.update_message_stats(self.exchange_code, "delta")
+                            # 스냅샷 이벤트 발행
+                            self.publish_event(symbol, orderbook_data, "snapshot")
+                            
+                            # 메트릭 업데이트
+                            self.metrics_manager.record_metric(self.exchange_code, "message")
                         
                         elif msg_type == "delta":
                             # 델타 처리 - symbol이 orderbooks에 있을 때만 처리
@@ -427,13 +418,20 @@ class BybitFutureSubscription(BaseSubscription):
                                 # 오더북 데이터 로깅
                                 self.log_orderbook_data(symbol, orderbook_data)
                                 
-                                # 델타 콜백 호출
-                                await self._call_callback(symbol, orderbook_data, callback_type="delta")
-                                # 메트릭 업데이트 추가
-                                self.metrics_manager.update_message_stats(self.exchange_code, "delta")
+                                # 델타 이벤트 발행
+                                self.publish_event(symbol, orderbook_data, "delta")
+                                
+                                # 메트릭 업데이트
+                                self.metrics_manager.record_metric(self.exchange_code, "message")
                             else:
                                 # 스냅샷 없이 델타 수신 로그는 중요하므로 유지
                                 self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
+            else:
+                # 일반 메시지인 경우
+                self.log_raw_message(f"수신 (일반): {message[:150]}...")
+                self.metrics_manager.record_metric(self.exchange_code, "message")
+                
+                # 일반 텍스트 메시지 처리 - JSON 디코딩
         except json.JSONDecodeError:
             self.log_error(f"JSON 파싱 실패: {message[:100]}...")
         except Exception as e:

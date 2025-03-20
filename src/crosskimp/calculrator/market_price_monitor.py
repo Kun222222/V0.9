@@ -6,7 +6,7 @@ from typing import Dict, Optional
 from datetime import datetime
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.config_loader import get_settings
+from crosskimp.config.constants_v3 import get_settings
 
 class MarketPriceMonitor:
     """

@@ -2,15 +2,10 @@
 텔레그램 시스템 명령어 모듈 - 시스템 관리를 위한 텔레그램 봇 명령어를 제공합니다.
 """
 
-import asyncio
-import logging
-from typing import Dict, List, Any, Optional, Tuple
-
-from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes
+from telegram.ext import CommandHandler
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants import LOG_SYSTEM
+from crosskimp.config.constants_v3 import LOG_SYSTEM
 from crosskimp.system_manager.process_manager import start_process, stop_process, restart_process, get_process_status, PROCESS_INFO
 from crosskimp.system_manager.scheduler import schedule_daily_restart, cancel_task, get_scheduled_tasks, calculate_next_midnight, format_remaining_time
 from crosskimp.system_manager.health_monitor import get_system_info, get_process_info, start_monitoring, stop_monitoring

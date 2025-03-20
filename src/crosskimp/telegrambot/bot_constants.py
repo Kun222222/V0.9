@@ -149,7 +149,7 @@ def setup_logger():
     global logger
     
     # 로그 디렉토리 경로 설정
-    from crosskimp.config.paths import LOGS_DIR
+    from crosskimp.config.constants_v3 import LOGS_DIR
     TELEGRAM_LOG_DIR = os.path.join(LOGS_DIR, "telegram")
     os.makedirs(TELEGRAM_LOG_DIR, exist_ok=True)
     

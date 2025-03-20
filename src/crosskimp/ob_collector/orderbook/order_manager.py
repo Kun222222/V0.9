@@ -9,52 +9,19 @@
 
 import asyncio
 import time
-from typing import Dict, List, Any, Optional, Set, Callable
-from datetime import datetime
+from typing import Dict, List, Any, Optional
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 
-# 모든 거래소 컴포넌트 직접 임포트
-# 연결 컴포넌트
-from crosskimp.ob_collector.orderbook.connection.upbit_s_cn import UpbitWebSocketConnector
-from crosskimp.ob_collector.orderbook.connection.bybit_s_cn import BybitWebSocketConnector
-from crosskimp.ob_collector.orderbook.connection.bybit_f_cn import BybitFutureWebSocketConnector
-from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
-# from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
-# from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
-
-# 구독 컴포넌트
-from crosskimp.ob_collector.orderbook.subscription.upbit_s_sub import UpbitSubscription
-from crosskimp.ob_collector.orderbook.subscription.bybit_s_sub import BybitSubscription
-from crosskimp.ob_collector.orderbook.subscription.bybit_f_sub import BybitFutureSubscription
-from crosskimp.ob_collector.orderbook.subscription.bithumb_s_sub import BithumbSubscription
-# from crosskimp.ob_collector.orderbook.subscription.binance_s_sub import BinanceSubscription
-# from crosskimp.ob_collector.orderbook.subscription.binance_f_sub import BinanceFutureSubscription
+# 컴포넌트 생성과 관리를 위한 모듈 임포트
+from crosskimp.ob_collector.orderbook.component_factory import create_connector, create_subscription, create_validator
+from crosskimp.ob_collector.orderbook.event_bus import EventBus
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
-
-# 컴포넌트 클래스 매핑
-EXCHANGE_CONNECTORS = {
-    Exchange.UPBIT.value: UpbitWebSocketConnector,
-    Exchange.BYBIT.value: BybitWebSocketConnector,
-    Exchange.BYBIT_FUTURE.value: BybitFutureWebSocketConnector,
-    Exchange.BITHUMB.value: BithumbWebSocketConnector
-    # Exchange.BINANCE.value: BinanceWebSocketConnector,
-    # Exchange.BINANCE_FUTURE.value: BinanceFutureWebSocketConnector,
-}
-
-EXCHANGE_SUBSCRIPTIONS = {
-    Exchange.UPBIT.value: UpbitSubscription,
-    Exchange.BYBIT.value: BybitSubscription,
-    Exchange.BYBIT_FUTURE.value: BybitFutureSubscription,
-    Exchange.BITHUMB.value: BithumbSubscription
-    # Exchange.BINANCE.value: BinanceSubscription,
-    # Exchange.BINANCE_FUTURE.value: BinanceFutureSubscription,
-}
 
 class OrderManager:
     """
@@ -79,15 +46,6 @@ class OrderManager:
         self.exchange_code = exchange_code
         self.exchange_name_kr = EXCHANGE_NAMES_KR[exchange_code]
         
-        # 출력 큐
-        self.output_queue = None
-        
-        # 구독 관리자
-        self.subscription = None
-        
-        # 연결 상태 콜백
-        self.connection_status_callback = None
-        
         # 로거 설정
         self.logger = logger
         
@@ -95,8 +53,12 @@ class OrderManager:
         self.metrics_manager = WebsocketMetricsManager.get_instance()
         self.metrics_manager.initialize_exchange(self.exchange_code)
         
+        # 이벤트 버스 인스턴스 가져오기
+        self.event_bus = EventBus.get_instance()
+        
         # 컴포넌트들
         self.connection = None       # 웹소켓 연결 객체
+        self.subscription = None     # 구독 객체
         self.validator = None        # 검증 객체
         
         # 구독 심볼 관리
@@ -104,9 +66,8 @@ class OrderManager:
         
         # 상태 관리
         self.is_running = False
-        self.tasks = {}
         
-        # 외부 콜백
+        # 시작 시간 기록
         self.start_time = time.time()
         
         logger.info(f"{self.exchange_name_kr} 오더북 관리자 초기화")
@@ -119,53 +80,35 @@ class OrderManager:
             bool: 초기화 성공 여부
         """
         try:
-            # 직접 컴포넌트 클래스 가져오기
-            conn_class = EXCHANGE_CONNECTORS.get(self.exchange_code)
-            sub_class = EXCHANGE_SUBSCRIPTIONS.get(self.exchange_code)
-            
-            # 필요한 컴포넌트가 없는 경우
-            if not conn_class or not sub_class:
-                logger.error(f"{self.exchange_name_kr} 필요한 컴포넌트 클래스를 찾을 수 없습니다")
+            # 팩토리를 사용하여 컴포넌트 생성
+            self.connection = create_connector(self.exchange_code, self.settings)
+            if not self.connection:
+                logger.error(f"{self.exchange_name_kr} 연결 객체를 생성할 수 없습니다")
                 return False
             
-            # 검증기 클래스 가져오기 (선택적)
-            validator_class = BaseOrderBookValidator
-            
-            # 연결 객체 생성
-            try:
-                self.connection = conn_class(self.settings)
-            except Exception as e:
-                logger.error(f"{self.exchange_name_kr} 연결 객체 생성 실패: {str(e)}")
+            self.subscription = create_subscription(self.exchange_code, self.connection)
+            if not self.subscription:
+                logger.error(f"{self.exchange_name_kr} 구독 객체를 생성할 수 없습니다")
                 return False
+                
+            self.validator = create_validator(self.exchange_code)
+            if self.validator and self.subscription:
+                self.subscription.set_validator(self.validator)
             
-            # 구독 객체 생성 (파서 사용하지 않음)
-            try:
-                self.subscription = sub_class(self.connection)
-            except Exception as e:
-                logger.error(f"{self.exchange_name_kr} 구독 객체 생성 실패: {str(e)}")
-                self.connection = None  # 생성된 객체 정리
-                return False
+            # 이벤트 구독 설정
+            # 1. 커넥터의 연결 상태 변경 이벤트 구독
+            self.event_bus.subscribe(
+                "connection_status_direct", 
+                lambda event_data: self.handle_connector_event(event_data)
+            )
             
-            # 검증기 객체 생성 (선택적)
-            try:
-                self.validator = validator_class(self.exchange_code)
-                if self.subscription:
-                    self.subscription.set_validator(self.validator)
-            except Exception as e:
-                logger.warning(f"{self.exchange_name_kr} 검증기 객체 생성 실패: {str(e)}")
-                # 검증기 없이도 계속 진행
+            # 2. 구독 상태 변경 이벤트 구독
+            self.event_bus.subscribe(
+                "subscription_status",
+                lambda event_data: self.handle_subscription_event(event_data)
+            )
             
-            # 리소스 연결
-            if self.output_queue:
-                self.set_output_queue(self.output_queue)
-            
-            # 컨넥션에 콜백 설정
-            if self.connection and self.connection_status_callback:
-                self.connection.set_connection_status_callback(
-                    lambda status: self.update_connection_status(self.exchange_code, status)
-                )
-            
-            logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 완료")
+            logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 및 이벤트 구독 완료")
             return True
             
         except Exception as e:
@@ -196,52 +139,36 @@ class OrderManager:
                 logger.error(f"{self.exchange_name_kr} 구독 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
                 return False
             
-            # 이미 실행 중인 경우 처리
+            # 심볼 저장 (현재 관리 중인 심볼 목록 업데이트)
             if self.is_running:
-                # 새로운 심볼만 추가
+                # 새로운 심볼만 추가 (이 부분은 OrderManager의 역할)
                 new_symbols = [s for s in symbols if s not in self.symbols]
                 if new_symbols:
                     logger.info(f"{self.exchange_name_kr} 추가 심볼 구독: {len(new_symbols)}개")
                     self.symbols.update(new_symbols)
-                    await self.subscription.subscribe(
-                        new_symbols,
-                        on_snapshot=self._handle_snapshot,
-                        on_delta=self._handle_delta,
-                        on_error=self._handle_error
-                    )
-                return True
+                    symbols_to_subscribe = new_symbols
+                else:
+                    return True  # 추가할 심볼이 없으면 성공으로 간주
+            else:
+                # 처음 시작하는 경우
+                self.symbols = set(symbols)
+                symbols_to_subscribe = symbols
+                self.is_running = True
             
-            # 심볼 저장
-            self.symbols = set(symbols)
+            # 검증기 설정 (있는 경우)
+            if self.validator and self.subscription:
+                self.subscription.set_validator(self.validator)
             
-            # 시작 상태 설정
-            self.is_running = True
+            # 구독 시작 - 이벤트 버스 기반 구독
+            subscription_success = await self.subscription.subscribe(symbols_to_subscribe)
             
-            try:
-                # 연결 및 구독 시작
-                await self.connection.connect()
-                
-                # 구독 시작 (심볼에 따른)
-                subscription_task = asyncio.create_task(
-                    self.subscription.subscribe(
-                        list(self.symbols),
-                        on_snapshot=self._handle_snapshot,
-                        on_delta=self._handle_delta,
-                        on_error=self._handle_error
-                    )
-                )
-                self.tasks["subscription"] = subscription_task
-                
-                # 심볼 개수 로깅
+            if subscription_success:
                 logger.info(f"{self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
-                
-                # 메트릭 업데이트 태스크 시작
-                self._start_metric_tasks()
-                
                 return True
-            except Exception as e:
-                self.is_running = False
-                logger.error(f"{self.exchange_name_kr} 연결 및 구독 중 오류: {str(e)}", exc_info=True)
+            else:
+                if not self.is_running:
+                    self.is_running = False
+                logger.error(f"{self.exchange_name_kr} 구독 실패")
                 return False
             
         except Exception as e:
@@ -255,20 +182,22 @@ class OrderManager:
             if not self.is_running:
                 return
                 
-            # 구독 중인 모든 심볼 구독 취소
+            # 구독 취소는 완전히 subscription에 위임
             if self.subscription:
-                await self.subscription.unsubscribe(None)
+                unsubscribe_success = await self.subscription.unsubscribe(None)
+                if not unsubscribe_success:
+                    logger.warning(f"{self.exchange_name_kr} 구독 취소 중 일부 오류 발생")
             
-            # 연결 종료 (이미 unsubscribe에서 처리했으므로 별도 처리 불필요)
+            # 연결 객체 정리 (웹소켓 종료)
+            if self.connection:
+                await self.connection.disconnect()
+                logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
             
-            # 오더북 관리자 정리
+            # 오더북 관리자 정리 (OrderManager의 역할)
             if self.validator:
                 self.validator.clear_all()
             
-            # 태스크 취소
-            for task in self.tasks.values():
-                task.cancel()
-            
+            # 상태 관리 (OrderManager의 역할)
             self.is_running = False
             self.symbols.clear()
             
@@ -276,130 +205,18 @@ class OrderManager:
             
         except Exception as e:
             logger.error(f"{self.exchange_name_kr} 중지 중 오류 발생: {str(e)}")
-    
-    def set_output_queue(self, queue: asyncio.Queue) -> None:
-        """
-        출력 큐 설정
-        
-        Args:
-            queue: 출력 큐
-        """
-        # 큐 설정 및 하위 컴포넌트에 전달
-        self.output_queue = queue
-        
-        # 컴포넌트에 출력 큐 설정
-        if self.validator:
-            self.validator.set_output_queue(queue)
-        if self.subscription:
-            self.subscription.set_output_queue(queue)
-            
-        logger.debug(f"{self.exchange_name_kr} 출력 큐 설정 완료")
+            self.is_running = False  # 오류가 발생해도 실행 중 상태 해제
     
     @property
     def is_connected(self) -> bool:
         """
-        현재 연결 상태 확인
+        현재 연결 상태 확인 - BaseConnector에 위임
         
         Returns:
             bool: 현재 연결 상태
         """
-        # 연결 객체가 있으면 그 상태를 직접 사용
-        if hasattr(self, 'connection') and self.connection:
-            return self.connection.is_connected
-        # 구독 객체가 있으면 그 상태를 사용
-        elif hasattr(self, 'subscription') and self.subscription:
-            return self.subscription.is_connected
-        # 아무 것도 없으면 메트릭 매니저에서 상태 확인
-        else:
-            return self.metrics_manager.is_connected(self.exchange_code)
-    
-    def update_connection_status(self, exchange_code=None, status=None):
-        """
-        연결 상태 업데이트 (외부 이벤트에 의한 업데이트)
-        
-        Args:
-            exchange_code: 거래소 코드 (기본값: self.exchange_code)
-            status: 상태 ('connected' 또는 'disconnected')
-        """
-        # 거래소 코드가 없으면 기본값 사용
-        exchange = exchange_code or self.exchange_code
-        
-        # 상태가 있는 경우에만 메트릭 매니저에 위임
-        if status is not None:
-            self.metrics_manager.update_connection_state(exchange, status)
-        
-        # 콜백이 설정되어 있으면 호출
-        if self.connection_status_callback:
-            self.connection_status_callback(exchange, status)
-    
-    def set_connection_status_callback(self, callback: Callable) -> None:
-        """
-        연결 상태 콜백 설정
-        
-        Args:
-            callback: 콜백 함수 (exchange, status) -> None
-        """
-        self.connection_status_callback = callback
-        
-        # 하위 구성 요소에도 콜백 적용
-        if self.connection:
-            # 컨넥터 콜백 설정 (래핑된 콜백)
-            self.connection.set_connection_status_callback(
-                lambda status: self.update_connection_status(self.exchange_code, status)
-            )
-        
-        logger.debug(f"{self.exchange_name_kr} 연결 상태 콜백 설정 완료")
-
-    def _start_metric_tasks(self) -> None:
-        """
-        메트릭 업데이트 태스크 시작
-        """
-        # 연결 상태 검사 태스크
-        self.tasks["connection_check"] = asyncio.create_task(
-            self._check_connection_task()
-        )
-        
-        # 다른 메트릭 태스크가 필요하면 여기에 추가
-        logger.debug(f"{self.exchange_name_kr} 메트릭 태스크 시작")
-
-    async def _check_connection_task(self) -> None:
-        """
-        연결 상태 검사 태스크 (주기적으로 연결 상태 체크)
-        """
-        try:
-            # 체크 간격(초)
-            check_interval = self.settings.get("connection_check_interval", 5)
-            
-            while self.is_running:
-                # 현재 상태 체크
-                is_connected = self.is_connected
-                
-                # 메트릭 매니저에 상태 업데이트
-                self.metrics_manager.update_connection_state(
-                    self.exchange_code,
-                    "connected" if is_connected else "disconnected"
-                )
-                
-                # 연결이 끊어졌을 때 처리
-                if not is_connected and self.is_running:
-                    # 재연결 시도
-                    logger.warning(f"{self.exchange_name_kr} 연결이 끊어짐, 재연결 시도 중")
-                    
-                    # 재연결 및 구독 시도
-                    try:
-                        await self.connection.reconnect()
-                        if self.symbols:
-                            await self.subscription.subscribe(list(self.symbols))
-                    except Exception as e:
-                        logger.error(f"{self.exchange_name_kr} 재연결 실패: {str(e)}")
-                
-                # 지정된 간격만큼 대기
-                await asyncio.sleep(check_interval)
-                
-        except asyncio.CancelledError:
-            logger.debug(f"{self.exchange_name_kr} 연결 상태 검사 태스크 취소됨")
-        except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 연결 상태 검사 중 오류: {str(e)}")
+        # 연결 객체가 있으면 그 상태를 사용 (단일 소스 오브 트루스)
+        return self.connection.is_connected if self.connection else False
 
     async def get_status(self) -> Dict[str, Any]:
         """
@@ -419,7 +236,7 @@ class OrderManager:
         if self.connection:
             connection_info = {
                 "is_connected": self.connection.is_connected,
-                "reconnect_count": self.connection.reconnect_count if hasattr(self.connection, 'reconnect_count') else 0
+                "reconnect_count": self.connection.stats.reconnect_count if hasattr(self.connection, 'stats') else 0
             }
         
         # 종합 상태 정보
@@ -435,58 +252,73 @@ class OrderManager:
         }
         
         return status
+    
+    def handle_connector_event(self, event_data: dict) -> None:
+        """
+        커넥터 이벤트 처리 (이벤트 버스에서 호출됨)
+        
+        Args:
+            event_data: 연결 상태 이벤트 데이터
+        """
+        try:
+            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
+            if event_data.get("exchange_code") != self.exchange_code:
+                return
+                
+            # 연결 상태 정보 추출 및 로깅만 수행
+            status = event_data.get("status", "unknown")
+            event_text = "연결됨" if status == "connected" else "연결 끊김"
+            logger.info(f"{self.exchange_name_kr} 상태 변경: {event_text}")
+                
+        except Exception as e:
+            logger.error(f"{self.exchange_name_kr} 커넥터 이벤트 처리 중 오류: {str(e)}")
 
-    # 콜백 메서드 추가
-    async def _handle_snapshot(self, symbol: str, data: Dict) -> None:
+    def handle_subscription_event(self, event_data: dict) -> None:
         """
-        스냅샷 데이터 처리 콜백
+        구독 상태 이벤트 처리 (이벤트 버스에서 호출됨)
         
         Args:
-            symbol: 심볼
-            data: 스냅샷 데이터
+            event_data: 구독 이벤트 데이터
         """
-        if self.output_queue:
-            self.output_queue.put_nowait({
-                "exchange": self.exchange_code,
-                "symbol": symbol,
-                "timestamp": time.time(),
-                "data": data,
-                "type": "snapshot"
-            })
+        try:
+            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
+            if event_data.get("exchange_code") != self.exchange_code:
+                return
+                
+            # 구독 상태 정보 로깅
+            status = event_data.get("status", "unknown")
+            symbols_count = len(event_data.get("symbols", []))
             
-            # 메트릭 업데이트
-            self.metrics_manager.update_metric(self.exchange_code, "snapshot")
-    
-    async def _handle_delta(self, symbol: str, data: Dict) -> None:
-        """
-        델타 데이터 처리 콜백
-        
-        Args:
-            symbol: 심볼
-            data: 델타 데이터
-        """
-        if self.output_queue:
-            self.output_queue.put_nowait({
-                "exchange": self.exchange_code,
-                "symbol": symbol,
+            if status == "subscribed":
+                logger.info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 성공")
+            elif status == "unsubscribed":
+                logger.info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 취소됨")
+                
+            # 외부 시스템용 이벤트 발행 (정규화된 형태로)
+            subscription_event = {
+                "exchange_code": self.exchange_code,
+                "status": status,
+                "symbols_count": symbols_count,
                 "timestamp": time.time(),
-                "data": data,
-                "type": "delta"
-            })
+                "source": "order_manager"
+            }
             
-            # 메트릭 업데이트
-            self.metrics_manager.update_metric(self.exchange_code, "delta")
-    
-    async def _handle_error(self, symbol: str, error: str) -> None:
-        """
-        에러 처리 콜백
-        
-        Args:
-            symbol: 심볼
-            error: 오류 메시지
-        """
-        logger.error(f"{self.exchange_name_kr} {symbol} 에러: {error}")
-        self.metrics_manager.record_error(self.exchange_code)
+            # 구독 상태 변화 이벤트 발행
+            asyncio.create_task(self.event_bus.publish("subscription_status_changed", subscription_event))
+            
+            # 메트릭 이벤트 발행
+            metric_event = {
+                "exchange_code": self.exchange_code,
+                "event_type": "subscription",
+                "status": status,
+                "symbols_count": symbols_count,
+                "timestamp": time.time()
+            }
+            
+            asyncio.create_task(self.event_bus.publish("metric_event", metric_event))
+                
+        except Exception as e:
+            logger.error(f"{self.exchange_name_kr} 구독 이벤트 처리 중 오류: {str(e)}")
 
 # OrderManager 팩토리 함수
 def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager]:
@@ -517,7 +349,8 @@ def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager
             return None
         
         # OrderManager 인스턴스 생성
-        return OrderManager(settings, exchange)
+        manager = OrderManager(settings, exchange)
+        return manager
         
     except Exception as e:
         logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패: {str(e)}", exc_info=True)
@@ -539,6 +372,18 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
         성공 여부
     """
     try:
+        # 이벤트 버스 인스턴스 가져오기
+        event_bus = EventBus.get_instance()
+        
+        # WebsocketManager가 연결 상태 변경 이벤트를 직접 구독하도록 설정
+        event_bus.subscribe(
+            "connection_status_changed", 
+            lambda event_data: ws_manager.update_connection_status(
+                event_data["exchange_code"], 
+                event_data["status"]
+            )
+        )
+        
         # WebsocketManager에 OrderManager 저장 공간 생성
         if not hasattr(ws_manager, "order_managers"):
             ws_manager.order_managers = {}
@@ -554,14 +399,6 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
             if not manager:
                 logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패")
                 continue
-                
-            # 출력 큐 공유
-            manager.set_output_queue(ws_manager.output_queue)
-            
-            # 연결 상태 콜백 공유
-            manager.set_connection_status_callback(
-                lambda ex, status: ws_manager.update_connection_status(ex, status)
-            )
             
             # 초기화 수행
             init_success = await manager.initialize()
@@ -569,7 +406,7 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
                 logger.error(f"{EXCHANGE_NAMES_KR[exchange]} 초기화 실패, 해당 거래소는 건너뜁니다.")
                 continue
             
-            # 시작 수행
+            # 시작 수행 - OrderManager의 시작 메서드 사용
             start_success = await manager.start(symbols)
             if not start_success:
                 logger.error(f"{EXCHANGE_NAMES_KR[exchange]} 시작 실패, 해당 거래소는 건너뜁니다.")

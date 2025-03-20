@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, Callable, Awaitable, Any, List
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants import LOG_SYSTEM
+from crosskimp.config.constants_v3 import LOG_SYSTEM
 from crosskimp.system_manager.process_manager import restart_process
 
 # 로거 설정
