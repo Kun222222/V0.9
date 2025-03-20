@@ -146,13 +146,16 @@ class BybitFutureSubscription(BaseSubscription):
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
             # 구독 이벤트 발행
-            self._publish_subscription_status_event(symbols, "subscribed")
+            try:
+                await self.event_handler.handle_subscription_status(status="subscribed", symbols=symbols)
+            except Exception as e:
+                self.log_warning(f"구독 상태 이벤트 발행 실패: {e}")
             
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.system_event_manager.record_metric(self.exchange_code, "error")
+            self.event_handler.update_metrics("error_count")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -441,15 +444,17 @@ class BybitFutureSubscription(BaseSubscription):
                                     self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
                     except Exception as e:
                         self.log_error(f"오더북 처리 중 오류: {str(e)}")
-                        asyncio.create_task(self.publish_system_event_sync(
-                            EVENT_TYPES["ERROR_EVENT"],
-                            message=f"오더북 처리 중 오류: {str(e)}"
+                        asyncio.create_task(self.event_handler.handle_error(
+                            error_type="processing_error",
+                            message=str(e),
+                            severity="error"
                         ))
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
-            asyncio.create_task(self.publish_system_event_sync(
-                EVENT_TYPES["ERROR_EVENT"],
-                message=f"메시지 처리 중 오류: {str(e)}"
+            asyncio.create_task(self.event_handler.handle_error(
+                error_type="message_error",
+                message=str(e),
+                severity="error"
             ))
     
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
@@ -477,3 +482,17 @@ class BybitFutureSubscription(BaseSubscription):
         except Exception as e:
             self.log_error(f"구독 취소 중 오류: {e}")
             return False 
+
+    async def _on_disconnection(self, msg: str) -> None:
+        """웹소켓 연결 해제 콜백"""
+        try:
+            # 웹소켓 연결 에러 이벤트 발행
+            asyncio.create_task(self.event_handler.handle_error(
+                error_type="websocket_error",
+                message=f"웹소켓 연결 해제: {msg}",
+                severity="warning"
+            ))
+
+            await self.reconnect()
+        except Exception as e:
+            self.log_error(f"연결 해제 처리 중 오류: {str(e)}") 

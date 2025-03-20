@@ -134,16 +134,16 @@ class EventBus:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
     
-    async def publish(self, event_type: str, **data):
+    async def publish(self, event_type: str, data):
         """
-        이벤트 발행 (개선된 버전)
+        이벤트 발행
         
         Args:
             event_type: 이벤트 타입
-            **data: 이벤트 데이터 (키워드 인자로 전달)
+            data: 이벤트 데이터 객체
         """
         # 타임스탬프가 없는 경우 자동으로 추가
-        if "timestamp" not in data:
+        if isinstance(data, dict) and "timestamp" not in data:
             data["timestamp"] = time.time()
             
         await self._publish_to_subscribers(event_type, data)
@@ -168,39 +168,4 @@ class EventBus:
             return sum(len(callbacks) for callbacks in self._subscribers.values())
         else:
             # 특정 이벤트 타입의 구독자 수
-            return len(self._subscribers.get(event_type, []))
-            
-    async def publish_sync(self, event_type: str, **data):
-        """
-        동기식 publish 함수의 비동기 버전
-        
-        과거에는 동기 환경에서 사용하기 위한 함수였으나, 이제 비동기로 변경되었습니다.
-        이름은 호환성을 위해 유지합니다.
-        
-        Args:
-            event_type: 이벤트 타입
-            **data: 이벤트 데이터 (키워드 인자로 전달)
-        """
-        # 타임스탬프가 없는 경우 자동으로 추가
-        if "timestamp" not in data:
-            data["timestamp"] = time.time()
-            
-        if event_type not in self._subscribers:
-            return
-            
-        # 모든 콜백 호출 (비동기 및 동기 모두)
-        tasks = []
-        for callback in self._subscribers[event_type]:
-            try:
-                if asyncio.iscoroutinefunction(callback):
-                    # 비동기 함수는 태스크로 추가
-                    tasks.append(asyncio.create_task(callback(data)))
-                else:
-                    # 동기 함수는 바로 실행
-                    callback(data)
-            except Exception as e:
-                self._logger.error(f"이벤트 {event_type} 처리 중 오류: {str(e)}")
-                
-        # 생성된 비동기 태스크가 있으면 모두 완료될 때까지 대기
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True) 
+            return len(self._subscribers.get(event_type, [])) 

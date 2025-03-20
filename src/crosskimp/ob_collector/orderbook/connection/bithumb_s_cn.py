@@ -8,7 +8,7 @@ import websockets
 from websockets import connect
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.config.constants_v3 import Exchange
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy, WebSocketStats
 from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
 

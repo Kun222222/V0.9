@@ -72,7 +72,8 @@ class BaseOrderBookValidator:
         
         # 데이터 관리
         self.last_update_time = {}  # 각 심볼별 마지막 업데이트 시간 (시스템 시간)
-        self.max_data_age_seconds = 30  # 데이터 최대 유지 시간 (초)
+        self.max_data_age_seconds = 60  # 데이터 최대 유지 시간 (초)
+        self.removed_symbols = set()  # 이미 제거된 심볼 추적
 
     async def initialize_orderbook(self, symbol: str, data: Dict) -> ValidationResult:
         """
@@ -126,7 +127,7 @@ class BaseOrderBookValidator:
         """
         오래된 오더북 데이터 정리
         
-        30초 이상 경과된 데이터를 메모리에서 제거합니다.
+        60초 이상 경과된 데이터를 메모리에서 제거합니다.
         """
         current_time = time.time()
         symbols_to_remove = []
@@ -138,8 +139,14 @@ class BaseOrderBookValidator:
         
         # 식별된 오래된 데이터 제거
         for symbol in symbols_to_remove:
-            self.clear_symbol(symbol)
-            self.logger.debug(f"[{self.exchange_code}] 오래된 데이터 제거: {symbol} (마지막 업데이트: {self.max_data_age_seconds}초 이상 경과)")
+            # 이미 로그를 출력한 심볼인지 확인
+            if symbol not in self.removed_symbols:
+                self.clear_symbol(symbol)
+                self.logger.debug(f"[{self.exchange_code}] 오래된 데이터 제거: {symbol} (마지막 업데이트: {self.max_data_age_seconds}초 이상 경과)")
+                self.removed_symbols.add(symbol)
+            else:
+                # 로그 없이 제거만 수행
+                self.clear_symbol(symbol)
 
     def _update_orderbook_delta(self, symbol: str, bids: List[List[float]], 
                            asks: List[List[float]], timestamp: Optional[int] = None,
@@ -465,4 +472,5 @@ class BaseOrderBookValidator:
     def clear_all(self) -> None:
         """전체 데이터 제거"""
         self.orderbooks.clear()
-        self.orderbooks_dict.clear() 
+        self.orderbooks_dict.clear()
+        self.removed_symbols.clear()  # 제거된 심볼 목록 초기화 

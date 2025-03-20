@@ -169,12 +169,13 @@ class SystemEventManager:
                 "status": "unsubscribed"
             }
     
-    def increment_message_count(self, exchange_code: str) -> None:
+    def increment_message_count(self, exchange_code: str, n: int = 1) -> None:
         """
         메시지 카운트 증가
         
         Args:
             exchange_code: 거래소 코드
+            n: 증가시킬 값 (기본값: 1)
         """
         # 거래소 초기화 확인
         if exchange_code not in self.metrics:
@@ -185,7 +186,7 @@ class SystemEventManager:
         
         # 메시지 카운트 증가
         message_count = self.metrics[exchange_code].get("message_count", 0)
-        self.metrics[exchange_code]["message_count"] = message_count + 1
+        self.metrics[exchange_code]["message_count"] = message_count + n
         
         # 첫 메시지 시간 설정 (첫 메시지인 경우에만)
         if message_count == 0:
@@ -224,13 +225,21 @@ class SystemEventManager:
             logger.error(f"이벤트 처리 중 오류: {str(e)}")
     
     async def _handle_connection_status(self, exchange_code, data, timestamp) -> None:
-        """연결 상태 이벤트 처리 - 메트릭 업데이트"""
+        """
+        연결 상태 이벤트 처리 - 메트릭 및 상태 업데이트
+        
+        이 메소드는 내부적으로 연결 상태를 추적하고 메트릭을 업데이트합니다.
+        실제 외부 로깅과 알림은 EventHandler.handle_connection_status에서 처리합니다.
+        """
+        # 연결 상태 업데이트
         status = data.get("status", "disconnected")
         self.connection_status[exchange_code] = status
         
+        # 연결 시간 저장 (연결됨 상태일 때만)
         if status == "connected":
             self.metrics[exchange_code]["connection_time"] = timestamp
-            
+        
+        # 간단한 디버그 로그만 출력 (주요 로깅은 EventHandler에서 처리)
         logger.debug(f"{exchange_code} 연결 상태 변경: {status}")
     
     async def _handle_metric_update(self, exchange_code, data, timestamp) -> None:
@@ -432,53 +441,12 @@ class SystemEventManager:
     
     async def publish_system_event(self, event_type: str, exchange_code: str = None, **data) -> None:
         """
-        시스템 이벤트 발행 (비동기)
-        
-        Args:
-            event_type: 이벤트 타입 (EVENT_TYPES 사용)
-            exchange_code: 거래소 코드 (없으면 현재 설정된 거래소 사용)
-            **data: 이벤트 데이터
-        """
-        try:
-            # 거래소 코드가 없으면 현재 설정된 거래소 사용
-            if not exchange_code:
-                exchange_code = self.current_exchange
-                
-            if not exchange_code:
-                logger.warning("시스템 이벤트 발행 실패: 거래소 코드가 없습니다.")
-                return
-                
-            # 거래소가 초기화되지 않았으면 초기화
-            if exchange_code not in self.metrics:
-                self.initialize_exchange(exchange_code)
-            
-            # 타임스탬프 처리 (data에 timestamp가 있으면 해당 값 사용, 없으면 현재 시간)
-            timestamp = time.time()
-            if "timestamp" in data:
-                timestamp = data.pop("timestamp")
-            
-            # 이벤트 발행 - 수정: event_type 중복 제거
-            await self.event_bus.publish(
-                event_type,  # 첫 번째 매개변수로만 event_type 전달
-                exchange_code=exchange_code,
-                timestamp=timestamp,
-                data=data
-            )
-            
-        except Exception as e:
-            logger.error(f"시스템 이벤트 발행 실패: {str(e)}")
-    
-    async def publish_system_event_sync(self, event_type: str, exchange_code: str = None, **data) -> None:
-        """
-        시스템 이벤트 발행 (동기식)
-        
-        과거에는 비동기 컨텍스트 외부에서 사용할 수 있었지만, 
-        이제는 비동기 함수로 변경되었습니다. 이름은 호환성을 위해 유지합니다.
+        시스템 이벤트 발행
         
         Args:
             event_type: 이벤트 타입
             exchange_code: 거래소 코드 (없으면 현재 설정된 거래소 사용)
-            **data: 이벤트 데이터
+            **data: 추가 데이터
         """
         try:
             # 거래소 코드가 없으면 현재 설정된 거래소 사용
@@ -501,16 +469,19 @@ class SystemEventManager:
             # 이벤트 데이터 준비
             event_data = {
                 "exchange_code": exchange_code,
-                "timestamp": timestamp,
-                **data  # 나머지 데이터 포함
+                "timestamp": timestamp
             }
             
-            # 이벤트 버스를 통해 비동기로 이벤트 발행 (이전에는 동기식이었음)
-            await self.event_bus.publish_sync(event_type, **event_data)
+            # 추가 데이터 병합
+            if data:
+                event_data["data"] = data
+            
+            # 이벤트 발행
+            await self.event_bus.publish(event_type, event_data)
             
         except Exception as e:
             logger.error(f"시스템 이벤트 발행 실패: {str(e)}")
-            
+    
     def set_current_exchange(self, exchange_code: str) -> None:
         """
         현재 컨텍스트의 거래소 코드 설정

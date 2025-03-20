@@ -7,24 +7,142 @@
 
 import asyncio
 import time
+from datetime import datetime
 from typing import Dict, Optional, Any
+import inspect
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
 from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.util.event_bus import EventBus, EVENT_TYPES
-from crosskimp.ob_collector.orderbook.util.event_manager import SystemEventManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
-class EventHandler:
+class LoggingMixin:
     """
-    거래소 이벤트 처리 클래스
+    로깅 기능을 제공하는 믹스인 클래스
     
-    거래소 연결, 상태 변경, 오류 등의 이벤트를 처리하고 필요한 액션을 수행합니다.
-    이 클래스는 주로 이벤트의 외부 처리(로깅, 알림 등)에 집중하며,
-    메트릭 저장은 SystemEventManager에 위임합니다.
+    이 클래스는 거래소 이름을 포함한 일관된 로그 포맷팅을 제공합니다.
+    여러 클래스에서 중복으로 구현된 로깅 메서드들을 통합합니다.
     """
+    
+    def setup_logger(self, exchange_code: str):
+        """
+        로거 설정
+        
+        Args:
+            exchange_code: 거래소 코드
+        """
+        self.exchange_code = exchange_code.lower()
+        self.exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self._logger = logger  # 전역 로거 참조
+    
+    def log_error(self, message: str) -> None:
+        """오류 로깅 (거래소 이름 포함)"""
+        # 재귀 방지를 위한 여부 확인
+        is_wrapper = False
+        for frame_info in inspect.stack()[1:3]:  # 호출 스택 확인
+            if frame_info.function == 'log_error' and 'base_subscription.py' in frame_info.filename:
+                is_wrapper = True
+                break
+        
+        # 래핑된 호출이면 메시지만 기록
+        if is_wrapper:
+            self._logger.error(message)
+        # 일반 호출이면 거래소 이름 포함해서 기록
+        else:
+            if not hasattr(self, 'exchange_name_kr'):
+                self._logger.error(message)
+            else:
+                self._logger.error(f"{self.exchange_name_kr} {message}")
+    
+    def log_warning(self, message: str) -> None:
+        """경고 로깅 (거래소 이름 포함)"""
+        # 재귀 방지를 위한 여부 확인
+        is_wrapper = False
+        for frame_info in inspect.stack()[1:3]:  # 호출 스택 확인
+            if frame_info.function == 'log_warning' and 'base_subscription.py' in frame_info.filename:
+                is_wrapper = True
+                break
+        
+        # 래핑된 호출이면 메시지만 기록
+        if is_wrapper:
+            self._logger.warning(message)
+        # 일반 호출이면 거래소 이름 포함해서 기록
+        else:
+            if not hasattr(self, 'exchange_name_kr'):
+                self._logger.warning(message)
+            else:
+                self._logger.warning(f"{self.exchange_name_kr} {message}")
+    
+    def log_info(self, message: str) -> None:
+        """정보 로깅 (거래소 이름 포함)"""
+        # 재귀 방지를 위한 여부 확인
+        is_wrapper = False
+        for frame_info in inspect.stack()[1:3]:  # 호출 스택 확인
+            if frame_info.function == 'log_info' and 'base_subscription.py' in frame_info.filename:
+                is_wrapper = True
+                break
+        
+        # 래핑된 호출이면 메시지만 기록
+        if is_wrapper:
+            self._logger.info(message)
+        # 일반 호출이면 거래소 이름 포함해서 기록
+        else:
+            if not hasattr(self, 'exchange_name_kr'):
+                self._logger.info(message)
+            else:
+                self._logger.info(f"{self.exchange_name_kr} {message}")
+    
+    def log_debug(self, message: str) -> None:
+        """디버그 로깅 (거래소 이름 포함)"""
+        # 재귀 방지를 위한 여부 확인
+        is_wrapper = False
+        for frame_info in inspect.stack()[1:3]:  # 호출 스택 확인
+            if frame_info.function == 'log_debug' and 'base_subscription.py' in frame_info.filename:
+                is_wrapper = True
+                break
+        
+        # 래핑된 호출이면 메시지만 기록
+        if is_wrapper:
+            self._logger.debug(message)
+        # 일반 호출이면 거래소 이름 포함해서 기록
+        else:
+            if not hasattr(self, 'exchange_name_kr'):
+                self._logger.debug(message)
+            else:
+                # 디버그 메시지를 INFO 레벨로 출력하여 항상 보이도록 함
+                self._logger.info(f"{self.exchange_name_kr} {message}")
+
+class EventHandler(LoggingMixin):
+    """
+    거래소 이벤트 처리 및 통합 관리 클래스
+    
+    거래소 이벤트 처리와 메트릭 관리를 통합하여 책임을 명확히 하고
+    중복 로직을 제거합니다. SystemEventManager의 메트릭 관리 기능을
+    EventHandler로 통합하여 의존성을 단순화합니다.
+    """
+    
+    _instances = {}  # 거래소 코드 -> 핸들러 인스턴스
+    
+    @classmethod
+    def get_instance(cls, exchange_code: str, settings: Dict[str, Any]) -> 'EventHandler':
+        """
+        거래소별 이벤트 핸들러 인스턴스 반환 (싱글톤 패턴)
+        
+        Args:
+            exchange_code: 거래소 코드
+            settings: 설정 정보
+            
+        Returns:
+            EventHandler: 이벤트 핸들러 인스턴스
+        """
+        exchange_code = exchange_code.lower()  # 정규화
+        
+        if exchange_code not in cls._instances:
+            cls._instances[exchange_code] = EventHandler(exchange_code, settings)
+            
+        return cls._instances[exchange_code]
     
     def __init__(self, exchange_code: str, settings: Dict[str, Any]):
         """
@@ -34,29 +152,234 @@ class EventHandler:
             exchange_code: 거래소 코드 (예: 'upbit', 'bithumb', 'bybit' 등)
             settings: 설정 정보
         """
-        self.exchange_code = exchange_code.lower()  # 소문자로 정규화
-        self.settings = settings
+        # 로거 설정 (믹스인 메서드 사용)
+        self.setup_logger(exchange_code.lower())
         
-        # 한글 거래소명 가져오기
-        self.exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
+        self.settings = settings
         
         # 이벤트 버스 가져오기
         self.event_bus = EventBus.get_instance()
         
-        # 시스템 이벤트 관리자 가져오기
-        self.system_event_manager = SystemEventManager.get_instance()
+        # 메트릭 저장소
+        self.metrics = {}  # exchange_code -> metrics
         
-        # 거래소 초기화
-        self.system_event_manager.initialize_exchange(self.exchange_code)
+        # 연결 상태 저장소
+        self.connection_status = "disconnected"
         
-        # 현재 거래소 코드 설정
-        self.system_event_manager.set_current_exchange(self.exchange_code)
+        # 구독 상태 저장소
+        self.subscriptions = {
+            "symbols": [],
+            "status": "unsubscribed"
+        }
+        
+        # 메시지 카운터
+        self.message_counters = {
+            "message_count": 0,
+            "error_count": 0,
+            "processing_time": 0,
+            "last_message_time": 0,
+            "last_error_time": 0,
+            "last_error_message": "",
+            "first_message_time": None,
+            "message_rate": 0
+        }
+        
+        # 최근 오류 저장소 (최대 5개)
+        self.errors = []
         
         # 알림 제한 관련 변수
         self._last_notification_time = {}  # 이벤트 타입별 마지막 알림 시간
         self._notification_cooldown = 60  # 알림 쿨다운 (초)
     
-    # 연결 상태 이벤트 처리
+        # 메트릭 요약 로그 관련 변수
+        self.last_summary_log_time = time.time()
+        self.summary_log_interval = 1.0  # 1초마다 요약 로그 출력
+        self.previous_message_count = 0
+        
+        # 메트릭 요약 로그 태스크 시작
+        self._start_summary_log_task()
+        
+        self.log_info(f"{self.exchange_name_kr} 이벤트 핸들러 초기화 완료")
+    
+    def _start_summary_log_task(self):
+        """주기적 메트릭 요약 로그 태스크 시작"""
+        try:
+            asyncio.create_task(self._summary_log_loop())
+        except RuntimeError:
+            self.log_debug("이벤트 루프가 실행 중이 아니므로 요약 로그 태스크를 시작할 수 없습니다.")
+    
+    async def _summary_log_loop(self):
+        """메트릭 요약 로그 출력 루프"""
+        try:
+            while True:
+                await asyncio.sleep(self.summary_log_interval)
+                await self._log_metrics_summary()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.log_error(f"메트릭 요약 로그 루프 오류: {e}")
+    
+    async def _log_metrics_summary(self):
+        """메트릭 요약 로그 출력"""
+        current_time = time.time()
+        elapsed = current_time - self.last_summary_log_time
+        
+        if elapsed < self.summary_log_interval:
+            return  # 아직 시간이 충분히 지나지 않음
+        
+        # 메시지 카운트 정보
+        current_count = self.message_counters.get("message_count", 0)
+        previous_count = self.previous_message_count
+        
+        # 1. 총 메시지 수
+        total_count = current_count
+        
+        # 2. 이번 수신 갯수 (이번 1초 동안)
+        current_diff = current_count - previous_count
+        
+        # 3. 평균 수신 갯수 계산
+        start_time = self.message_counters.get("first_message_time")
+        if start_time is None and current_count > 0:
+            # 첫 메시지 수신 시간 기록
+            start_time = current_time
+            self.message_counters["first_message_time"] = start_time
+        
+        total_elapsed = current_time - (start_time or current_time)
+        avg_per_second = 0
+        if total_elapsed > 0 and current_count > 0:
+            avg_per_second = current_count / total_elapsed
+        
+        # 4. 이번 수신 속도 (1초 동안)
+        current_rate = self.message_counters.get("message_rate", 0)
+        if current_rate == 0 and elapsed > 0:
+            current_rate = current_diff / elapsed
+        
+        # 메시지 레이트 업데이트 (지수 이동 평균)
+        if elapsed > 0:
+            new_rate = current_diff / elapsed
+            if current_rate > 0:
+                # 이전 레이트의 80%와 새 레이트의 20%로 가중 평균
+                current_rate = (current_rate * 0.8) + (new_rate * 0.2)
+            else:
+                current_rate = new_rate
+            
+            self.message_counters["message_rate"] = current_rate
+        
+        # 로그 출력 (INFO 레벨로 출력하여 항상 보이도록 함)
+        if current_count > 0:
+            logger.info(f"[메트릭] {self.exchange_name_kr:15} | 총: {total_count:8d}건 | 수신: {current_diff:6d}건/1초 | 평균: {avg_per_second:.2f}건/초 | 속도: {current_rate:.2f}건/초")
+        
+        # 이전 카운트 업데이트
+        self.previous_message_count = current_count
+        
+        # 마지막 로그 시간 업데이트
+        self.last_summary_log_time = current_time
+    
+    def increment_message_count(self, n: int = 1) -> None:
+        """메시지 카운트 증가"""
+        current_time = time.time()
+        
+        # 메시지 카운트 증가
+        self.message_counters["message_count"] += n
+        
+        # 첫 메시지 시간 설정 (첫 메시지인 경우에만)
+        if self.message_counters["message_count"] == n:
+            self.message_counters["first_message_time"] = current_time
+        
+        # 마지막 메시지 시간 업데이트
+        self.message_counters["last_message_time"] = current_time
+    
+    def update_metrics(self, metric_name: str, value: float = 1.0, **kwargs) -> None:
+        """
+        메트릭 업데이트
+        
+        Args:
+            metric_name: 메트릭 이름
+            value: 메트릭 값
+            **kwargs: 추가 데이터
+        """
+        try:
+            # 특수 메트릭 처리
+            if metric_name == "processing_time":
+                current = self.message_counters.get("processing_time", 0)
+                self.message_counters["processing_time"] = (current * 0.8) + (value * 0.2)
+            elif metric_name == "error_count":
+                self.message_counters["error_count"] += value
+                self.message_counters["last_error_time"] = time.time()
+            elif metric_name == "data_size":
+                # 데이터 사이즈는 누적하지 않고 가장 최근 값만 저장
+                self.message_counters["data_size"] = value
+            elif metric_name in self.message_counters:
+                # 기존 메트릭이면 값 증가
+                self.message_counters[metric_name] += value
+            else:
+                # 새 메트릭이면 추가
+                self.message_counters[metric_name] = value
+            
+            # 메트릭 이벤트 발행
+            asyncio.create_task(
+                self.handle_metric_update(metric_name, value, kwargs)
+            )
+        except Exception as e:
+            self.log_error(f"메트릭 업데이트 중 오류: {e}")
+
+    async def handle_metric_update(self, metric_name: str, value: float = 1.0, data: Dict = None) -> None:
+        """
+        메트릭 업데이트 이벤트 처리
+        
+        Args:
+            metric_name: 메트릭 이름
+            value: 메트릭 값
+            data: 추가 데이터
+        """
+        try:
+            # 기본 이벤트 데이터 생성
+            event_data = {
+                "exchange_code": self.exchange_code,
+                "metric_name": metric_name,
+                "value": value,
+                "timestamp": time.time()
+            }
+            
+            # 추가 데이터가 있으면 병합
+            if data:
+                event_data.update(data)
+                
+            # 이벤트 발행
+            await self.event_bus.publish(
+                EVENT_TYPES["METRIC_UPDATE"],
+                event_data
+            )
+        except Exception as e:
+            self.log_error(f"메트릭 업데이트 이벤트 발행 중 오류: {e}")
+    
+    async def send_telegram_message(self, event_type: str, message: str) -> None:
+        """
+        텔레그램 알림 전송
+        
+        Args:
+            event_type: 이벤트 타입
+            message: 알림 메시지
+        """
+        try:
+            # 쿨다운 확인
+            current_time = time.time()
+            last_time = self._last_notification_time.get(event_type, 0)
+            if current_time - last_time < self._notification_cooldown:
+                return
+            
+            # 마지막 알림 시간 업데이트
+            self._last_notification_time[event_type] = current_time
+            
+            # 현재 시간 추가
+            current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message_with_time = f"[{current_time_str}]\n{message}"
+            
+            # 메시지 전송
+            await send_telegram_message(message_with_time)
+        except Exception as e:
+            self.log_error(f"텔레그램 알림 전송 실패: {str(e)}")
+    
     async def handle_connection_status(self, status: str, message: Optional[str] = None, **kwargs) -> None:
         """
         연결 상태 변경 이벤트 처리
@@ -83,27 +406,8 @@ class EventHandler:
             log_method = self.log_warning
         log_method(message)
         
-        # 이벤트 데이터 준비
-        event_data = {
-            "status": status, 
-            "message": message
-        }
-        
-        # kwargs에서 timestamp 처리 (중복 방지)
-        if "timestamp" not in kwargs:
-            event_data["timestamp"] = time.time()
-        else:
-            event_data["timestamp"] = kwargs.pop("timestamp")
-            
-        # 나머지 kwargs 추가
-        for key, value in kwargs.items():
-            event_data[key] = value
-        
-        # 시스템 이벤트 발행
-        await self.publish_system_event(
-            EVENT_TYPES["CONNECTION_STATUS"],
-            **event_data
-        )
+        # 상태 저장
+        self.connection_status = status
         
         # 텔레그램 알림 전송
         event_type = "connect" if status == "connected" else "disconnect" if status == "disconnected" else "reconnect"
@@ -120,16 +424,15 @@ class EventHandler:
         # 메시지 직접 전송
         await self.send_telegram_message(event_type, formatted_message)
         
-        # 이벤트 채널 발행 (UI 및 외부 시스템용)
+        # 이벤트 버스 발행 (다른 컴포넌트에 알림)
         event_data = {
             "exchange_code": self.exchange_code,
             "status": status,
             "message": message,
-            "timestamp": time.time()
+            "timestamp": kwargs.get("timestamp", time.time())
         }
-        await self.event_bus.publish("connection_status_changed", **event_data)
+        await self.event_bus.publish(EVENT_TYPES["CONNECTION_STATUS"], event_data)
     
-    # 오류 이벤트 처리
     async def handle_error(self, error_type: str, message: str, severity: str = "error", **kwargs) -> None:
         """
         오류 이벤트 처리
@@ -148,21 +451,22 @@ class EventHandler:
         else:
             self.log_error(f"{error_type}: {message}")
         
-        # 타임스탬프 설정
+        # 오류 카운트 증가 및 마지막 오류 저장
+        self.update_metrics("error_count")
+        self.message_counters["last_error_message"] = message
+        
+        # 오류 기록 저장 (최대 5개)
         timestamp = kwargs.get("timestamp", time.time())
+        self.errors.append({
+            "timestamp": timestamp,
+            "type": error_type,
+            "message": message,
+            "severity": severity
+        })
         
-        # 시스템 이벤트 발행
-        await self.publish_system_event(
-            EVENT_TYPES["ERROR_EVENT"],
-            error_type=error_type,
-            message=message,
-            severity=severity,
-            timestamp=timestamp,
-            **kwargs
-        )
-        
-        # 오류 메트릭 기록
-        self.system_event_manager.record_metric(self.exchange_code, "error_count")
+        # 최대 5개만 유지
+        if len(self.errors) > 5:
+            self.errors = self.errors[-5:]
         
         # 텔레그램 알림 전송 (심각한 오류만)
         if severity in ["error", "critical"]:
@@ -171,33 +475,22 @@ class EventHandler:
             error_message = f"🚨 {exchange_name} 오류: {error_type} - {message}"
             await self.send_telegram_message("error", error_message)
     
-    # 메트릭 업데이트 이벤트 처리
-    async def handle_metric_update(self, metric_name: str, value: Any, **kwargs) -> None:
-        """
-        메트릭 업데이트 이벤트 처리
+        # 이벤트 버스 발행
+        event_data = {
+            "exchange_code": self.exchange_code,
+            "error_type": error_type,
+            "message": message,
+            "severity": severity,
+            "timestamp": timestamp
+        }
         
-        Args:
-            metric_name: 메트릭 이름
-            value: 메트릭 값
-            **kwargs: 추가 데이터
-        """
-        # 메트릭 직접 기록
-        self.system_event_manager.record_metric(
-            self.exchange_code, 
-            metric_name, 
-            **kwargs
-        )
+        # 추가 데이터 병합
+        for key, value in kwargs.items():
+            if key != "timestamp":  # timestamp는 이미 처리함
+                event_data[key] = value
         
-        # 시스템 이벤트 발행
-        await self.publish_system_event(
-            EVENT_TYPES["METRIC_UPDATE"],
-            metric_name=metric_name,
-            value=value,
-            timestamp=kwargs.get("timestamp", time.time()),
-            **kwargs
-        )
+        await self.event_bus.publish(EVENT_TYPES["ERROR_EVENT"], event_data)
     
-    # 구독 상태 이벤트 처리
     async def handle_subscription_status(self, status: str, symbols: list, **kwargs) -> None:
         """
         구독 상태 이벤트 처리
@@ -210,16 +503,23 @@ class EventHandler:
         # 로깅
         self.log_info(f"구독 상태 변경: {status}, 심볼: {len(symbols)}개")
         
-        # 시스템 이벤트 발행
-        await self.publish_system_event(
-            EVENT_TYPES["SUBSCRIPTION_STATUS"],
-            status=status,
-            symbols=symbols,
-            timestamp=kwargs.get("timestamp", time.time()),
-            **kwargs
-        )
+        # 상태 저장
+        self.subscriptions = {
+            "status": status,
+            "symbols": symbols,
+            "timestamp": kwargs.get("timestamp", time.time())
+        }
+        
+        # 이벤트 버스 발행
+        event_data = {
+            "exchange_code": self.exchange_code,
+            "status": status,
+            "symbols": symbols,
+            "count": len(symbols),
+            "timestamp": kwargs.get("timestamp", time.time())
+        }
+        await self.event_bus.publish(EVENT_TYPES["SUBSCRIPTION_STATUS"], event_data)
     
-    # 메시지 수신 이벤트 처리
     async def handle_message_received(self, message_type: str, size: int = 0, **kwargs) -> None:
         """
         메시지 수신 이벤트 처리
@@ -230,130 +530,73 @@ class EventHandler:
             **kwargs: 추가 데이터
         """
         # 메시지 카운트 증가
-        self.system_event_manager.increment_message_count(self.exchange_code)
+        self.increment_message_count()
         
-        # 추가 메트릭 기록
+        # 크기 메트릭 추가
         if size > 0:
-            self.system_event_manager.record_metric(
-                self.exchange_code, 
-                "data_size", 
-                byte_size=size
-            )
+            self.update_metrics("data_size", size)
         
-        # 특정 타입의 메시지 카운트 기록
+        # 메시지 타입별 카운트
         if message_type in ["snapshot", "delta"]:
-            self.system_event_manager.record_metric(
-                self.exchange_code,
-                f"{message_type}_count"
-            )
+            self.update_metrics(f"{message_type}_count")
     
-    # 시스템 이벤트 발행
-    async def publish_system_event(self, event_type: str, **data) -> None:
+    async def handle_data_event(self, event_type: str, symbol: str, data: Any, **kwargs) -> None:
         """
-        시스템 이벤트 발행
+        데이터 이벤트 처리 (스냅샷, 델타 등)
         
         Args:
-            event_type: 이벤트 타입 (EVENT_TYPES 사용)
-            **data: 이벤트 데이터
+            event_type: 이벤트 타입 (EVENT_TYPES 상수 사용)
+            symbol: 심볼명
+            data: 이벤트 데이터
+            **kwargs: 추가 데이터
         """
+        # 필요한 경우 메트릭 기록
+        if event_type == EVENT_TYPES["DATA_SNAPSHOT"]:
+            self.update_metrics("snapshot_count")
+        elif event_type == EVENT_TYPES["DATA_DELTA"]:
+            self.update_metrics("delta_count")
+        
+        # 데이터 크기 추정
         try:
-            # data에 이미 timestamp가 있는 경우, 이를 그대로 사용
-            if 'timestamp' not in data:
-                data['timestamp'] = time.time()
-                
-            # exchange_code가 없으면 추가
-            if 'exchange_code' not in data:
-                data['exchange_code'] = self.exchange_code
-                
-            await self.system_event_manager.publish_system_event(
-                event_type,
-                **data
-            )
-        except Exception as e:
-            self.log_error(f"이벤트 발행 실패: {str(e)}")
-    
-    # 텔레그램 알림 전송 (단순화된 버전)
-    async def send_telegram_message(self, event_type: str, message: str) -> None:
-        """
-        텔레그램 알림 전송
+            data_size = len(str(data)) if data else 0
+            if data_size > 0:
+                self.update_metrics("data_size", data_size)
+        except:
+            pass
         
-        Args:
-            event_type: 이벤트 타입 ('error', 'connect', 'disconnect', 'reconnect')
-            message: 알림 메시지 (이미 포맷팅된 상태)
-        """
-        # 지원되는 이벤트 타입 확인
-        if event_type not in ["error", "connect", "disconnect", "reconnect"]:
-            return
-            
-        current_time = time.time()
+        # 이벤트 버스 발행
+        event_data = {
+            "exchange_code": self.exchange_code,
+            "symbol": symbol,
+            "data": data,
+            "timestamp": kwargs.get("timestamp", time.time())
+        }
         
-        # 쿨다운 체크 - 동일 이벤트 타입에 대해 일정 시간 내 중복 알림 방지
-        last_time = self._last_notification_time.get(event_type, 0)
-        if current_time - last_time < self._notification_cooldown:
-            return
-            
-        # 현재 시간 기록
-        self._last_notification_time[event_type] = current_time
+        # 추가 데이터 병합
+        for key, value in kwargs.items():
+            if key != "timestamp":  # timestamp는 이미 처리함
+                event_data[key] = value
         
-        try:
-            # 현재 시간 추가
-            from datetime import datetime
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            message_with_time = f"[{current_time}]\n{message}"
-            
-            # 단순화된 메시지 전송
-            await send_telegram_message(message_with_time)
-        except Exception as e:
-            self.log_error(f"텔레그램 알림 전송 실패: {str(e)}")
+        await self.event_bus.publish(event_type, event_data)
     
-    # 로깅 함수들
-    def log_error(self, message: str) -> None:
-        """오류 로깅 (거래소 이름 포함)"""
-        logger.error(f"{self.exchange_name_kr} {message}")
-    
-    def log_warning(self, message: str) -> None:
-        """경고 로깅 (거래소 이름 포함)"""
-        logger.warning(f"{self.exchange_name_kr} {message}")
-    
-    def log_info(self, message: str) -> None:
-        """정보 로깅 (거래소 이름 포함)"""
-        logger.info(f"{self.exchange_name_kr} {message}")
-    
-    def log_debug(self, message: str) -> None:
+    def get_status(self) -> Dict[str, Any]:
         """
-        디버그 로그 출력
-        
-        Args:
-            message: 로그 메시지
-        """
-        # 디버그 메시지를 INFO 레벨로 출력하여 항상 보이도록 함
-        logger.info(f"{self.exchange_name_kr} {message}")
-
-# 싱글톤 패턴 구현
-class EventHandlerFactory:
-    """
-    이벤트 핸들러 팩토리 클래스
-    
-    각 거래소마다 하나의 이벤트 핸들러 인스턴스를 유지합니다.
-    """
-    
-    _instances = {}  # 거래소 코드 -> 핸들러 인스턴스
-    
-    @classmethod
-    def get_handler(cls, exchange_code: str, settings: Dict[str, Any]) -> EventHandler:
-        """
-        거래소별 이벤트 핸들러 인스턴스 반환
-        
-        Args:
-            exchange_code: 거래소 코드
-            settings: 설정 정보
+        현재 상태 정보 가져오기
             
         Returns:
-            EventHandler: 이벤트 핸들러 인스턴스
+            Dict: 상태 정보
         """
-        exchange_code = exchange_code.lower()  # 정규화
-        
-        if exchange_code not in cls._instances:
-            cls._instances[exchange_code] = EventHandler(exchange_code, settings)
-            
-        return cls._instances[exchange_code] 
+        return {
+            "connection_status": self.connection_status,
+            "subscription": self.subscriptions,
+            "metrics": self.message_counters,
+            "errors": self.errors
+        }
+
+# 팩토리 함수로 EventHandler 인스턴스를 가져오는 함수 (호환성 유지)
+def EventHandlerFactory():
+    # 실제로는 EventHandler 클래스의 get_instance 메서드를 사용함을 알림
+    raise DeprecationWarning(
+        "EventHandlerFactory는 더 이상 사용되지 않습니다. "
+        "EventHandler.get_instance(exchange_code, settings)를 대신 사용하세요."
+    ) 

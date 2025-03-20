@@ -119,9 +119,7 @@ class BybitSubscription(BaseSubscription):
     
     async def subscribe(self, symbol):
         """
-        심볼 구독
-        
-        단일 심볼 또는 심볼 리스트를 구독합니다.
+        심볼 또는 심볼 리스트 구독
         
         Args:
             symbol: 구독할 심볼 또는 심볼 리스트
@@ -130,11 +128,6 @@ class BybitSubscription(BaseSubscription):
             bool: 구독 성공 여부
         """
         try:
-            # 웹소켓 연결 확보
-            if not await self._ensure_websocket():
-                self.log_error("웹소켓 연결이 없어 구독 실패")
-                return False
-                
             # 심볼 전처리
             symbols = await self._preprocess_symbols(symbol)
             if not symbols:
@@ -155,16 +148,16 @@ class BybitSubscription(BaseSubscription):
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
             # 구독 이벤트 발행
-            self._publish_subscription_status_event(symbols, "subscribed")
+            try:
+                await self.event_handler.handle_subscription_status(status="subscribed", symbols=symbols)
+            except Exception as e:
+                self.log_warning(f"구독 상태 이벤트 발행 실패: {e}")
             
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            asyncio.create_task(self.publish_system_event_sync(
-                EVENT_TYPES["ERROR_EVENT"],
-                message=f"구독 중 오류 발생: {str(e)}"
-            ))
+            self.event_handler.update_metrics("error_count")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -429,8 +422,9 @@ class BybitSubscription(BaseSubscription):
                     
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            asyncio.create_task(self.publish_system_event_sync(
+            asyncio.create_task(self.system_event_manager.publish_system_event(
                 EVENT_TYPES["ERROR_EVENT"],
+                exchange_code=self.exchange_code,
                 message=f"메시지 처리 실패: {str(e)}"
             ))
     
@@ -453,3 +447,19 @@ class BybitSubscription(BaseSubscription):
         }
         
     # async def unsubscribe 메서드 제거 - 부모 클래스의 메서드를 상속받아 사용 
+
+    async def process_error_message(self, message: str) -> None:
+        """에러 메시지 처리"""
+        self.log_error(f"에러 메시지 수신: {message}")
+        
+        # 에러 이벤트 발행
+        asyncio.create_task(self.event_handler.handle_error(
+            error_type="websocket_error",
+            message=message,
+            severity="error"
+        ))
+
+        # 에러 상태 기록
+        self.error_count += 1
+        self.last_error = message
+        self.last_error_time = time.time() 

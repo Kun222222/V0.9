@@ -146,13 +146,16 @@ class BithumbSubscription(BaseSubscription):
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
             # 구독 이벤트 발행
-            self._publish_subscription_status_event(symbols, "subscribed")
+            try:
+                await self.event_handler.handle_subscription_status(status="subscribed", symbols=symbols)
+            except Exception as e:
+                self.log_warning(f"구독 상태 이벤트 발행 실패: {e}")
             
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.system_event_manager.record_metric(self.exchange_code, "error")
+            self.event_handler.update_metrics("error_count")
             return False
 
     # 4. 메시지 수신 및 처리 단계
@@ -249,7 +252,16 @@ class BithumbSubscription(BaseSubscription):
             if not code or not code.startswith("KRW-"):
                 return None
                 
-            symbol = code.split("-")[1]
+            # 심볼 파싱 안전하게 처리
+            try:
+                symbol_parts = code.split("-")
+                if len(symbol_parts) < 2:
+                    self.log_warning(f"유효하지 않은 심볼 형식: {code}")
+                    return None
+                symbol = symbol_parts[1]
+            except Exception as e:
+                self.log_warning(f"심볼 파싱 오류: {code} - {e}")
+                return None
             
             timestamp = data.get("tms") or data.get("timestamp")
             if timestamp is None:
@@ -349,16 +361,23 @@ class BithumbSubscription(BaseSubscription):
                     is_snapshot = parsed_data.get("type") == "snapshot"
                     
                     # 검증 및 처리
-                    if is_snapshot:
-                        result = await self.validator.initialize_orderbook(symbol, parsed_data)
-                        # 메트릭 업데이트
-                        if result.is_valid:
-                            self._update_metrics(self.exchange_code, start_time, "snapshot", parsed_data)
-                    else:
-                        result = await self.validator.update(symbol, parsed_data)
-                        # 메트릭 업데이트
-                        if result.is_valid:
-                            self._update_metrics(self.exchange_code, start_time, "delta", parsed_data)
+                    try:
+                        if is_snapshot:
+                            result = await self.validator.initialize_orderbook(symbol, parsed_data)
+                            # 메트릭 업데이트
+                            if result.is_valid:
+                                self._update_metrics(self.exchange_code, start_time, "snapshot", parsed_data)
+                        else:
+                            result = await self.validator.update(symbol, parsed_data)
+                            # 메트릭 업데이트
+                            if result.is_valid:
+                                self._update_metrics(self.exchange_code, start_time, "delta", parsed_data)
+                    except Exception as val_error:
+                        # 구체적인 검증 오류 메시지
+                        self.log_error(f"{symbol} 오더북 검증 처리 중 오류: {str(val_error)}")
+                        # 오류 이벤트 발행
+                        self.publish_event(symbol, str(val_error), "error")
+                        return
                         
                     if result.is_valid:
                         # 유효한 오더북 데이터 가져오기
@@ -375,19 +394,33 @@ class BithumbSubscription(BaseSubscription):
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:
                 self.log_error(f"{symbol} 오더북 검증 중 오류: {str(e)}")
-                asyncio.create_task(self.publish_system_event_sync(
-                    EVENT_TYPES["ERROR_EVENT"],
-                    message=f"{symbol} 오더북 검증 중 오류: {str(e)}"
+                asyncio.create_task(self.event_handler.handle_error(
+                    error_type="snapshot_error",
+                    message=f"{symbol} 오더북 검증 중 오류: {str(e)}",
+                    severity="error",
+                    data={"message": message}
                 ))
                 
                 # 오류 이벤트 발행
                 self.publish_event(symbol, str(e), "error")
                     
+            # 스냅샷 처리 완료 이벤트 발행
+            asyncio.create_task(self.event_handler.handle_data_event(
+                event_type=EVENT_TYPES["DATA_UPDATED"],
+                symbol=symbol,
+                data={
+                    "msg_type": parsed_data.get("type", "unknown"),
+                    "processing_time": time.time() - start_time
+                }
+            ))
+            
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
-            asyncio.create_task(self.publish_system_event_sync(
-                EVENT_TYPES["ERROR_EVENT"],
-                message=f"메시지 처리 중 오류: {str(e)}"
+            asyncio.create_task(self.event_handler.handle_error(
+                error_type="snapshot_error", 
+                message=f"메시지 처리 중 오류: {str(e)}", 
+                severity="error",
+                data={"message": message}
             ))
 
     # 6. 구독 취소 단계

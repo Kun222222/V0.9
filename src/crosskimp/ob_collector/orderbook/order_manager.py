@@ -9,20 +9,19 @@
 
 import asyncio
 import time
-import importlib
 from typing import Dict, List, Any, Optional
-import traceback
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.util.component_factory import create_connector, create_subscription, create_validator
 from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
+from crosskimp.ob_collector.orderbook.util.event_handler import EventHandler, LoggingMixin
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
-class OrderManager:
+class OrderManager(LoggingMixin):
     """
     통합 오더북 관리자 클래스
     
@@ -45,13 +44,11 @@ class OrderManager:
         self.exchange_code = exchange_code
         self.exchange_name_kr = EXCHANGE_NAMES_KR[exchange_code]
         
-        # 로거 설정
-        self.logger = logger
+        # 로거 설정 (LoggingMixin 메서드 사용)
+        self.setup_logger(self.exchange_code)
         
-        # SystemEventManager 설정
-        from crosskimp.ob_collector.orderbook.util.event_manager import SystemEventManager
-        self.system_event_manager = SystemEventManager.get_instance()
-        self.system_event_manager.initialize_exchange(self.exchange_code)
+        # 이벤트 핸들러 초기화
+        self.event_handler = EventHandler.get_instance(self.exchange_code, self.settings)
         
         # 이벤트 버스 인스턴스 가져오기
         self.event_bus = EventBus.get_instance()
@@ -70,7 +67,7 @@ class OrderManager:
         # 시작 시간 기록
         self.start_time = time.time()
         
-        logger.info(f"{self.exchange_name_kr} 오더북 관리자 초기화")
+        self.log_info(f"{self.exchange_name_kr} 오더북 관리자 초기화")
     
     async def initialize(self) -> bool:
         """
@@ -83,12 +80,12 @@ class OrderManager:
             # 팩토리를 사용하여 컴포넌트 생성
             self.connection = create_connector(self.exchange_code, self.settings)
             if not self.connection:
-                logger.error(f"{self.exchange_name_kr} 연결 객체를 생성할 수 없습니다")
+                self.log_error(f"{self.exchange_name_kr} 연결 객체를 생성할 수 없습니다")
                 return False
             
             self.subscription = create_subscription(self.exchange_code, self.connection)
             if not self.subscription:
-                logger.error(f"{self.exchange_name_kr} 구독 객체를 생성할 수 없습니다")
+                self.log_error(f"{self.exchange_name_kr} 구독 객체를 생성할 수 없습니다")
                 return False
                 
             self.validator = create_validator(self.exchange_code)
@@ -126,11 +123,11 @@ class OrderManager:
                 lambda event_data: asyncio.create_task(self.handle_error_event(event_data))
             )
             
-            logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 및 이벤트 구독 완료")
+            self.log_info(f"{self.exchange_name_kr} 컴포넌트 초기화 및 이벤트 구독 완료")
             return True
             
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}", exc_info=True)
+            self.log_error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}")
             return False
     
     async def start(self, symbols: List[str]) -> bool:
@@ -145,16 +142,16 @@ class OrderManager:
         """
         try:
             if not symbols:
-                logger.warning(f"{self.exchange_name_kr} 심볼이 없어 오더북 수집을 시작하지 않습니다")
+                self.log_warning(f"{self.exchange_name_kr} 심볼이 없어 오더북 수집을 시작하지 않습니다")
                 return False
                 
             # 필수 컴포넌트 검증
             if not self.connection:
-                logger.error(f"{self.exchange_name_kr} 연결 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
+                self.log_error(f"{self.exchange_name_kr} 연결 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
                 return False
                 
             if not self.subscription:
-                logger.error(f"{self.exchange_name_kr} 구독 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
+                self.log_error(f"{self.exchange_name_kr} 구독 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
                 return False
             
             # 심볼 저장 (현재 관리 중인 심볼 목록 업데이트)
@@ -162,7 +159,7 @@ class OrderManager:
                 # 새로운 심볼만 추가 (이 부분은 OrderManager의 역할)
                 new_symbols = [s for s in symbols if s not in self.symbols]
                 if new_symbols:
-                    logger.info(f"{self.exchange_name_kr} 추가 심볼 구독: {len(new_symbols)}개")
+                    self.log_info(f"{self.exchange_name_kr} 추가 심볼 구독: {len(new_symbols)}개")
                     self.symbols.update(new_symbols)
                     symbols_to_subscribe = new_symbols
                 else:
@@ -181,17 +178,17 @@ class OrderManager:
             subscription_success = await self.subscription.subscribe(symbols_to_subscribe)
             
             if subscription_success:
-                logger.info(f"{self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
+                self.log_info(f"{self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
                 return True
             else:
                 if not self.is_running:
                     self.is_running = False
-                logger.error(f"{self.exchange_name_kr} 구독 실패")
+                self.log_error(f"{self.exchange_name_kr} 구독 실패")
                 return False
             
         except Exception as e:
             self.is_running = False
-            logger.error(f"{self.exchange_name_kr} 오더북 수집 시작 실패: {str(e)}", exc_info=True)
+            self.log_error(f"{self.exchange_name_kr} 오더북 수집 시작 실패: {str(e)}")
             return False
     
     async def stop(self) -> None:
@@ -204,12 +201,12 @@ class OrderManager:
             if self.subscription:
                 unsubscribe_success = await self.subscription.unsubscribe(None)
                 if not unsubscribe_success:
-                    logger.warning(f"{self.exchange_name_kr} 구독 취소 중 일부 오류 발생")
+                    self.log_warning(f"{self.exchange_name_kr} 구독 취소 중 일부 오류 발생")
             
             # 연결 객체 정리 (웹소켓 종료)
             if self.connection:
                 await self.connection.disconnect()
-                logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
+                self.log_info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
             
             # 오더북 관리자 정리 (OrderManager의 역할)
             if self.validator:
@@ -219,10 +216,10 @@ class OrderManager:
             self.is_running = False
             self.symbols.clear()
             
-            logger.info(f"{self.exchange_name_kr} 오더북 수집 중지 완료")
+            self.log_info(f"{self.exchange_name_kr} 오더북 수집 중지 완료")
             
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 중지 중 오류 발생: {str(e)}")
+            self.log_error(f"{self.exchange_name_kr} 중지 중 오류 발생: {str(e)}")
             self.is_running = False  # 오류가 발생해도 실행 중 상태 해제
     
     @property
@@ -247,7 +244,7 @@ class OrderManager:
         uptime = time.time() - self.start_time
         
         # 메트릭 정보 가져오기
-        metrics = self.system_event_manager.get_status(self.exchange_code)
+        metrics = self.event_handler.message_counters
         
         # 연결 정보
         connection_info = {}
@@ -286,10 +283,10 @@ class OrderManager:
             # 연결 상태 정보 추출 및 로깅만 수행
             status = event_data.get("status", "unknown")
             event_text = "연결됨" if status == "connected" else "연결 끊김"
-            logger.info(f"{self.exchange_name_kr} 상태 변경: {event_text}")
+            self.log_info(f"{self.exchange_name_kr} 상태 변경: {event_text}")
                 
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 커넥터 이벤트 처리 중 오류: {str(e)}")
+            self.log_error(f"{self.exchange_name_kr} 커넥터 이벤트 처리 중 오류: {str(e)}")
 
     async def handle_subscription_event(self, event_data: dict) -> None:
         """
@@ -308,39 +305,33 @@ class OrderManager:
             symbols_count = len(event_data.get("symbols", []))
             
             if status == "subscribed":
-                logger.info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 성공")
+                self.log_info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 성공")
             elif status == "unsubscribed":
-                logger.info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 취소됨")
+                self.log_info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 취소됨")
                 
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 구독 이벤트 처리 중 오류: {str(e)}")
+            self.log_error(f"{self.exchange_name_kr} 구독 이벤트 처리 중 오류: {str(e)}")
 
     async def handle_data_event(self, event_data: dict, event_type: str) -> None:
         """
         데이터 이벤트 처리 (이벤트 버스에서 호출됨)
         
+        OrderManager는 이벤트가 자신이 관리하는 거래소와 관련된 것인지만 확인하고,
+        특별한 액션이 필요한 경우에만 처리합니다.
+        대부분의 데이터 이벤트는 BaseSubscription과 EventHandler가 처리합니다.
+        
         Args:
             event_data: 데이터 이벤트 정보
             event_type: 이벤트 타입 ('snapshot' 또는 'delta')
         """
-        try:
-            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
-            if event_data.get("exchange_code") != self.exchange_code:
-                return
-                
-            # 심볼 및 데이터 추출
-            symbol = event_data.get("symbol")
-            data = event_data.get("data")
+        # 거래소 코드 확인
+        if event_data.get("exchange_code") != self.exchange_code:
+            return
             
-            if not symbol or not data:
-                return
-                
-            # 로그 출력 제거 - 과도한 로그 발생 방지
-            # 메트릭만 업데이트하고 로그는 출력하지 않음
-                
-        except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 데이터 이벤트 처리 중 오류: {str(e)}")
-            
+        # 여기서는 특별한 처리가 필요 없음
+        # 모든 처리는 이미 BaseSubscription과 EventHandler에서 완료됨
+        # 필요한 경우 여기에 고유한 OrderManager 로직 추가 가능
+
     async def handle_error_event(self, event_data: dict) -> None:
         """
         오류 이벤트 처리 (이벤트 버스에서 호출됨)
@@ -359,12 +350,12 @@ class OrderManager:
             severity = event_data.get("severity", "error")
             
             if severity == "critical":
-                logger.critical(f"{self.exchange_name_kr} 심각한 오류: [{error_type}] {message}")
+                self.log_critical(f"{self.exchange_name_kr} 심각한 오류: [{error_type}] {message}")
             else:
-                logger.error(f"{self.exchange_name_kr} 오류: [{error_type}] {message}")
+                self.log_error(f"{self.exchange_name_kr} 오류: [{error_type}] {message}")
                 
         except Exception as e:
-            logger.error(f"{self.exchange_name_kr} 오류 이벤트 처리 중 오류: {str(e)}")
+            self.log_error(f"{self.exchange_name_kr} 오류 이벤트 처리 중 오류: {str(e)}")
 
 # OrderManager 팩토리 함수
 def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager]:
@@ -399,7 +390,7 @@ def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager
         return manager
         
     except Exception as e:
-        logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패: {str(e)}", exc_info=True)
+        logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패: {str(e)}")
         return None
 
 
@@ -466,5 +457,5 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
         return True
         
     except Exception as e:
-        logger.error(f"OrderManager 통합 중 오류 발생: {str(e)}", exc_info=True)
+        logger.error(f"OrderManager 통합 중 오류 발생: {str(e)}")
         return False

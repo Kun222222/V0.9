@@ -9,9 +9,9 @@ from abc import ABC, abstractmethod
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
-from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR, normalize_exchange_code
+from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR, normalize_exchange_code
 from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
-from crosskimp.ob_collector.orderbook.util.event_handler import EventHandlerFactory
+from crosskimp.ob_collector.orderbook.util.event_handler import EventHandler, LoggingMixin
 
 # 전역 로거 설정
 logger = get_unified_logger()
@@ -64,7 +64,7 @@ class ReconnectStrategy:
         self.attempts = 0
         self.current_delay = self.initial_delay
 
-class BaseWebsocketConnector(ABC):
+class BaseWebsocketConnector(ABC, LoggingMixin):
     """웹소켓 연결 관리 기본 클래스"""
     def __init__(self, settings: dict, exchangename: str):
         """초기화"""
@@ -73,9 +73,9 @@ class BaseWebsocketConnector(ABC):
         self.exchange_code = self.exchangename  # 필드명 일관성을 위한 별칭
         self.settings = settings
         
-        # 거래소 한글 이름 가져오기 (소문자 키 사용)
-        self.exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchangename, f"[{self.exchangename}]")
-
+        # 로거 설정 (LoggingMixin 메서드 사용)
+        self.setup_logger(self.exchange_code)
+        
         # 기본 상태 변수
         self.ws = None
         self.stop_event = Event()
@@ -88,13 +88,10 @@ class BaseWebsocketConnector(ABC):
         self.stats = WebSocketStats()
         
         # 이벤트 핸들러 초기화
-        self.event_handler = EventHandlerFactory.get_handler(self.exchangename, self.settings)
+        self.event_handler = EventHandler.get_instance(self.exchangename, self.settings)
         
         # 이벤트 버스 가져오기 (이벤트 핸들러로부터)
         self.event_bus = self.event_handler.event_bus
-        
-        # SystemEventManager 가져오기 (이벤트 핸들러로부터)
-        self.system_event_manager = self.event_handler.system_event_manager
         
         # 자식 클래스에서 설정해야 하는 변수들
         self.reconnect_strategy = None  # 재연결 전략
@@ -117,20 +114,20 @@ class BaseWebsocketConnector(ABC):
     def is_connected(self, value: bool) -> None:
         """연결 상태 설정"""
         if self._is_connected != value:
+            # 상태 변경만 내부적으로 처리
+            prev_status = self._is_connected
             self._is_connected = value
             
-            # 상태 변경 이벤트 발생
-            state = "connected" if value else "disconnected"
-            
-            # 연결 시간 기록
+            # 연결 시간 기록 (내부 통계용)
             if value:
                 self.stats.connection_start_time = time.time()
             
-            # 이벤트 핸들러로 연결 상태 변경 이벤트 처리
+            # 이벤트 핸들러로 연결 상태 변경 이벤트 처리 위임
+            # 외부 처리(로깅, 알림, 이벤트 발행)는 모두 EventHandler가 담당
+            status = "connected" if value else "disconnected"
             asyncio.create_task(self.event_handler.handle_connection_status(
-                status=state,
-                timestamp=time.time(),
-                duration=time.time() - self.stats.connection_start_time if value else 0
+                status=status,
+                timestamp=time.time()
             ))
 
     def _start_health_check_task(self) -> None:
@@ -306,35 +303,15 @@ class BaseWebsocketConnector(ABC):
         except Exception as e:
             self.log_error(f"헬스 체크 태스크 재시작 실패: {str(e)}")
 
-    # 로깅 함수는 이벤트 핸들러를 통해 사용
-    def log_error(self, message: str) -> None:
-        """오류 로깅 (이벤트 핸들러 사용)"""
-        self.event_handler.log_error(message)
+    # 이벤트 처리는 이벤트 핸들러에 위임
+    async def handle_error(self, error_type: str, message: str, severity: str = "error", **kwargs) -> None:
+        """오류 이벤트 처리 (이벤트 핸들러 사용)"""
+        await self.event_handler.handle_error(error_type, message, severity, **kwargs)
         
         # 웹소켓 통계 업데이트 - 오류 카운트 증가
         self.stats.error_count += 1
         self.stats.last_error_time = time.time()
         self.stats.last_error_message = message
-        
-        # 오류 메트릭 기록
-        self.system_event_manager.record_metric(self.exchangename, "error_count")
-
-    def log_warning(self, message: str) -> None:
-        """경고 로깅 (이벤트 핸들러 사용)"""
-        self.event_handler.log_warning(message)
-
-    def log_info(self, message: str) -> None:
-        """정보 로깅 (이벤트 핸들러 사용)"""
-        self.event_handler.log_info(message)
-
-    def log_debug(self, message: str) -> None:
-        """디버그 로깅 (이벤트 핸들러 사용)"""
-        self.event_handler.log_debug(message)
-
-    # 이벤트 처리는 이벤트 핸들러에 위임
-    async def handle_error(self, error_type: str, message: str, severity: str = "error", **kwargs) -> None:
-        """오류 이벤트 처리 (이벤트 핸들러 사용)"""
-        await self.event_handler.handle_error(error_type, message, severity, **kwargs)
     
     async def handle_message(self, message_type: str, size: int = 0, **kwargs) -> None:
         """메시지 수신 이벤트 처리 (이벤트 핸들러 사용)"""
