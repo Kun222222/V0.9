@@ -90,7 +90,7 @@ class BaseWebsocketConnector(ABC):
         self.metrics_manager.initialize_exchange(self.exchangename)
         
         # 이벤트 버스 초기화
-        from crosskimp.ob_collector.orderbook.event_bus import EventBus
+        from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
         self.event_bus = EventBus.get_instance()
         
         # 자식 클래스에서 설정해야 하는 변수들

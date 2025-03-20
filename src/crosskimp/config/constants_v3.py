@@ -129,8 +129,8 @@ PROJECT_ROOT = get_project_root()
 
 # 주요 디렉토리 경로 정의
 SRC_DIR = PROJECT_ROOT / 'src'
-LOGS_DIR = PROJECT_ROOT / 'logs'
-DATA_DIR = PROJECT_ROOT / 'data'
+LOGS_DIR = PROJECT_ROOT / 'src/logs'
+DATA_DIR = PROJECT_ROOT / 'src/data'
 CONFIG_DIR = PROJECT_ROOT / 'src/crosskimp/config'
 
 # 로그 하위 디렉토리 경로 설정

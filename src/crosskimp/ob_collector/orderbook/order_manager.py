@@ -17,8 +17,8 @@ from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookV
 from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
 
 # 컴포넌트 생성과 관리를 위한 모듈 임포트
-from crosskimp.ob_collector.orderbook.component_factory import create_connector, create_subscription, create_validator
-from crosskimp.ob_collector.orderbook.event_bus import EventBus
+from crosskimp.ob_collector.orderbook.util.component_factory import create_connector, create_subscription, create_validator
+from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

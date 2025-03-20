@@ -39,7 +39,7 @@ class BaseSubscription(ABC):
         self.metrics_manager.initialize_exchange(self.exchange_code)
         
         # 이벤트 버스 초기화
-        from crosskimp.ob_collector.orderbook.event_bus import EventBus
+        from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
         self.event_bus = EventBus.get_instance()
         
         # 구독 상태 관리
