@@ -50,7 +50,7 @@ class BybitSubscription(BaseSubscription):
         
         # 로깅 설정
         self.raw_logging_enabled = True  # raw 데이터 로깅 활성화
-        self.orderbook_logging_enabled = False  # 오더북 데이터 로깅 비활성화
+        self.orderbook_logging_enabled = ENABLE_ORDERBOOK_LOGGING  # 오더북 데이터 로깅 활성화
         
         # 각 심볼별 전체 오더북 상태 저장용
         self.orderbooks = {}  # symbol -> {"bids": {...}, "asks": {...}, "timestamp": ..., "sequence": ...}
