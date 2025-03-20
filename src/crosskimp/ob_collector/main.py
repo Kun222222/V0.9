@@ -39,7 +39,7 @@ async def send_startup_message():
 ⏳ 오더북 데이터 수집을 시작합니다. 모든 거래소 연결이 완료되면 알려드립니다.
 """
     # 비동기 태스크로 실행하여 초기화 과정을 블로킹하지 않도록 함
-    asyncio.create_task(send_telegram_message(data={"message": message}))
+    asyncio.create_task(send_telegram_message(message))
 
 async def send_shutdown_message():
     """종료 메시지 전송"""
@@ -52,7 +52,7 @@ async def send_shutdown_message():
 📊 오더북 데이터 수집이 중단되었습니다. 
 ⚙️ 모든 리소스가 정상적으로 정리되었습니다.
 """
-    await send_telegram_message(data={"message": message})
+    await send_telegram_message(message)
 
 async def shutdown():
     """종료 처리"""

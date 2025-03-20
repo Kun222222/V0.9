@@ -375,20 +375,20 @@ class BithumbSubscription(BaseSubscription):
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:
                 self.log_error(f"{symbol} 오더북 검증 중 오류: {str(e)}")
-                self.publish_system_event_sync(
+                asyncio.create_task(self.publish_system_event_sync(
                     EVENT_TYPES["ERROR_EVENT"],
                     message=f"{symbol} 오더북 검증 중 오류: {str(e)}"
-                )
+                ))
                 
                 # 오류 이벤트 발행
                 self.publish_event(symbol, str(e), "error")
                     
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 message=f"메시지 처리 중 오류: {str(e)}"
-            )
+            ))
 
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:

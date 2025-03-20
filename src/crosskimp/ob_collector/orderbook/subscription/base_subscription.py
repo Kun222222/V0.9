@@ -18,7 +18,10 @@ EVENT_TYPES = {
     "METRIC_UPDATE": "metric_update",          # 메트릭 업데이트
     "ERROR_EVENT": "error_event",              # 오류 이벤트
     "SUBSCRIPTION_STATUS": "subscription_status",  # 구독 상태 변경
-    "ORDERBOOK_UPDATE": "orderbook_update"     # 오더북 업데이트
+    "ORDERBOOK_UPDATE": "orderbook_update",     # 오더북 업데이트
+    "DATA_SNAPSHOT": "data_snapshot",            # 데이터 스냅샷
+    "DATA_DELTA": "data_delta",                # 데이터 델타
+    "DATA_UPDATED": "data_updated"              # 데이터 업데이트
 }
 
 class BaseSubscription(ABC):
@@ -50,7 +53,7 @@ class BaseSubscription(ABC):
         
         # SystemEventManager 설정
         try:
-            from crosskimp.ob_collector.orderbook.util.system_event_manager import SystemEventManager
+            from crosskimp.ob_collector.orderbook.util.event_manager import SystemEventManager
             self.system_event_manager = SystemEventManager.get_instance()
             self.system_event_manager.initialize_exchange(self.exchange_code)
             
@@ -75,6 +78,15 @@ class BaseSubscription(ABC):
         
         # 종료 이벤트
         self.stop_event = asyncio.Event()
+        
+        # 메시지 카운트 관련 변수 추가 (message_counter.py 대체)
+        self._message_count = 0  # 총 메시지 수
+        self._last_count_update = time.time()  # 마지막 카운트 업데이트 시간
+        self._prev_message_count = 0  # 이전 메시지 카운트 (속도 계산용)
+        self._count_update_interval = 1.0  # 메트릭 업데이트 간격
+        
+        # 메트릭 업데이트를 위한 태스크 시작
+        self._start_metric_update_task()
         
         # 오더북 데이터 로깅 설정 - 기본적으로 비활성화
         self.raw_logging_enabled = False  # raw 데이터 로깅 활성화 여부
@@ -227,9 +239,8 @@ class BaseSubscription(ABC):
             # 메시지 수신
             message = await ws.recv()
             
-            # 메시지 수신 시 메트릭 증가 (배치 처리)
-            if hasattr(self, "system_event_manager"):
-                self.system_event_manager.increment_message_count(self.exchange_code)
+            # 메시지 수신 시 메트릭 증가 (자체 구현 메서드 사용)
+            self.increment_message_count()
             
             return message
             
@@ -242,12 +253,12 @@ class BaseSubscription(ABC):
             self.log_error(f"메시지 수신 중 오류: {str(e)}")
             
             # 오류 이벤트 발행
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 error_type="message_error",
                 message=str(e),
                 severity="error"
-            )
+            ))
             
             return None
     
@@ -382,18 +393,15 @@ class BaseSubscription(ABC):
             # 원시 메시지 로깅 (모든 거래소에서 동일하게 동작)
             self.log_raw_message(message)
             
-            # 중앙 집중식 메시지 카운트 기록 (모든 거래소 공통)
-            self.system_event_manager.record_metric(self.exchange_code, "message_count")
-            
             # 처리 시간 계산 및 메트릭 발행
             processing_time_ms = (time.time() - start_time) * 1000
             
             # 시스템 이벤트 발행 - 처리 시간
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["METRIC_UPDATE"],
                 metric_name="processing_time",
                 value=processing_time_ms
-            )
+            ))
             
         except asyncio.CancelledError:
             # 태스크 취소는 오류가 아님
@@ -404,12 +412,12 @@ class BaseSubscription(ABC):
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
             
             # 오류 이벤트 발행
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 error_type="message_processing_error",
                 message=str(e),
                 severity="error"
-            )
+            ))
     
     async def message_loop(self) -> None:
         """
@@ -448,12 +456,12 @@ class BaseSubscription(ABC):
                     self.log_error(f"메시지 처리 중 예외 발생: {str(e)}")
                     
                     # 오류 이벤트 발행
-                    self.publish_system_event_sync(
+                    asyncio.create_task(self.publish_system_event_sync(
                         EVENT_TYPES["ERROR_EVENT"],
                         error_type="message_loop_error",
                         message=str(e),
                         severity="error"
-                    )
+                    ))
                     
                     # 잠시 대기 후 계속
                     await asyncio.sleep(0.1)
@@ -465,12 +473,12 @@ class BaseSubscription(ABC):
             self.log_error(f"메시지 루프 실행 중 오류: {str(e)}")
             
             # 오류 이벤트 발행
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 error_type="message_loop_fatal_error",
                 message=str(e),
                 severity="critical"
-            )
+            ))
 
     # 5. 이벤트 발행 단계 (수정됨)
     def _handle_error(self, symbol: str, error: str) -> None:
@@ -481,17 +489,16 @@ class BaseSubscription(ABC):
             symbol: 관련 심볼
             error: 오류 메시지
         """
-        # 로그 기록
         self.log_error(f"{symbol} 오류: {error}")
-        
+            
         # 오류 이벤트 발행
-        self.publish_system_event_sync(
+        asyncio.create_task(self.publish_system_event_sync(
             EVENT_TYPES["ERROR_EVENT"],
-            error_type="orderbook_error",
             symbol=symbol,
+            error_type="subscription_error",
             message=error,
             severity="error"
-        )
+        ))
     
     def _update_metrics(self, exchange_code: str, start_time: float, message_type: str, data: Any) -> None:
         """
@@ -511,28 +518,28 @@ class BaseSubscription(ABC):
             data_size = self._estimate_data_size(data)
             
             # 시스템 이벤트 발행 - 처리 시간
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["METRIC_UPDATE"],
                 metric_name="processing_time",
                 value=processing_time,
                 message_type=message_type
-            )
+            ))
             
             # 시스템 이벤트 발행 - 데이터 크기
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["METRIC_UPDATE"],
                 metric_name="data_size",
                 value=data_size,
                 message_type=message_type
-            )
+            ))
             
             # 메시지 타입별 카운트 이벤트 발행
             metric_name = f"{message_type}_count" if message_type in ["snapshot", "delta"] else "message_count"
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["METRIC_UPDATE"],
                 metric_name=metric_name,
                 value=1
-            )
+            ))
                 
         except Exception as e:
             self.log_error(f"메트릭 업데이트 중 오류: {str(e)}")
@@ -547,16 +554,24 @@ class BaseSubscription(ABC):
             event_type: 이벤트 타입 ('snapshot', 'delta', 'error')
         """
         try:
-            # 오류인 경우에만 시스템 이벤트 발행
-            if event_type == "error":
-                # 오류는 시스템 이벤트로 발행
-                self.publish_system_event_sync(
-                    EVENT_TYPES["ERROR_EVENT"],
-                    error_type="orderbook_error",
-                    symbol=symbol,
-                    message=str(data),
-                    severity="error"
-                )
+            # 이벤트 타입에 따라 적절한 이벤트 버스 이벤트 타입 선택
+            if event_type == "snapshot":
+                bus_event_type = EVENT_TYPES["DATA_SNAPSHOT"]
+            elif event_type == "delta":
+                bus_event_type = EVENT_TYPES["DATA_DELTA"]
+            elif event_type == "error":
+                bus_event_type = EVENT_TYPES["ERROR_EVENT"]
+            else:
+                bus_event_type = EVENT_TYPES["DATA_UPDATED"]
+            
+            # 이벤트 버스를 통해 이벤트 발행 (동기식)
+            self.event_bus.publish_sync(
+                bus_event_type,
+                symbol=symbol,
+                exchange_code=self.exchange_code,
+                data=data,
+                timestamp=time.time()
+            )
                 
         except Exception as e:
             self.log_error(f"이벤트 발행 중 오류: {str(e)}")
@@ -638,7 +653,7 @@ class BaseSubscription(ABC):
                 self._cleanup_subscription(sym)
             
             # 구독 취소 이벤트 발행
-            self._publish_subscription_status_event(symbols, "unsubscribed")
+            await self._publish_subscription_status_event(symbols, "unsubscribed")
             
             self.log_info("모든 심볼 구독 취소 완료")
             
@@ -653,10 +668,11 @@ class BaseSubscription(ABC):
             
         except Exception as e:
             self.log_error(f"구독 취소 중 오류 발생: {e}")
-            self.publish_system_event_sync(
+            # 비동기 함수인 publish_system_event_sync를 asyncio.create_task로 감싸서 호출
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 message=f"구독 취소 중 오류 발생: {e}"
-            )
+            ))
             return False
     
     def _cleanup_subscription(self, symbol: str) -> None:
@@ -711,13 +727,13 @@ class BaseSubscription(ABC):
             status: 구독 상태 ('subscribed' 또는 'unsubscribed')
         """
         try:
-            # 시스템 이벤트 발행 (동기식)
-            self.publish_system_event_sync(
+            # asyncio.create_task를 사용하여 비동기 함수를 안전하게 호출
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["SUBSCRIPTION_STATUS"],
                 status=status,
                 symbols=symbols,
                 count=len(symbols)
-            )
+            ))
                 
         except Exception as e:
             self.log_error(f"구독 상태 이벤트 발행 중 오류: {str(e)}")
@@ -737,11 +753,12 @@ class BaseSubscription(ABC):
         # system_event_manager의 비동기 publish_system_event 메서드 호출
         await self.system_event_manager.publish_system_event(event_type, **data)
     
-    def publish_system_event_sync(self, event_type: str, **data) -> None:
+    async def publish_system_event_sync(self, event_type: str, **data) -> None:
         """
         시스템 이벤트 발행 (동기식)
         
-        비동기 컨텍스트 외부에서도 사용할 수 있는 동기식 버전입니다.
+        과거에는 비동기 컨텍스트 외부에서도 사용할 수 있었지만,
+        이제는 비동기 함수로 변경되었습니다. 이름은 호환성을 위해 유지합니다.
         
         Args:
             event_type: 이벤트 타입 (EVENT_TYPES 상수 사용)
@@ -751,6 +768,72 @@ class BaseSubscription(ABC):
         if "exchange_code" not in data:
             data["exchange_code"] = self.exchange_code
             
-        # system_event_manager의 동기식 publish_system_event_sync 메서드 호출
-        self.system_event_manager.publish_system_event_sync(event_type, **data)
+        # 이벤트 버스를 통해 비동기로 이벤트 발행 (이전에는 동기식이었음)
+        await self.event_bus.publish_sync(event_type, **data)
+
+    def _start_metric_update_task(self) -> None:
+        """메트릭 업데이트 태스크 시작"""
+        try:
+            # 비동기 태스크 생성
+            async def update_metrics():
+                try:
+                    while not self.stop_event.is_set():
+                        await asyncio.sleep(self._count_update_interval)
+                        self._update_message_metrics()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.log_error(f"메트릭 업데이트 태스크 오류: {str(e)}")
+            
+            # 태스크 생성 및 저장
+            self.tasks["metric_update"] = asyncio.create_task(update_metrics())
+            
+        except RuntimeError:
+            # 이벤트 루프가 없는 경우 무시
+            pass
+    
+    def _update_message_metrics(self) -> None:
+        """메시지 메트릭 업데이트 (차이와 속도 계산)"""
+        try:
+            current_time = time.time()
+            time_diff = current_time - self._last_count_update
+            
+            if time_diff == 0:
+                return
+                
+            # 메시지 수 변화량 계산
+            count_diff = self._message_count - self._prev_message_count
+            
+            # 초당 메시지 속도 계산
+            messages_per_second = count_diff / time_diff
+            
+            # 메트릭 업데이트 - 전체 카운트와 속도를 직접 설정
+            metrics = self.system_event_manager.metrics[self.exchange_code]
+            
+            # 총 메시지 수 업데이트
+            metrics["message_count"] = self._message_count
+            
+            # 메시지 속도 업데이트
+            metrics["message_rate"] = messages_per_second
+            
+            # 첫 메시지 시간이 없는 경우 설정 (첫 메시지가 있을 때)
+            if metrics.get("first_message_time") is None and self._message_count > 0:
+                metrics["first_message_time"] = self._last_count_update
+            
+            # 이전 카운트 업데이트
+            self._prev_message_count = self._message_count
+            self._last_count_update = current_time
+        
+        except Exception as e:
+            self.log_error(f"메트릭 업데이트 중 오류: {str(e)}")
+    
+    def increment_message_count(self, n: int = 1) -> None:
+        """
+        메시지 카운트 증가
+        
+        Args:
+            n: 증가시킬 값 (기본값: 1)
+        """
+        # 메시지 카운트 증가
+        self._message_count += n
 

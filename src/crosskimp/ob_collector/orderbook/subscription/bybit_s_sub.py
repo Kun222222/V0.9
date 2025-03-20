@@ -161,10 +161,10 @@ class BybitSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 message=f"구독 중 오류 발생: {str(e)}"
-            )
+            ))
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -429,10 +429,10 @@ class BybitSubscription(BaseSubscription):
                     
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 message=f"메시지 처리 실패: {str(e)}"
-            )
+            ))
     
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:

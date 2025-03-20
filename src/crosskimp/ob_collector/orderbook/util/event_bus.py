@@ -13,37 +13,46 @@ import time
 # 로거 설정
 logger = get_unified_logger()
 
-# 이벤트 타입 정의
+# 이벤트 타입 정의 - 통합된 상수 집합
 EVENT_TYPES = {
     # 시스템 이벤트
-    "SYSTEM": {
-        "CONNECTION": "connection",      # 연결 상태
-        "METRIC": "metric",             # 메트릭 데이터
-        "ERROR": "error",               # 오류
-        "SUBSCRIPTION": "subscription"   # 구독 상태
-    },
+    "CONNECTION_STATUS": "connection_status",     # 연결 상태 변경
+    "METRIC_UPDATE": "metric_update",             # 메트릭 업데이트
+    "ERROR_EVENT": "error_event",                 # 오류 이벤트
+    "SUBSCRIPTION_STATUS": "subscription_status", # 구독 상태 변경
     
-    # 배치 이벤트
-    "BATCH": {
-        "MESSAGE_COUNT": "message_count",    # 메시지 수신 통계
-        "PROCESSING_TIME": "processing_time" # 처리 시간 통계
-    },
+    # 메시지 처리 이벤트
+    "MESSAGE_RECEIVED": "message_received",       # 메시지 수신
+    "MESSAGE_PROCESSED": "message_processed",     # 메시지 처리 완료
+    "BATCH_COMPLETED": "batch_completed",         # 배치 처리 완료
     
-    # 확장 가능한 새로운 데이터 세트용
-    "CUSTOM": {
-        # 향후 추가될 커스텀 이벤트 타입
-    }
+    # 데이터 관련 이벤트
+    "DATA_UPDATED": "data_updated",               # 데이터 업데이트
+    "DATA_SNAPSHOT": "data_snapshot",             # 데이터 스냅샷
+    "DATA_DELTA": "data_delta",                   # 데이터 변경
+    
+    # 시스템 상태 이벤트
+    "SYSTEM_STARTUP": "system_startup",           # 시스템 시작
+    "SYSTEM_SHUTDOWN": "system_shutdown",         # 시스템 종료
+    "SYSTEM_HEARTBEAT": "system_heartbeat",       # 시스템 하트비트
+    
+    # 성능 관련 이벤트
+    "PERFORMANCE_METRIC": "performance_metric",   # 성능 측정
+    "RESOURCE_USAGE": "resource_usage",           # 리소스 사용량
+    "LATENCY_REPORT": "latency_report",           # 지연 시간
+    
+    # 확장 가능한 커스텀 이벤트
+    "CUSTOM_EVENT": "custom_event"                # 커스텀 이벤트
 }
 
 class EventBus:
     """
-    수정된 이벤트 버스 클래스 구조:
+    이벤트 버스 클래스
     
-    1. 단일 채널 'system_event' 사용
-    2. 배치 처리 지원
-    3. 이벤트 우선순위 지원
-    4. 이벤트 버퍼링 및 최적화
-    5. 새로운 데이터 세트 확장 지원
+    1. 단일 채널 사용으로 단순화
+    2. 비동기 이벤트 처리 지원
+    3. 이벤트 구독 및 발행 기능
+    4. 싱글톤 패턴 구현
     """
     
     _instance = None
@@ -68,7 +77,7 @@ class EventBus:
         이벤트 구독
         
         Args:
-            event_type: 이벤트 타입 (예: "connection_status_changed")
+            event_type: 이벤트 타입 (예: "connection_status")
             callback: 이벤트 처리 콜백 함수 - 이벤트 데이터를 받는 함수
         """
         if event_type not in self._subscribers:
@@ -107,60 +116,37 @@ class EventBus:
         if event_type not in self._subscribers:
             return
             
-        # 모든 구독자에게 이벤트 전달
+        # 비동기 태스크 리스트 생성
+        tasks = []
         for callback in self._subscribers[event_type]:
             try:
                 # 콜백이 코루틴 함수인지 확인
                 if asyncio.iscoroutinefunction(callback):
-                    await callback(data)
+                    # 비동기 태스크 생성하여 리스트에 추가
+                    tasks.append(asyncio.create_task(callback(data)))
                 else:
+                    # 동기 함수는 바로 실행
                     callback(data)
             except Exception as e:
                 self._logger.error(f"이벤트 {event_type} 처리 중 오류: {str(e)}")
+        
+        # 비동기 태스크가 있으면 동시에 실행하고 완료 대기
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
     
-    async def publish(self, event_type, data):
+    async def publish(self, event_type: str, **data):
         """
-        이벤트 발행
+        이벤트 발행 (개선된 버전)
         
         Args:
             event_type: 이벤트 타입
-            data: 이벤트 데이터
+            **data: 이벤트 데이터 (키워드 인자로 전달)
         """
+        # 타임스탬프가 없는 경우 자동으로 추가
+        if "timestamp" not in data:
+            data["timestamp"] = time.time()
+            
         await self._publish_to_subscribers(event_type, data)
-    
-    async def _publish_immediate(self, event_type, data):
-        """
-        이벤트 즉시 발행 (내부 메서드)
-        
-        Args:
-            event_type: 이벤트 타입
-            data: 이벤트 데이터
-        """
-        await self._publish_to_subscribers(event_type, data)
-    
-    def publish_sync(self, event_type: str, data: Any) -> None:
-        """
-        이벤트 발행 (동기식)
-        
-        동기식 코드에서 이벤트를 발행할 때 사용합니다.
-        
-        Args:
-            event_type: 이벤트 타입
-            data: 이벤트 데이터 (콜백에 전달됨)
-        """
-        # 현재 실행 중인 이벤트 루프 확인
-        try:
-            loop = asyncio.get_running_loop()
-            # 이미 이벤트 루프가 실행 중이면 future 생성
-            asyncio.create_task(self._publish_to_subscribers(event_type, data))
-        except RuntimeError:
-            # 이벤트 루프가 실행 중이 아니면 새로 생성하여 실행
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(self._publish_to_subscribers(event_type, data))
-            finally:
-                loop.close()
     
     def clear_all_subscribers(self) -> None:
         """모든 구독자 제거"""
@@ -182,4 +168,39 @@ class EventBus:
             return sum(len(callbacks) for callbacks in self._subscribers.values())
         else:
             # 특정 이벤트 타입의 구독자 수
-            return len(self._subscribers.get(event_type, [])) 
+            return len(self._subscribers.get(event_type, []))
+            
+    async def publish_sync(self, event_type: str, **data):
+        """
+        동기식 publish 함수의 비동기 버전
+        
+        과거에는 동기 환경에서 사용하기 위한 함수였으나, 이제 비동기로 변경되었습니다.
+        이름은 호환성을 위해 유지합니다.
+        
+        Args:
+            event_type: 이벤트 타입
+            **data: 이벤트 데이터 (키워드 인자로 전달)
+        """
+        # 타임스탬프가 없는 경우 자동으로 추가
+        if "timestamp" not in data:
+            data["timestamp"] = time.time()
+            
+        if event_type not in self._subscribers:
+            return
+            
+        # 모든 콜백 호출 (비동기 및 동기 모두)
+        tasks = []
+        for callback in self._subscribers[event_type]:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    # 비동기 함수는 태스크로 추가
+                    tasks.append(asyncio.create_task(callback(data)))
+                else:
+                    # 동기 함수는 바로 실행
+                    callback(data)
+            except Exception as e:
+                self._logger.error(f"이벤트 {event_type} 처리 중 오류: {str(e)}")
+                
+        # 생성된 비동기 태스크가 있으면 모두 완료될 때까지 대기
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True) 

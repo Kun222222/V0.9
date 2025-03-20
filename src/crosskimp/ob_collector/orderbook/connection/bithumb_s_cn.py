@@ -10,6 +10,7 @@ from websockets import connect
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy, WebSocketStats
+from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -96,10 +97,6 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
                     self.is_connected = True
                     self.stats.last_message_time = time.time()  # 연결 성공 시 메시지 시간 초기화
                     self.log_info("🟢 웹소켓 연결 성공")
-                    
-                    # 텔레그램 알림 전송
-                    connect_msg = "웹소켓 연결 성공"
-                    await self.send_telegram_notification("connect", connect_msg)
                     
                     # 헬스 체크 태스크 시작
                     if self._should_start_health_check():

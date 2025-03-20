@@ -284,10 +284,13 @@ async def send_telegram_message(
     Returns:
         bool: 전송 성공 여부
     """
+    # MessageType Enum을 문자열로 변환 (로깅용)
+    message_type_str = message_type.value if isinstance(message_type, MessageType) else str(message_type)
+    
     # 로깅 추가: 함수 호출 시작
     logger.debug("[텔레그램] send_telegram_message 함수 호출 (타입: %s, 재시도: %d, 타임아웃: %.1f초)", 
-                message_type, retry_count, timeout)
-    task_id = f"{message_type}_{int(time.time() * 1000)}"
+                message_type_str, retry_count, timeout)
+    task_id = f"{message_type_str}_{int(time.time() * 1000)}"
     
     # data가 None인 경우 기본값 설정
     if data is None:
@@ -297,114 +300,92 @@ async def send_telegram_message(
     if isinstance(data, str):
         data = {"message": data}
     
-    # 비동기 태스크로 실행하여 초기화 과정을 블로킹하지 않도록 함
-    async def _send_message():
-        try:
-            # 로깅 추가: 비동기 태스크 시작
-            start_time = time.time()
-            logger.debug("[텔레그램] 메시지 전송 태스크 시작 (ID: %s)", task_id)
+    # 메시지 전송 로직
+    try:
+        # 설정 유효성 검증 (settings 파라미터 없이 호출)
+        if not validate_telegram_config():
+            logger.error("[텔레그램] 설정 유효성 검증 실패 (ID: %s)", task_id)
+            return False
             
-            # 설정 유효성 검증 (settings 파라미터 없이 호출)
-            if not validate_telegram_config():
-                logger.error("[텔레그램] 설정 유효성 검증 실패 (ID: %s)", task_id)
-                return False
-                
-            # 환경 변수에서 직접 토큰과 채팅 ID 가져오기
-            token = NOTIFICATION_BOT_TOKEN
-            chat_id = os.getenv('TELEGRAM_CHAT_ID')
-            logger.debug("[텔레그램] 토큰 및 채팅 ID 확인 완료 (ID: %s)", task_id)
-            
-            # 메시지 포맷팅
-            logger.debug("[텔레그램] 메시지 포맷팅 시작 (ID: %s)", task_id)
-            formatted_message = format_message(message_type, data)
-            logger.debug("[텔레그램] 메시지 포맷팅 완료 (ID: %s, 길이: %d자)", task_id, len(formatted_message))
-            
-            # API 요청 준비
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": formatted_message,
-                "parse_mode": "HTML"
-            }
-            
-            # 디버깅을 위해 페이로드 출력
-            logger.debug("[텔레그램] 페이로드: %s", json.dumps(payload, ensure_ascii=False))
-            
-            # API 요청 전송
+        # 환경 변수에서 직접 토큰과 채팅 ID 가져오기
+        token = NOTIFICATION_BOT_TOKEN
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        logger.debug("[텔레그램] 토큰 및 채팅 ID 확인 완료 (ID: %s)", task_id)
+        
+        # 메시지 포맷팅
+        logger.debug("[텔레그램] 메시지 포맷팅 시작 (ID: %s)", task_id)
+        formatted_message = format_message(message_type, data)
+        logger.debug("[텔레그램] 메시지 포맷팅 완료 (ID: %s, 길이: %d자)", task_id, len(formatted_message))
+        
+        # API 요청 준비
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": formatted_message,
+            "parse_mode": "HTML"
+        }
+        
+        # 디버깅을 위해 페이로드 출력
+        logger.debug("[텔레그램] 페이로드: %s", json.dumps(payload, ensure_ascii=False))
+        
+        # 비동기 컨텍스트 매니저로 API 요청 전송
+        async with aiohttp.ClientSession() as session:
+            logger.debug("[텔레그램] ClientSession 생성 완료 (ID: %s)", task_id)
             request_start_time = time.time()
             
-            # curl 명령어로 직접 API 호출 (디버깅용)
-            curl_cmd = f'curl -s -X POST "{url}" -d "chat_id={chat_id}&text=테스트 메시지&parse_mode=HTML"'
-            logger.debug("[텔레그램] curl 명령어: %s", curl_cmd)
-            
-            async with aiohttp.ClientSession() as session:
-                logger.debug("[텔레그램] ClientSession 생성 완료 (ID: %s)", task_id)
+            # 타임아웃 설정
+            async with session.post(url, json=payload, timeout=timeout) as response:
+                request_elapsed = time.time() - request_start_time
+                logger.debug("[텔레그램] API 응답 수신 (ID: %s, 소요 시간: %.3f초, 상태 코드: %d)", 
+                            task_id, request_elapsed, response.status)
                 
-                try:
-                    # 타임아웃 설정
-                    async with session.post(url, json=payload, timeout=timeout) as response:
-                        request_elapsed = time.time() - request_start_time
-                        logger.debug("[텔레그램] API 응답 수신 (ID: %s, 소요 시간: %.3f초, 상태 코드: %d)", 
-                                    task_id, request_elapsed, response.status)
-                        
-                        # 응답 내용 로깅
-                        response_text = await response.text()
-                        logger.debug("[텔레그램] API 응답 내용: %s", response_text)
-                        
-                        if response.status == 200:
-                            response_json = await response.json()
-                            logger.debug("[텔레그램] API 응답 JSON: %s", response_json)
-                            logger.info("[텔레그램] 메시지 전송 성공 (ID: %s, 타입: %s, 소요 시간: %.3f초)", 
-                                       task_id, message_type, request_elapsed)
-                            return True
-                        else:
-                            logger.error("[텔레그램] 메시지 전송 실패 (ID: %s, 상태 코드: %d): %s", 
-                                        task_id, response.status, response_text)
-                            
-                            # 재시도
-                            if retry_count < TELEGRAM_MAX_RETRIES:
-                                logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d)", 
-                                           task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
-                                await asyncio.sleep(TELEGRAM_RETRY_DELAY)
-                                return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
-                            else:
-                                logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
-                                return False
-                except asyncio.TimeoutError:
-                    logger.error("[텔레그램] API 요청 타임아웃 (ID: %s, 제한 시간: %.1f초)", task_id, timeout)
+                # 응답 내용 로깅
+                response_text = await response.text()
+                logger.debug("[텔레그램] API 응답 내용: %s", response_text)
+                
+                if response.status == 200:
+                    response_json = await response.json()
+                    logger.debug("[텔레그램] API 응답 JSON: %s", response_json)
+                    logger.info("[텔레그램] 메시지 전송 성공 (ID: %s, 타입: %s, 소요 시간: %.3f초)", 
+                               task_id, message_type_str, request_elapsed)
+                    return True
+                else:
+                    logger.error("[텔레그램] 메시지 전송 실패 (ID: %s, 상태 코드: %d): %s", 
+                                task_id, response.status, response_text)
                     
                     # 재시도
                     if retry_count < TELEGRAM_MAX_RETRIES:
-                        logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d, 타임아웃)", 
+                        logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d)", 
                                    task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
                         await asyncio.sleep(TELEGRAM_RETRY_DELAY)
                         return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
                     else:
                         logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
                         return False
-        except Exception as e:
-            logger.error("[텔레그램] 메시지 전송 중 오류 발생 (ID: %s): %s", task_id, str(e), exc_info=True)
-            
-            # 재시도
-            if retry_count < TELEGRAM_MAX_RETRIES:
-                logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d, 오류)", 
-                           task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
-                await asyncio.sleep(TELEGRAM_RETRY_DELAY)
-                return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
-            else:
-                logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
-                return False
-        finally:
-            # 로깅 추가: 태스크 종료
-            total_elapsed = time.time() - start_time
-            logger.debug("[텔레그램] 메시지 전송 태스크 종료 (ID: %s, 총 소요 시간: %.3f초)", task_id, total_elapsed)
-    
-    # 비동기 태스크 생성 (백그라운드에서 실행)
-    task = asyncio.create_task(_send_message())
-    logger.debug("[텔레그램] 메시지 전송 태스크 생성 완료 (ID: %s)", task_id)
-    
-    # 즉시 True 반환 (비동기 처리)
-    return True
+    except asyncio.TimeoutError:
+        logger.error("[텔레그램] API 요청 타임아웃 (ID: %s, 제한 시간: %.1f초)", task_id, timeout)
+        
+        # 재시도
+        if retry_count < TELEGRAM_MAX_RETRIES:
+            logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d, 타임아웃)", 
+                       task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
+            await asyncio.sleep(TELEGRAM_RETRY_DELAY)
+            return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
+        else:
+            logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
+            return False
+    except Exception as e:
+        logger.error("[텔레그램] 메시지 전송 중 오류 발생 (ID: %s): %s", task_id, str(e), exc_info=True)
+        
+        # 재시도
+        if retry_count < TELEGRAM_MAX_RETRIES:
+            logger.info("[텔레그램] 메시지 전송 재시도 (ID: %s, %d/%d, 오류)", 
+                       task_id, retry_count + 1, TELEGRAM_MAX_RETRIES)
+            await asyncio.sleep(TELEGRAM_RETRY_DELAY)
+            return await send_telegram_message(None, message_type, data, retry_count + 1, timeout)
+        else:
+            logger.error("[텔레그램] 최대 재시도 횟수 초과 (ID: %s, %d)", task_id, TELEGRAM_MAX_RETRIES)
+            return False
 
 # ============================
 # 편의 함수

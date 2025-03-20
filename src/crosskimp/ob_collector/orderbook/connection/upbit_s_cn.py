@@ -9,6 +9,7 @@ from typing import Dict, Optional, Tuple, Any
 
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
 
 # ============================
 # 업비트 웹소켓 연결 관련 상수
@@ -99,10 +100,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             self.is_connected = True
             self.stats.connection_start_time = time.time()
             self.reconnect_strategy.reset()
-            
-            # 연결 성공 알림
-            connect_msg = "웹소켓 연결 성공"
-            await self.send_telegram_notification("connect", connect_msg)
             
             # 헬스 체크 시작
             if self._should_start_health_check():

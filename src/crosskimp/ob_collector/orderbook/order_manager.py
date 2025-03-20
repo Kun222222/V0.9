@@ -49,7 +49,7 @@ class OrderManager:
         self.logger = logger
         
         # SystemEventManager 설정
-        from crosskimp.ob_collector.orderbook.util.system_event_manager import SystemEventManager
+        from crosskimp.ob_collector.orderbook.util.event_manager import SystemEventManager
         self.system_event_manager = SystemEventManager.get_instance()
         self.system_event_manager.initialize_exchange(self.exchange_code)
         
@@ -96,16 +96,34 @@ class OrderManager:
                 self.subscription.set_validator(self.validator)
             
             # 이벤트 구독 설정
-            # 1. 커넥터의 연결 상태 변경 이벤트 구독
+            # 1. 커넥터의 연결 상태 변경 이벤트 구독 (비동기 람다로 변경)
             self.event_bus.subscribe(
-                "connection_status_direct", 
-                lambda event_data: self.handle_connector_event(event_data)
+                "connection_status", 
+                lambda event_data: asyncio.create_task(self.handle_connector_event(event_data))
             )
             
-            # 2. 구독 상태 변경 이벤트 구독
+            # 2. 구독 상태 변경 이벤트 구독 (비동기 람다로 변경)
             self.event_bus.subscribe(
                 "subscription_status",
-                lambda event_data: self.handle_subscription_event(event_data)
+                lambda event_data: asyncio.create_task(self.handle_subscription_event(event_data))
+            )
+            
+            # 3. 데이터 스냅샷 이벤트 구독
+            self.event_bus.subscribe(
+                "data_snapshot",
+                lambda event_data: asyncio.create_task(self.handle_data_event(event_data, "snapshot"))
+            )
+            
+            # 4. 데이터 델타 이벤트 구독
+            self.event_bus.subscribe(
+                "data_delta",
+                lambda event_data: asyncio.create_task(self.handle_data_event(event_data, "delta"))
+            )
+            
+            # 5. 오류 이벤트 구독
+            self.event_bus.subscribe(
+                "error_event",
+                lambda event_data: asyncio.create_task(self.handle_error_event(event_data))
             )
             
             logger.info(f"{self.exchange_name_kr} 컴포넌트 초기화 및 이벤트 구독 완료")
@@ -253,7 +271,7 @@ class OrderManager:
         
         return status
     
-    def handle_connector_event(self, event_data: dict) -> None:
+    async def handle_connector_event(self, event_data: dict) -> None:
         """
         커넥터 이벤트 처리 (이벤트 버스에서 호출됨)
         
@@ -273,7 +291,7 @@ class OrderManager:
         except Exception as e:
             logger.error(f"{self.exchange_name_kr} 커넥터 이벤트 처리 중 오류: {str(e)}")
 
-    def handle_subscription_event(self, event_data: dict) -> None:
+    async def handle_subscription_event(self, event_data: dict) -> None:
         """
         구독 상태 이벤트 처리 (이벤트 버스에서 호출됨)
         
@@ -296,6 +314,57 @@ class OrderManager:
                 
         except Exception as e:
             logger.error(f"{self.exchange_name_kr} 구독 이벤트 처리 중 오류: {str(e)}")
+
+    async def handle_data_event(self, event_data: dict, event_type: str) -> None:
+        """
+        데이터 이벤트 처리 (이벤트 버스에서 호출됨)
+        
+        Args:
+            event_data: 데이터 이벤트 정보
+            event_type: 이벤트 타입 ('snapshot' 또는 'delta')
+        """
+        try:
+            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
+            if event_data.get("exchange_code") != self.exchange_code:
+                return
+                
+            # 심볼 및 데이터 추출
+            symbol = event_data.get("symbol")
+            data = event_data.get("data")
+            
+            if not symbol or not data:
+                return
+                
+            # 로그 출력 제거 - 과도한 로그 발생 방지
+            # 메트릭만 업데이트하고 로그는 출력하지 않음
+                
+        except Exception as e:
+            logger.error(f"{self.exchange_name_kr} 데이터 이벤트 처리 중 오류: {str(e)}")
+            
+    async def handle_error_event(self, event_data: dict) -> None:
+        """
+        오류 이벤트 처리 (이벤트 버스에서 호출됨)
+        
+        Args:
+            event_data: 오류 이벤트 데이터
+        """
+        try:
+            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
+            if event_data.get("exchange_code") != self.exchange_code:
+                return
+                
+            # 오류 정보 추출 및 로깅
+            error_type = event_data.get("error_type", "unknown")
+            message = event_data.get("message", "알 수 없는 오류")
+            severity = event_data.get("severity", "error")
+            
+            if severity == "critical":
+                logger.critical(f"{self.exchange_name_kr} 심각한 오류: [{error_type}] {message}")
+            else:
+                logger.error(f"{self.exchange_name_kr} 오류: [{error_type}] {message}")
+                
+        except Exception as e:
+            logger.error(f"{self.exchange_name_kr} 오류 이벤트 처리 중 오류: {str(e)}")
 
 # OrderManager 팩토리 함수
 def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager]:

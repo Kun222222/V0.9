@@ -10,14 +10,8 @@ from abc import ABC, abstractmethod
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR, normalize_exchange_code
-
-# 이벤트 타입 정의 추가
-EVENT_TYPES = {
-    "CONNECTION_STATUS": "connection_status",  # 연결 상태 변경
-    "METRIC_UPDATE": "metric_update",          # 메트릭 업데이트
-    "ERROR_EVENT": "error_event",              # 오류 이벤트
-    "SUBSCRIPTION_STATUS": "subscription_status"  # 구독 상태 변경
-}
+from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
+from crosskimp.ob_collector.orderbook.util.event_handler import EventHandlerFactory
 
 # 전역 로거 설정
 logger = get_unified_logger()
@@ -93,17 +87,14 @@ class BaseWebsocketConnector(ABC):
         # 웹소켓 통계
         self.stats = WebSocketStats()
         
-        # 이벤트 버스 초기화
-        from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
-        self.event_bus = EventBus.get_instance()
+        # 이벤트 핸들러 초기화
+        self.event_handler = EventHandlerFactory.get_handler(self.exchangename, self.settings)
         
-        # SystemEventManager 초기화
-        from crosskimp.ob_collector.orderbook.util.system_event_manager import SystemEventManager, EVENT_TYPES
-        self.system_event_manager = SystemEventManager.get_instance()
-        self.system_event_manager.initialize_exchange(self.exchangename)
+        # 이벤트 버스 가져오기 (이벤트 핸들러로부터)
+        self.event_bus = self.event_handler.event_bus
         
-        # 현재 거래소 코드 설정
-        self.system_event_manager.set_current_exchange(self.exchangename)
+        # SystemEventManager 가져오기 (이벤트 핸들러로부터)
+        self.system_event_manager = self.event_handler.system_event_manager
         
         # 자식 클래스에서 설정해야 하는 변수들
         self.reconnect_strategy = None  # 재연결 전략
@@ -111,10 +102,6 @@ class BaseWebsocketConnector(ABC):
         self.health_check_interval = 5  # 헬스 체크 간격 기본값 (초)
         self.ping_interval = None       # 핑 전송 간격 (초)
         self.ping_timeout = None        # 핑 응답 타임아웃 (초)
-        
-        # 알림 제한 관련 변수 추가
-        self._last_notification_time = {}  # 이벤트 타입별 마지막 알림 시간
-        self._notification_cooldown = 60  # 알림 쿨다운 (초)
         
         # 헬스 체크 태스크 변수 추가
         self.health_check_task = None
@@ -135,84 +122,16 @@ class BaseWebsocketConnector(ABC):
             # 상태 변경 이벤트 발생
             state = "connected" if value else "disconnected"
             
-            # 로깅
+            # 연결 시간 기록
             if value:
-                self.log_debug("연결됨")
-            else:
-                self.log_debug("연결 끊김")
-                
-            # 시스템 이벤트 발행 - 연결 상태 변경
-            self.publish_system_event(
-                EVENT_TYPES["CONNECTION_STATUS"],
+                self.stats.connection_start_time = time.time()
+            
+            # 이벤트 핸들러로 연결 상태 변경 이벤트 처리
+            asyncio.create_task(self.event_handler.handle_connection_status(
                 status=state,
                 timestamp=time.time(),
                 duration=time.time() - self.stats.connection_start_time if value else 0
-            )
-            
-            # 텔레그램 알림 전송 (비동기)
-            event_type = "connect" if value else "disconnect"
-            asyncio.create_task(self.send_telegram_notification(event_type, f"웹소켓 {state}"))
-
-    def publish_system_event(self, event_type: str, **data) -> None:
-        """
-        시스템 이벤트 발행 (표준화된 방식)
-        
-        Args:
-            event_type: 이벤트 타입 (EVENT_TYPES 상수 사용)
-            **data: 이벤트 데이터
-        """
-        try:
-            # exchange_code 필드가 없으면 추가
-            if "exchange_code" not in data:
-                data["exchange_code"] = self.exchangename
-                
-            # 시스템 이벤트 발행 (동기식)
-            if hasattr(self, "system_event_manager"):
-                self.system_event_manager.publish_system_event_sync(event_type, **data)
-            else:
-                # 이전 방식으로 직접 이벤트 발행 (호환성 유지)
-                event = {
-                    "event_type": event_type,
-                    "exchange_code": self.exchangename,
-                    "timestamp": time.time(),
-                    "data": data
-                }
-                
-                # 이벤트 루프 확인하여 비동기 또는 동기식 발행
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(self.event_bus.publish("system_event", event))
-                else:
-                    self.event_bus.publish_sync("system_event", event)
-                    
-        except Exception as e:
-            self.log_error(f"이벤트 발행 실패: {str(e)}")
-
-    def _publish_connection_event(self, status: str) -> None:
-        """이벤트 버스를 통해 연결 상태 이벤트 발행"""
-        # 이전 방식의 이벤트 발행 유지 (호환성)
-        # 이벤트 데이터 준비
-        event_data = {
-            "exchange_code": self.exchangename, 
-            "status": status,
-            "timestamp": time.time()
-        }
-        
-        # 현재 실행 중인 이벤트 루프가 있으면 create_task 사용
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # 두 가지 이벤트 채널로 발행:
-                # 1. 직접 연결 상태 이벤트 (구독 관리용)
-                asyncio.create_task(self.event_bus.publish("connection_status_direct", event_data))
-                # 2. 시스템 전체 연결 상태 변경 이벤트 (UI 및 외부 시스템용)
-                asyncio.create_task(self.event_bus.publish("connection_status_changed", event_data))
-            else:
-                # 이벤트 루프가 실행 중이 아니면 동기식 publish 사용
-                self.event_bus.publish_sync("connection_status_direct", event_data)
-                self.event_bus.publish_sync("connection_status_changed", event_data)
-        except Exception as e:
-            self.log_warning(f"이벤트 버스 발행 실패: {str(e)}")
+            ))
 
     def _start_health_check_task(self) -> None:
         """헬스 체크 태스크 시작"""
@@ -279,7 +198,12 @@ class BaseWebsocketConnector(ABC):
             self.stats.reconnect_count += 1
             reconnect_msg = f"웹소켓 재연결 시도"
             self.log_info(reconnect_msg)
-            await self.send_telegram_notification("reconnect", reconnect_msg)
+            
+            # 재연결 이벤트 처리 (이벤트 핸들러 사용)
+            await self.event_handler.handle_connection_status(
+                status="reconnecting",
+                message=reconnect_msg
+            )
             
             await self.disconnect()
             
@@ -288,11 +212,6 @@ class BaseWebsocketConnector(ABC):
             await asyncio.sleep(delay)
             
             success = await self.connect()
-            
-            # 연결 성공시 알림 추가
-            if success:
-                connect_msg = "웹소켓 재연결 성공"
-                await self.send_telegram_notification("connect", connect_msg)
             
             return success
             
@@ -387,113 +306,40 @@ class BaseWebsocketConnector(ABC):
         except Exception as e:
             self.log_error(f"헬스 체크 태스크 재시작 실패: {str(e)}")
 
-    # 로깅 및 알림
+    # 로깅 함수는 이벤트 핸들러를 통해 사용
     def log_error(self, message: str) -> None:
-        """오류 로깅 (거래소 이름 포함)"""
-        logger.error(f"{self.exchange_name_kr} {message}")
+        """오류 로깅 (이벤트 핸들러 사용)"""
+        self.event_handler.log_error(message)
         
         # 웹소켓 통계 업데이트 - 오류 카운트 증가
         self.stats.error_count += 1
         self.stats.last_error_time = time.time()
         self.stats.last_error_message = message
         
-        # 오류 이벤트 발행 (간소화된 방식)
-        try:
-            self.system_event_manager.record_metric(self.exchangename, "error_count")
-        except Exception:
-            pass  # 이벤트 발행 실패는 무시
+        # 오류 메트릭 기록
+        self.system_event_manager.record_metric(self.exchangename, "error_count")
 
     def log_warning(self, message: str) -> None:
-        """경고 로깅 (거래소 이름 포함)"""
-        logger.warning(f"{self.exchange_name_kr} {message}")
+        """경고 로깅 (이벤트 핸들러 사용)"""
+        self.event_handler.log_warning(message)
 
     def log_info(self, message: str) -> None:
-        """정보 로깅 (거래소 이름 포함)"""
-        logger.info(f"{self.exchange_name_kr} {message}")
+        """정보 로깅 (이벤트 핸들러 사용)"""
+        self.event_handler.log_info(message)
 
     def log_debug(self, message: str) -> None:
-        """디버그 로깅 (거래소 이름 포함)"""
-        logger.debug(f"{self.exchange_name_kr} {message}")
+        """디버그 로깅 (이벤트 핸들러 사용)"""
+        self.event_handler.log_debug(message)
 
-    async def send_telegram_notification(self, event_type: str, message: str) -> None:
-        """텔레그램 알림 전송 (쿨다운 적용)"""
-        if event_type not in ["error", "connect", "disconnect", "reconnect"]:
-            return
-            
-        current_time = time.time()
+    # 이벤트 처리는 이벤트 핸들러에 위임
+    async def handle_error(self, error_type: str, message: str, severity: str = "error", **kwargs) -> None:
+        """오류 이벤트 처리 (이벤트 핸들러 사용)"""
+        await self.event_handler.handle_error(error_type, message, severity, **kwargs)
+    
+    async def handle_message(self, message_type: str, size: int = 0, **kwargs) -> None:
+        """메시지 수신 이벤트 처리 (이벤트 핸들러 사용)"""
+        await self.event_handler.handle_message_received(message_type, size, **kwargs)
         
-        # 쿨다운 체크 - 동일 이벤트 타입에 대해 일정 시간 내 중복 알림 방지
-        last_time = self._last_notification_time.get(event_type, 0)
-        if current_time - last_time < self._notification_cooldown:
-            self.log_debug(f"알림 쿨다운 중: {event_type} (남은 시간: {self._notification_cooldown - (current_time - last_time):.1f}초)")
-            return
-            
-        # 현재 시간 기록
-        self._last_notification_time[event_type] = current_time
-        
-        try:
-            # 이벤트 타입에 맞는 시스템 이벤트 발행
-            if event_type == "error":
-                self.publish_system_event_sync(
-                    EVENT_TYPES["ERROR_EVENT"],
-                    error_type="connection_error",
-                    message=message,
-                    severity="error"
-                )
-            elif event_type == "reconnect":
-                self.publish_system_event_sync(
-                    EVENT_TYPES["CONNECTION_STATUS"],
-                    status="reconnecting",
-                    message=message
-                )
-            
-            # 이모지 선택
-            emoji = "🔴"  # 기본값 (오류)
-            if event_type == "connect":
-                emoji = "🟢"  # 연결됨
-            elif event_type == "reconnect":
-                emoji = "🟠"  # 재연결
-            
-            # 거래소 이름에서 대괄호 제거
-            exchange_name = self.exchange_name_kr.replace('[', '').replace(']', '')
-            
-            # 메시지 포맷팅
-            formatted_message = f"{emoji} {exchange_name} 웹소켓: "
-            
-            # 메시지 내용 추가
-            if isinstance(message, dict):
-                if "message" in message:
-                    formatted_message += message["message"]
-                else:
-                    formatted_message += str(message)
-            else:
-                formatted_message += message
-            
-            # 텔레그램으로 전송할 데이터 생성
-            # ERROR, WARNING, RECONNECT 타입은 component 필드가 필요
-            message_data = {"message": formatted_message}
-            
-            # 오류, 경고, 재연결 메시지 타입에는 component 필드 추가
-            if event_type in ["error", "warning", "reconnect", "disconnect"]:
-                message_data["component"] = exchange_name
-                
-            # 텔레그램으로 전송
-            await send_telegram_message(
-                self.settings, 
-                self._get_message_type_for_event(event_type), 
-                message_data
-            )
-            
-        except Exception as e:
-            self.log_error(f"텔레그램 알림 전송 실패: {event_type} - {str(e)}")
-
-    def _get_message_type_for_event(self, event_type: str) -> str:
-        """이벤트 타입에 따른 메시지 타입"""
-        if event_type == "error":
-            return "error"  # MessageType.ERROR 대신 문자열 사용
-        elif event_type == "connect":
-            return "info"
-        elif event_type in ["disconnect", "reconnect"]:
-            return "warning"
-        else:
-            return "info"   # MessageType.INFO 대신 문자열 사용
+        # 웹소켓 통계 업데이트
+        self.stats.message_count += 1
+        self.stats.last_message_time = time.time()

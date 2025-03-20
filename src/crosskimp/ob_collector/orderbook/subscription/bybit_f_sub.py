@@ -441,16 +441,16 @@ class BybitFutureSubscription(BaseSubscription):
                                     self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
                     except Exception as e:
                         self.log_error(f"오더북 처리 중 오류: {str(e)}")
-                        self.publish_system_event_sync(
+                        asyncio.create_task(self.publish_system_event_sync(
                             EVENT_TYPES["ERROR_EVENT"],
                             message=f"오더북 처리 중 오류: {str(e)}"
-                        )
+                        ))
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
-            self.publish_system_event_sync(
+            asyncio.create_task(self.publish_system_event_sync(
                 EVENT_TYPES["ERROR_EVENT"],
                 message=f"메시지 처리 중 오류: {str(e)}"
-            )
+            ))
     
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
         """

@@ -112,9 +112,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             self.stats.connection_start_time = time.time()
             self.log_info("웹소켓 연결 성공")
             
-            # 텔레그램 알림 전송
-            await self._send_telegram_notification("connect", f"{self.exchange_korean_name} 웹소켓 연결 성공")
-            
             return True
         except Exception as e:
             self.log_error(f"connect() 예외: {e}", exc_info=True)
