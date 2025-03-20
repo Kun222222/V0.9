@@ -7,9 +7,10 @@
 import asyncio
 import json
 import time
-from typing import Dict, List, Optional
+import datetime
+from typing import Dict, List, Optional, Any, Union
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.constants_v3 import Exchange
 
@@ -17,6 +18,10 @@ from crosskimp.config.constants_v3 import Exchange
 WS_URL = "wss://stream.bybit.com/v5/public/linear"  # 웹소켓 URL 
 MAX_SYMBOLS_PER_SUBSCRIPTION = 10  # 구독당 최대 심볼 수
 DEFAULT_DEPTH = 50  # 기본 오더북 깊이
+
+# 로깅 설정
+ENABLE_RAW_LOGGING = True  # raw 데이터 로깅 활성화 여부
+ENABLE_ORDERBOOK_LOGGING = True  # 오더북 데이터 로깅 활성화 여부
 
 class BybitFutureSubscription(BaseSubscription):
     """
@@ -32,10 +37,10 @@ class BybitFutureSubscription(BaseSubscription):
     # 1. 초기화 단계
     def __init__(self, connection):
         """
-        바이빗 선물 구독 초기화
+        초기화
         
         Args:
-            connection: 바이빗 선물 웹소켓 연결 객체
+            connection: 웹소켓 연결 객체
         """
         # 부모 클래스 초기화 (exchange_code 전달)
         super().__init__(connection, Exchange.BYBIT_FUTURE.value)
@@ -44,14 +49,12 @@ class BybitFutureSubscription(BaseSubscription):
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
         self.depth_level = DEFAULT_DEPTH
         
-        # 로깅 설정 - 활성화
-        self.log_orderbook_enabled = True
-        
-        # 바이빗 오더북 검증기 초기화
-        self.validator = BaseOrderBookValidator(Exchange.BYBIT_FUTURE.value)
+        # 로깅 설정
+        self.raw_logging_enabled = ENABLE_RAW_LOGGING
+        self.orderbook_logging_enabled = ENABLE_ORDERBOOK_LOGGING
         
         # 각 심볼별 전체 오더북 상태 저장용
-        self.orderbooks = {}  # symbol -> {"bids": {...}, "asks": {...}, "timestamp": ..., "sequence": ...}
+        self.orderbooks = {}  # symbol -> orderbook_data
 
     # 3. 구독 처리 단계
     async def create_subscribe_message(self, symbols: List[str]) -> Dict:
@@ -149,23 +152,25 @@ class BybitFutureSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.metrics_manager.record_metric(self.exchange_code, "error")
+            self.system_event_manager.record_metric(self.exchange_code, "error")
             return False
     
     # 4. 메시지 수신 및 처리 단계
     def is_snapshot_message(self, message: str) -> bool:
         """
-        메시지가 스냅샷인지 확인
+        스냅샷 메시지 여부 확인
         
         Args:
-            message: 수신된 메시지
+            message: 검사할 메시지
             
         Returns:
-            bool: 스냅샷 메시지인 경우 True
+            bool: 스냅샷 메시지 여부
         """
-        # _parse_message 결과를 활용하여 타입 판별
-        parsed_data = self._parse_message(message)
-        return parsed_data is not None and parsed_data.get("type") == "snapshot"
+        try:
+            data = json.loads(message)
+            return data.get("type") == "snapshot"
+        except:
+            return False
     
     def is_delta_message(self, message: str) -> bool:
         """
@@ -239,9 +244,6 @@ class BybitFutureSubscription(BaseSubscription):
                     
                     # 시퀀스 및 타임스탬프
                     timestamp = inner_data.get("ts")  # 타임스탬프 (밀리초 단위)
-                    if timestamp is None:
-                        timestamp = int(time.time() * 1000)  # 현재 시간을 밀리초로 사용
-                        
                     sequence = inner_data.get("seq") or inner_data.get("u")  # 시퀀스 번호
                     
                     # 결과 구성
@@ -250,7 +252,7 @@ class BybitFutureSubscription(BaseSubscription):
                         "type": msg_type,
                         "bids": bids,
                         "asks": asks,
-                        "timestamp": timestamp,  # 타임스탬프 추출
+                        "timestamp": timestamp,
                         "sequence": sequence
                     }
                     
@@ -269,136 +271,70 @@ class BybitFutureSubscription(BaseSubscription):
         Args:
             message: 원시 메시지
         """
-        # 로그 출력 없이 메서드만 유지 (호환성을 위해)
-        pass
+        # 부모 클래스의 로깅 메서드 사용
+        super().log_raw_message(message)
     
     # 5. 콜백 호출 단계
     # 부모 클래스의 _call_callback 메서드를 사용함
 
     async def _on_message(self, message: str) -> None:
-        """
-        메시지 수신 및 처리
-        
-        Args:
-            message: 수신된 웹소켓 메시지
-        """
+        """메시지 수신 콜백"""
         try:
-            # 원시 메시지 로깅
-            self.log_raw_message(message)
-            
-            # 메시지 처리 - 메트릭 업데이트 및 디코딩
+            # 메시지 처리 시작 시간 측정
             start_time = time.time()
-            self.metrics_manager.record_metric(self.exchange_code, "message")
             
-            # JSON 메시지 처리
-            data = json.loads(message)
+            # 원시 메시지 로깅 및 메시지 카운트 증가 (부모 클래스의 _on_message 사용)
+            await super()._on_message(message)
+            
+            # JSON 파싱 (일부 메시지는 일반 텍스트일 수 있음)
+            try:
+                parsed_message = json.loads(message)
+            except json.JSONDecodeError:
+                self.log_error(f"JSON 파싱 실패: {message[:100]}...")
+                return
             
             # 구독 응답 처리
-            if data.get("op") == "subscribe":
-                # self.log_debug(f"구독 응답 수신: {data}")
+            if parsed_message.get("op") == "subscribe":
                 return
                 
             # 오더북 메시지 처리
-            if "topic" in data and "data" in data:
-                topic = data.get("topic", "")
+            if "topic" in parsed_message and "data" in parsed_message:
+                topic = parsed_message.get("topic", "")
                 if "orderbook" in topic:
-                    parts = topic.split(".")
-                    if len(parts) >= 3:
-                        symbol = parts[-1].replace("USDT", "")
-                        msg_type = data.get("type", "delta").lower()  # "snapshot" or "delta"
+                    try:
+                        parts = topic.split(".")
+                        if len(parts) >= 3:
+                            symbol = parts[-1].replace("USDT", "")
+                            msg_type = parsed_message.get("type", "delta").lower()  # "snapshot" or "delta"
                         
-                        # 메시지 파싱
-                        parsed_data = self._parse_message(message)
-                        if not parsed_data:
-                            return
-                            
-                        # 메시지 타입에 따른 처리
-                        if msg_type == "snapshot":
-                            # 현물과 같은 방식으로 오더북 초기화
-                            bids = parsed_data.get("bids", [])
-                            asks = parsed_data.get("asks", [])
-                            timestamp = parsed_data.get("timestamp")
-                            sequence = parsed_data.get("sequence")
-                            
-                            # 스냅샷인 경우 오더북 초기화
-                            self.orderbooks[symbol] = {
-                                "bids": {float(bid[0]): float(bid[1]) for bid in bids},
-                                "asks": {float(ask[0]): float(ask[1]) for ask in asks},
-                                "timestamp": timestamp,
-                                "sequence": sequence
-                            }
-                            
-                            # 오더북 초기화 후 콜백 호출
-                            sorted_bids = sorted(self.orderbooks[symbol]["bids"].items(), key=lambda x: x[0], reverse=True)
-                            sorted_asks = sorted(self.orderbooks[symbol]["asks"].items(), key=lambda x: x[0])
-                            
-                            # 배열 형태로 변환 [price, size]
-                            bids_array = [[price, size] for price, size in sorted_bids]
-                            asks_array = [[price, size] for price, size in sorted_asks]
-                            
-                            # 완전한 오더북 데이터 구성
-                            orderbook_data = {
-                                "bids": bids_array,
-                                "asks": asks_array,
-                                "timestamp": timestamp,
-                                "sequence": sequence,
-                                "type": "snapshot"
-                            }
-                            
-                            # 오더북 데이터 로깅
-                            self.log_orderbook_data(symbol, orderbook_data)
-                            
-                            # 스냅샷 이벤트 발행
-                            self.publish_event(symbol, orderbook_data, "snapshot")
-                            
-                            # 메트릭 업데이트
-                            self.metrics_manager.record_metric(self.exchange_code, "message")
-                        
-                        elif msg_type == "delta":
-                            # 델타 처리 - symbol이 orderbooks에 있을 때만 처리
-                            if symbol in self.orderbooks:
-                                # 델타 데이터 추출
-                                bids = parsed_data.get("bids", [])
-                                asks = parsed_data.get("asks", [])
-                                timestamp = parsed_data.get("timestamp")
-                                sequence = parsed_data.get("sequence")
+                            # 스냅샷/델타 여부에 따라 다르게 처리
+                            if msg_type == "snapshot":
+                                # 스냅샷 처리
+                                orderbook = {}
+                                orderbook["bids"] = {}
+                                orderbook["asks"] = {}
                                 
-                                # 시퀀스 확인
-                                if sequence <= self.orderbooks[symbol]["sequence"]:
-                                    self.log_warning(f"{symbol} 이전 시퀀스의 델타 메시지 수신, 무시 ({sequence} <= {self.orderbooks[symbol]['sequence']})")
-                                    return
+                                # 데이터 추출
+                                data = parsed_message.get("data", {})
+                                bids = data.get("b", [])  # 매수 호가
+                                asks = data.get("a", [])  # 매도 호가
                                 
-                                # 기존 오더북 가져오기
-                                orderbook = self.orderbooks[symbol]
+                                # 타임스탬프와 시퀀스 추출
+                                timestamp = data.get("ts")
+                                sequence = data.get("seq") or data.get("u")
                                 
-                                # 매수 호가 업데이트
-                                for bid in bids:
-                                    price = float(bid[0])
-                                    size = float(bid[1])
-                                    if size == 0:
-                                        # 수량이 0이면 해당 가격의 호가 삭제
-                                        orderbook["bids"].pop(price, None)
-                                    else:
-                                        # 그렇지 않으면 추가 또는 업데이트
+                                # 오더북 구성
+                                for item in bids:
+                                    price, size = float(item[0]), float(item[1])
+                                    if size > 0:
                                         orderbook["bids"][price] = size
                                 
-                                # 매도 호가 업데이트
-                                for ask in asks:
-                                    price = float(ask[0])
-                                    size = float(ask[1])
-                                    if size == 0:
-                                        # 수량이 0이면 해당 가격의 호가 삭제
-                                        orderbook["asks"].pop(price, None)
-                                    else:
-                                        # 그렇지 않으면 추가 또는 업데이트
+                                for item in asks:
+                                    price, size = float(item[0]), float(item[1])
+                                    if size > 0:
                                         orderbook["asks"][price] = size
                                 
-                                # 타임스탬프와 시퀀스 업데이트
-                                orderbook["timestamp"] = timestamp
-                                orderbook["sequence"] = sequence
-                                
                                 # 정렬된 전체 오더북 구성
-                                # 매수(높은 가격 -> 낮은 가격), 매도(낮은 가격 -> 높은 가격)
                                 sorted_bids = sorted(orderbook["bids"].items(), key=lambda x: x[0], reverse=True)
                                 sorted_asks = sorted(orderbook["asks"].items(), key=lambda x: x[0])
                                 
@@ -412,30 +348,109 @@ class BybitFutureSubscription(BaseSubscription):
                                     "asks": asks_array,
                                     "timestamp": timestamp,
                                     "sequence": sequence,
-                                    "type": "snapshot"  # 델타도 스냅샷으로 전달
+                                    "type": "snapshot"
                                 }
                                 
-                                # 오더북 데이터 로깅
+                                # 오더북 저장
+                                self.orderbooks[symbol] = {
+                                    "bids": orderbook["bids"],
+                                    "asks": orderbook["asks"],
+                                    "timestamp": timestamp,
+                                    "sequence": sequence
+                                }
+                                
+                                # 오더북 데이터 로깅 (부모 클래스의 메서드 사용)
                                 self.log_orderbook_data(symbol, orderbook_data)
                                 
-                                # 델타 이벤트 발행
-                                self.publish_event(symbol, orderbook_data, "delta")
+                                # 스냅샷 이벤트 발행
+                                self.publish_event(symbol, orderbook_data, "snapshot")
                                 
                                 # 메트릭 업데이트
-                                self.metrics_manager.record_metric(self.exchange_code, "message")
-                            else:
-                                # 스냅샷 없이 델타 수신 로그는 중요하므로 유지
-                                self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
-            else:
-                # 일반 메시지인 경우
-                self.log_raw_message(f"수신 (일반): {message[:150]}...")
-                self.metrics_manager.record_metric(self.exchange_code, "message")
-                
-                # 일반 텍스트 메시지 처리 - JSON 디코딩
-        except json.JSONDecodeError:
-            self.log_error(f"JSON 파싱 실패: {message[:100]}...")
+                                self._update_metrics(self.exchange_code, start_time, "snapshot", orderbook_data)
+                            
+                            elif msg_type == "delta":
+                                # 델타 처리 (기존 오더북 업데이트)
+                                if symbol in self.orderbooks:
+                                    # 델타 데이터 추출
+                                    data = parsed_message.get("data", {})
+                                    bids = data.get("b", [])  # 매수 호가
+                                    asks = data.get("a", [])  # 매도 호가
+                                    
+                                    # 타임스탬프와 시퀀스 추출
+                                    timestamp = data.get("ts")
+                                    sequence = data.get("seq") or data.get("u")
+                                    
+                                    # 저장된 시퀀스와 비교
+                                    stored_sequence = self.orderbooks[symbol].get("sequence")
+                                    if sequence <= stored_sequence:
+                                        self.log_warning(f"{symbol} 이전 시퀀스의 델타 메시지 수신, 무시 ({sequence} <= {stored_sequence})")
+                                        return
+                                    
+                                    # 기존 오더북 가져오기
+                                    orderbook = self.orderbooks[symbol]
+                                    
+                                    # 매수 호가 업데이트
+                                    for bid in bids:
+                                        price = float(bid[0])
+                                        size = float(bid[1])
+                                        if size == 0:
+                                            orderbook["bids"].pop(price, None)
+                                        else:
+                                            orderbook["bids"][price] = size
+                                    
+                                    # 매도 호가 업데이트
+                                    for ask in asks:
+                                        price = float(ask[0])
+                                        size = float(ask[1])
+                                        if size == 0:
+                                            orderbook["asks"].pop(price, None)
+                                        else:
+                                            orderbook["asks"][price] = size
+                                    
+                                    # 타임스탬프와 시퀀스 업데이트
+                                    orderbook["timestamp"] = timestamp
+                                    orderbook["sequence"] = sequence
+                                    
+                                    # 정렬된 전체 오더북 구성
+                                    sorted_bids = sorted(orderbook["bids"].items(), key=lambda x: x[0], reverse=True)
+                                    sorted_asks = sorted(orderbook["asks"].items(), key=lambda x: x[0])
+                                    
+                                    # 배열 형태로 변환 [price, size]
+                                    bids_array = [[price, size] for price, size in sorted_bids]
+                                    asks_array = [[price, size] for price, size in sorted_asks]
+                                    
+                                    # 완전한 오더북 데이터 구성
+                                    orderbook_data = {
+                                        "bids": bids_array,
+                                        "asks": asks_array,
+                                        "timestamp": timestamp,
+                                        "sequence": sequence,
+                                        "type": "delta"
+                                    }
+                                    
+                                    # 오더북 데이터 로깅 (부모 클래스의 메서드 사용)
+                                    self.log_orderbook_data(symbol, orderbook_data)
+                                    
+                                    # 델타 이벤트 발행
+                                    self.publish_event(symbol, orderbook_data, "delta")
+                                    
+                                    # 메트릭 업데이트
+                                    self._update_metrics(self.exchange_code, start_time, "delta", orderbook_data)
+                                else:
+                                    # 스냅샷 없이 델타 수신 로그는 중요하므로 유지
+                                    self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
+                    except Exception as e:
+                        self.log_error(f"오더북 처리 중 오류: {str(e)}")
+                        self.publish_system_event_sync(
+                            EVENT_TYPES["ERROR_EVENT"],
+                            message=f"오더북 처리 중 오류: {str(e)}"
+                        )
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
+            self.publish_system_event_sync(
+                EVENT_TYPES["ERROR_EVENT"],
+                message=f"메시지 처리 중 오류: {str(e)}"
+            )
     
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
         """
@@ -453,4 +468,12 @@ class BybitFutureSubscription(BaseSubscription):
         return {
             "op": "unsubscribe",
             "args": [f"orderbook.{self.depth_level}.{market}"]
-        } 
+        }
+
+    async def unsubscribe(self, symbol: Optional[str] = None) -> bool:
+        """구독 취소"""
+        try:
+            return await super().unsubscribe(symbol)
+        except Exception as e:
+            self.log_error(f"구독 취소 중 오류: {e}")
+            return False 

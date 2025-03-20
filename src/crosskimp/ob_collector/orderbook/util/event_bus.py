@@ -8,16 +8,42 @@
 import asyncio
 from typing import Dict, List, Callable, Any, Optional
 from crosskimp.logger.logger import get_unified_logger
+import time
 
 # 로거 설정
 logger = get_unified_logger()
 
+# 이벤트 타입 정의
+EVENT_TYPES = {
+    # 시스템 이벤트
+    "SYSTEM": {
+        "CONNECTION": "connection",      # 연결 상태
+        "METRIC": "metric",             # 메트릭 데이터
+        "ERROR": "error",               # 오류
+        "SUBSCRIPTION": "subscription"   # 구독 상태
+    },
+    
+    # 배치 이벤트
+    "BATCH": {
+        "MESSAGE_COUNT": "message_count",    # 메시지 수신 통계
+        "PROCESSING_TIME": "processing_time" # 처리 시간 통계
+    },
+    
+    # 확장 가능한 새로운 데이터 세트용
+    "CUSTOM": {
+        # 향후 추가될 커스텀 이벤트 타입
+    }
+}
+
 class EventBus:
     """
-    이벤트 버스 클래스
+    수정된 이벤트 버스 클래스 구조:
     
-    컴포넌트 간의 느슨한 결합을 위한 이벤트 전파 메커니즘을 제공합니다.
-    싱글톤 패턴으로 구현되어 애플리케이션 전체에서 하나의 인스턴스만 사용합니다.
+    1. 단일 채널 'system_event' 사용
+    2. 배치 처리 지원
+    3. 이벤트 우선순위 지원
+    4. 이벤트 버퍼링 및 최적화
+    5. 새로운 데이터 세트 확장 지원
     """
     
     _instance = None
@@ -36,7 +62,7 @@ class EventBus:
             
         self._subscribers: Dict[str, List[Callable]] = {}
         self._logger = logger
-        
+
     def subscribe(self, event_type: str, callback: Callable) -> None:
         """
         이벤트 구독
@@ -92,13 +118,23 @@ class EventBus:
             except Exception as e:
                 self._logger.error(f"이벤트 {event_type} 처리 중 오류: {str(e)}")
     
-    async def publish(self, event_type: str, data: Any) -> None:
+    async def publish(self, event_type, data):
         """
-        이벤트 발행 (비동기)
+        이벤트 발행
         
         Args:
             event_type: 이벤트 타입
-            data: 이벤트 데이터 (콜백에 전달됨)
+            data: 이벤트 데이터
+        """
+        await self._publish_to_subscribers(event_type, data)
+    
+    async def _publish_immediate(self, event_type, data):
+        """
+        이벤트 즉시 발행 (내부 메서드)
+        
+        Args:
+            event_type: 이벤트 타입
+            data: 이벤트 데이터
         """
         await self._publish_to_subscribers(event_type, data)
     

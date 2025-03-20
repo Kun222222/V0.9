@@ -8,15 +8,19 @@ import json
 import asyncio
 import datetime
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union, Any
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
 from crosskimp.config.constants_v3 import Exchange
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 
 # 빗썸 REST API 및 웹소켓 관련 설정
 WS_URL = "wss://ws-api.bithumb.com/websocket/v1"  # 웹소켓 URL
 DEFAULT_DEPTH = 15  # 기본 오더북 깊이
+
+# 로깅 설정
+ENABLE_RAW_LOGGING = True  # raw 데이터 로깅 활성화 여부
+ENABLE_ORDERBOOK_LOGGING = True  # 오더북 데이터 로깅 활성화 여부
 
 class BithumbSubscription(BaseSubscription):
     """
@@ -44,11 +48,9 @@ class BithumbSubscription(BaseSubscription):
         # 오더북 관련 설정
         self.depth_level = DEFAULT_DEPTH
         
-        # 로깅 설정 - 활성화
-        self.log_orderbook_enabled = True
-        
-        # 오더북 검증기 초기화
-        self.validator = BaseOrderBookValidator(Exchange.BITHUMB.value)
+        # 로깅 설정
+        self.raw_logging_enabled = ENABLE_RAW_LOGGING
+        self.orderbook_logging_enabled = ENABLE_ORDERBOOK_LOGGING
         
         # 오더북 데이터 저장소
         self.orderbooks = {}  # symbol -> orderbook_data
@@ -150,7 +152,7 @@ class BithumbSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.metrics_manager.record_metric(self.exchange_code, "error")
+            self.system_event_manager.record_metric(self.exchange_code, "error")
             return False
 
     # 4. 메시지 수신 및 처리 단계
@@ -315,12 +317,9 @@ class BithumbSubscription(BaseSubscription):
                 "type": "snapshot" if is_snapshot else "delta"
             }
             
-            # 메트릭 업데이트 - 오더북 메시지 처리
-            self.metrics_manager.record_metric(self.exchange_code, "orderbook")
-            
-            # 처리 시간 측정 및 업데이트
+            # 메트릭 업데이트 - 오더북 메시지 처리 및 처리 시간
             processing_time_ms = (time.time() - start_time) * 1000
-            self.metrics_manager.record_metric(self.exchange_code, "processing_time", processing_time=processing_time_ms)
+            self._update_metrics(self.exchange_code, start_time, "snapshot" if is_snapshot else "delta", result)
             
             return result
             
@@ -334,10 +333,8 @@ class BithumbSubscription(BaseSubscription):
             # 메시지 처리 시작 시간 측정
             start_time = time.time()
             
-            # 메시지 크기 측정 및 메트릭 업데이트
-            message_size = len(message)
-            self.metrics_manager.record_metric(self.exchange_code, "message")
-            self.metrics_manager.record_metric(self.exchange_code, "bytes", byte_size=message_size)
+            # 중앙 집중식 메시지 카운트 기록 (상위 클래스의 메서드 호출)
+            await super()._on_message(message)
             
             parsed_data = self._parse_message(message)
             if not parsed_data:
@@ -367,8 +364,9 @@ class BithumbSubscription(BaseSubscription):
                         # 유효한 오더북 데이터 가져오기
                         orderbook_data = self.validator.get_orderbook(symbol)
                         
-                        # 오더북 데이터 로깅
-                        self.log_orderbook_data(symbol, orderbook_data)
+                        # 오더북 데이터 로깅 (플래그 확인)
+                        if self.orderbook_logging_enabled:
+                            self.log_orderbook_data(symbol, orderbook_data)
                         
                         # 이벤트 발행 (스냅샷 또는 델타)
                         event_type = "snapshot" if is_snapshot else "delta"
@@ -377,14 +375,20 @@ class BithumbSubscription(BaseSubscription):
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:
                 self.log_error(f"{symbol} 오더북 검증 중 오류: {str(e)}")
-                self.metrics_manager.record_metric(self.exchange_code, "error")
+                self.publish_system_event_sync(
+                    EVENT_TYPES["ERROR_EVENT"],
+                    message=f"{symbol} 오더북 검증 중 오류: {str(e)}"
+                )
                 
                 # 오류 이벤트 발행
                 self.publish_event(symbol, str(e), "error")
                     
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
-            self.metrics_manager.record_metric(self.exchange_code, "error")
+            self.publish_system_event_sync(
+                EVENT_TYPES["ERROR_EVENT"],
+                message=f"메시지 처리 중 오류: {str(e)}"
+            )
 
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
@@ -403,3 +407,11 @@ class BithumbSubscription(BaseSubscription):
             {"type": "orderbook", "codes": []},
             {"format": "DEFAULT"}
         ]
+
+    async def unsubscribe(self, symbol: Optional[str] = None) -> bool:
+        """구독 취소"""
+        try:
+            return await super().unsubscribe(symbol)
+        except Exception as e:
+            self.log_error(f"구독 취소 중 오류: {e}")
+            return False

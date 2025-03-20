@@ -11,6 +11,14 @@ from crosskimp.logger.logger import get_unified_logger
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR, normalize_exchange_code
 
+# 이벤트 타입 정의 추가
+EVENT_TYPES = {
+    "CONNECTION_STATUS": "connection_status",  # 연결 상태 변경
+    "METRIC_UPDATE": "metric_update",          # 메트릭 업데이트
+    "ERROR_EVENT": "error_event",              # 오류 이벤트
+    "SUBSCRIPTION_STATUS": "subscription_status"  # 구독 상태 변경
+}
+
 # 전역 로거 설정
 logger = get_unified_logger()
 
@@ -68,6 +76,7 @@ class BaseWebsocketConnector(ABC):
         """초기화"""
         # 기본 정보
         self.exchangename = normalize_exchange_code(exchangename)  # 소문자로 정규화
+        self.exchange_code = self.exchangename  # 필드명 일관성을 위한 별칭
         self.settings = settings
         
         # 거래소 한글 이름 가져오기 (소문자 키 사용)
@@ -84,14 +93,17 @@ class BaseWebsocketConnector(ABC):
         # 웹소켓 통계
         self.stats = WebSocketStats()
         
-        # 메트릭 매니저
-        from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
-        self.metrics_manager = WebsocketMetricsManager.get_instance()
-        self.metrics_manager.initialize_exchange(self.exchangename)
-        
         # 이벤트 버스 초기화
         from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
         self.event_bus = EventBus.get_instance()
+        
+        # SystemEventManager 초기화
+        from crosskimp.ob_collector.orderbook.util.system_event_manager import SystemEventManager, EVENT_TYPES
+        self.system_event_manager = SystemEventManager.get_instance()
+        self.system_event_manager.initialize_exchange(self.exchangename)
+        
+        # 현재 거래소 코드 설정
+        self.system_event_manager.set_current_exchange(self.exchangename)
         
         # 자식 클래스에서 설정해야 하는 변수들
         self.reconnect_strategy = None  # 재연결 전략
@@ -129,27 +141,56 @@ class BaseWebsocketConnector(ABC):
             else:
                 self.log_debug("연결 끊김")
                 
-            # 이벤트 버스를 통한 상태 변경 알림 (메트릭 업데이트는 메트릭 매니저가 담당)
-            self._publish_connection_event(state)
+            # 시스템 이벤트 발행 - 연결 상태 변경
+            self.publish_system_event(
+                EVENT_TYPES["CONNECTION_STATUS"],
+                status=state,
+                timestamp=time.time(),
+                duration=time.time() - self.stats.connection_start_time if value else 0
+            )
             
-            # 메트릭 이벤트 발행
-            metric_event = {
-                "exchange_code": self.exchangename,
-                "event_type": "connect" if value else "disconnect",
-                "timestamp": time.time()
-            }
-            
-            try:
+            # 텔레그램 알림 전송 (비동기)
+            event_type = "connect" if value else "disconnect"
+            asyncio.create_task(self.send_telegram_notification(event_type, f"웹소켓 {state}"))
+
+    def publish_system_event(self, event_type: str, **data) -> None:
+        """
+        시스템 이벤트 발행 (표준화된 방식)
+        
+        Args:
+            event_type: 이벤트 타입 (EVENT_TYPES 상수 사용)
+            **data: 이벤트 데이터
+        """
+        try:
+            # exchange_code 필드가 없으면 추가
+            if "exchange_code" not in data:
+                data["exchange_code"] = self.exchangename
+                
+            # 시스템 이벤트 발행 (동기식)
+            if hasattr(self, "system_event_manager"):
+                self.system_event_manager.publish_system_event_sync(event_type, **data)
+            else:
+                # 이전 방식으로 직접 이벤트 발행 (호환성 유지)
+                event = {
+                    "event_type": event_type,
+                    "exchange_code": self.exchangename,
+                    "timestamp": time.time(),
+                    "data": data
+                }
+                
+                # 이벤트 루프 확인하여 비동기 또는 동기식 발행
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    asyncio.create_task(self.event_bus.publish("metric_event", metric_event))
+                    asyncio.create_task(self.event_bus.publish("system_event", event))
                 else:
-                    self.event_bus.publish_sync("metric_event", metric_event)
-            except Exception as e:
-                self.log_warning(f"메트릭 이벤트 발행 실패: {str(e)}")
+                    self.event_bus.publish_sync("system_event", event)
+                    
+        except Exception as e:
+            self.log_error(f"이벤트 발행 실패: {str(e)}")
 
     def _publish_connection_event(self, status: str) -> None:
         """이벤트 버스를 통해 연결 상태 이벤트 발행"""
+        # 이전 방식의 이벤트 발행 유지 (호환성)
         # 이벤트 데이터 준비
         event_data = {
             "exchange_code": self.exchangename, 
@@ -183,6 +224,15 @@ class BaseWebsocketConnector(ABC):
             
         self.health_check_task = asyncio.create_task(self.health_check())
         self.log_debug("헬스 체크 태스크 시작됨")
+
+    def _should_start_health_check(self) -> bool:
+        """
+        헬스 체크 태스크를 시작해야 하는지 확인
+        
+        Returns:
+            bool: 태스크가 없거나 완료된 경우 True, 실행 중인 경우 False
+        """
+        return not hasattr(self, 'health_check_task') or self.health_check_task is None or self.health_check_task.done()
 
     # 웹소켓 연결 관리
     @abstractmethod
@@ -338,25 +388,32 @@ class BaseWebsocketConnector(ABC):
             self.log_error(f"헬스 체크 태스크 재시작 실패: {str(e)}")
 
     # 로깅 및 알림
-    def log_error(self, msg: str, exc_info: bool = True):
-        """오류 로깅"""
+    def log_error(self, message: str) -> None:
+        """오류 로깅 (거래소 이름 포함)"""
+        logger.error(f"{self.exchange_name_kr} {message}")
+        
+        # 웹소켓 통계 업데이트 - 오류 카운트 증가
         self.stats.error_count += 1
         self.stats.last_error_time = time.time()
-        self.stats.last_error_message = msg
+        self.stats.last_error_message = message
         
-        logger.error(f"{self.exchange_name_kr} 🔴 {msg}", exc_info=exc_info)
+        # 오류 이벤트 발행 (간소화된 방식)
+        try:
+            self.system_event_manager.record_metric(self.exchangename, "error_count")
+        except Exception:
+            pass  # 이벤트 발행 실패는 무시
 
-    def log_info(self, msg: str):
-        """정보 로깅"""
-        logger.info(f"{self.exchange_name_kr} {msg}")
+    def log_warning(self, message: str) -> None:
+        """경고 로깅 (거래소 이름 포함)"""
+        logger.warning(f"{self.exchange_name_kr} {message}")
 
-    def log_debug(self, msg: str):
-        """디버그 로깅"""
-        logger.debug(f"{self.exchange_name_kr} {msg}")
+    def log_info(self, message: str) -> None:
+        """정보 로깅 (거래소 이름 포함)"""
+        logger.info(f"{self.exchange_name_kr} {message}")
 
-    def log_warning(self, msg: str):
-        """경고 로깅"""
-        logger.warning(f"{self.exchange_name_kr} 🟠 {msg}")
+    def log_debug(self, message: str) -> None:
+        """디버그 로깅 (거래소 이름 포함)"""
+        logger.debug(f"{self.exchange_name_kr} {message}")
 
     async def send_telegram_notification(self, event_type: str, message: str) -> None:
         """텔레그램 알림 전송 (쿨다운 적용)"""
@@ -375,13 +432,21 @@ class BaseWebsocketConnector(ABC):
         self._last_notification_time[event_type] = current_time
         
         try:
-            # 이벤트를 metrics_manager를 통해 기록
-            try:
-                # metrics_manager 이벤트 기록
-                self.metrics_manager.record_metric(self.exchangename, event_type)
-            except Exception as e:
-                self.log_warning(f"메트릭 기록 실패: {str(e)}")
-                
+            # 이벤트 타입에 맞는 시스템 이벤트 발행
+            if event_type == "error":
+                self.publish_system_event_sync(
+                    EVENT_TYPES["ERROR_EVENT"],
+                    error_type="connection_error",
+                    message=message,
+                    severity="error"
+                )
+            elif event_type == "reconnect":
+                self.publish_system_event_sync(
+                    EVENT_TYPES["CONNECTION_STATUS"],
+                    status="reconnecting",
+                    message=message
+                )
+            
             # 이모지 선택
             emoji = "🔴"  # 기본값 (오류)
             if event_type == "connect":

@@ -105,7 +105,7 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             await self.send_telegram_notification("connect", connect_msg)
             
             # 헬스 체크 시작
-            if not self.health_check_task or self.health_check_task.done():
+            if self._should_start_health_check():
                 self.health_check_task = asyncio.create_task(self.health_check())
             
             self.log_info("웹소켓 연결 성공")

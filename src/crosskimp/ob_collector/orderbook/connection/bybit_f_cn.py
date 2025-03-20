@@ -90,7 +90,7 @@ class BybitFutureWebSocketConnector(BaseWebsocketConnector):
                     await self.send_telegram_notification("connect", connect_msg)
                     
                     # 헬스 체크 태스크 시작 (핑 루프는 내장 기능으로 대체)
-                    if self.health_check_task is None or self.health_check_task.done():
+                    if self._should_start_health_check():
                         self.health_check_task = asyncio.create_task(self.health_check())
                     
                     return True

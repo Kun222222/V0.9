@@ -67,11 +67,6 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
             max_attempts=0
         )
 
-        # 메시지 통계
-        self.stats_total_messages = 0
-        self.stats_message_count = 0
-        self.stats_last_time = time.time()
-
     # 웹소켓 연결 관리
     # ==================================
     async def connect(self) -> bool:
@@ -107,7 +102,7 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
                     await self.send_telegram_notification("connect", connect_msg)
                     
                     # 헬스 체크 태스크 시작
-                    if self.health_check_task is None or self.health_check_task.done():
+                    if self._should_start_health_check():
                         self.health_check_task = asyncio.create_task(self.health_check())
                     
                     return True

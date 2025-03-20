@@ -7,15 +7,20 @@
 import json
 import asyncio
 import time
-from typing import Dict, List, Union
+import datetime
+from typing import Dict, List, Union, Optional, Any
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.constants_v3 import Exchange
 
 # 웹소켓 설정
 WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
 MAX_SYMBOLS_PER_SUBSCRIPTION = 100  # 구독당 최대 심볼 수 (업데이트: 업비트는 대량의 심볼 구독 지원)
+
+# 로깅 설정
+ENABLE_RAW_LOGGING = True  # raw 데이터 로깅 활성화 여부
+ENABLE_ORDERBOOK_LOGGING = True  # 오더북 데이터 로깅 활성화 여부
 
 class UpbitSubscription(BaseSubscription):
     """
@@ -44,11 +49,9 @@ class UpbitSubscription(BaseSubscription):
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
         
-        # 로깅 설정 - 활성화
-        self.log_orderbook_enabled = True
-        
-        # 업비트 오더북 검증기 초기화
-        self.validator = BaseOrderBookValidator(Exchange.UPBIT.value)
+        # 로깅 설정
+        self.raw_logging_enabled = ENABLE_RAW_LOGGING
+        self.orderbook_logging_enabled = ENABLE_ORDERBOOK_LOGGING
 
     # 3. 구독 처리 단계
     async def create_subscribe_message(self, symbol: Union[str, List[str]]) -> Dict:
@@ -152,18 +155,9 @@ class UpbitSubscription(BaseSubscription):
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
-            # 모든 심볼을 한 번에 구독
-            self.log_info(f"구독 시작 | 총 {len(symbols)}개 심볼을 한 번에 구독")
-            
-            # 구독 메시지 생성
-            subscribe_message = await self.create_subscribe_message(symbols)
-            json_message = json.dumps(subscribe_message)
-            
-            # 구독 메시지 전송
-            if not await self.send_message(json_message):
+            # 구독 요청 전송
+            if not await self._send_subscription_requests(symbols):
                 raise Exception("구독 메시지 전송 실패")
-                
-            self.log_info(f"구독 요청 전송 | {len(symbols)}개 심볼")
             
             # 구독 이벤트 발행
             self._publish_subscription_status_event(symbols, "subscribed")
@@ -172,7 +166,7 @@ class UpbitSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.metrics_manager.record_metric(self.exchange_code, "error")
+            self.system_event_manager.record_metric(self.exchange_code, "error")
             return False
             
     # 4. 메시지 수신 및 처리 단계
@@ -343,24 +337,16 @@ class UpbitSubscription(BaseSubscription):
     
     # 5. 콜백 호출 단계
     async def _on_message(self, message: str) -> None:
-        """
-        메시지 수신 처리
-        
-        Args:
-            message: 수신된 원시 메시지
-        """
+        """메시지 수신 처리"""
         try:
             # 메시지 처리 시작 시간 측정
             start_time = time.time()
             
-            # 메시지 크기 측정 및 메트릭 업데이트
-            message_size = len(message)
-            self.metrics_manager.record_metric(self.exchange_code, "message")
-            self.metrics_manager.record_metric(self.exchange_code, "bytes", byte_size=message_size)
+            # 상위 클래스 _on_message 호출하여 메시지 카운트 증가 등 공통 처리
+            await super()._on_message(message)
             
-            # 내부적으로 메시지 파싱
+            # 메시지 파싱
             parsed_data = self._parse_message(message)
-                
             if not parsed_data:
                 return
                 
@@ -385,22 +371,21 @@ class UpbitSubscription(BaseSubscription):
                         # 메트릭 업데이트
                         if result.is_valid:
                             processing_time_ms = (time.time() - start_time) * 1000
-                            self.metrics_manager.record_metric(self.exchange_code, "snapshot")
-                            self.metrics_manager.record_metric(self.exchange_code, "processing_time", processing_time=processing_time_ms)
+                            self._update_metrics(self.exchange_code, start_time, "snapshot", parsed_data)
                     else:
                         result = await self.validator.update(symbol, parsed_data)
                         # 메트릭 업데이트
                         if result.is_valid:
                             processing_time_ms = (time.time() - start_time) * 1000
-                            self.metrics_manager.record_metric(self.exchange_code, "delta")
-                            self.metrics_manager.record_metric(self.exchange_code, "processing_time", processing_time=processing_time_ms)
+                            self._update_metrics(self.exchange_code, start_time, "delta", parsed_data)
                     
                     if result.is_valid:
                         # 유효한 오더북 데이터 가져오기
                         orderbook_data = self.validator.get_orderbook(symbol)
                         
-                        # 검증된 오더북 데이터 로깅
-                        self.log_orderbook_data(symbol, orderbook_data)
+                        # 오더북 데이터 로깅 (플래그 확인)
+                        if self.orderbook_logging_enabled:
+                            self.log_orderbook_data(symbol, orderbook_data)
                         
                         # 이벤트 발행 (스냅샷 또는 델타)
                         event_type = "snapshot" if is_snapshot else "delta"
@@ -409,14 +394,20 @@ class UpbitSubscription(BaseSubscription):
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:
                 self.log_error(f"{symbol} 오더북 검증 중 오류: {str(e)}")
-                self.metrics_manager.record_metric(self.exchange_code, "error")
+                self.publish_system_event_sync(
+                    EVENT_TYPES["ERROR_EVENT"],
+                    message=f"{symbol} 오더북 검증 중 오류: {str(e)}"
+                )
                 
                 # 오류 이벤트 발행
                 self.publish_event(symbol, str(e), "error")
                 
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            self.metrics_manager.record_metric(self.exchange_code, "error")
+            self.publish_system_event_sync(
+                EVENT_TYPES["ERROR_EVENT"],
+                message=f"메시지 처리 실패: {str(e)}"
+            )
     
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
@@ -438,5 +429,13 @@ class UpbitSubscription(BaseSubscription):
             {"type": "orderbook", "codes": []},
             {"format": "DEFAULT"}
         ]
+    
+    async def unsubscribe(self, symbol: Optional[str] = None) -> bool:
+        """구독 취소"""
+        try:
+            return await super().unsubscribe(symbol)
+        except Exception as e:
+            self.log_error(f"구독 취소 중 오류: {e}")
+            return False
     
     # REST API 관련 메서드

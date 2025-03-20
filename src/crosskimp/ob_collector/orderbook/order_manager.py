@@ -9,14 +9,13 @@
 
 import asyncio
 import time
+import importlib
 from typing import Dict, List, Any, Optional
+import traceback
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
-from crosskimp.ob_collector.orderbook.metric.metrics_manager import WebsocketMetricsManager
-
-# 컴포넌트 생성과 관리를 위한 모듈 임포트
 from crosskimp.ob_collector.orderbook.util.component_factory import create_connector, create_subscription, create_validator
 from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
 
@@ -49,9 +48,10 @@ class OrderManager:
         # 로거 설정
         self.logger = logger
         
-        # 메트릭 매니저 싱글톤 인스턴스 사용
-        self.metrics_manager = WebsocketMetricsManager.get_instance()
-        self.metrics_manager.initialize_exchange(self.exchange_code)
+        # SystemEventManager 설정
+        from crosskimp.ob_collector.orderbook.util.system_event_manager import SystemEventManager
+        self.system_event_manager = SystemEventManager.get_instance()
+        self.system_event_manager.initialize_exchange(self.exchange_code)
         
         # 이벤트 버스 인스턴스 가져오기
         self.event_bus = EventBus.get_instance()
@@ -229,7 +229,7 @@ class OrderManager:
         uptime = time.time() - self.start_time
         
         # 메트릭 정보 가져오기
-        metrics = self.metrics_manager.get_exchange_metrics(self.exchange_code)
+        metrics = self.system_event_manager.get_status(self.exchange_code)
         
         # 연결 정보
         connection_info = {}
@@ -293,29 +293,6 @@ class OrderManager:
                 logger.info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 성공")
             elif status == "unsubscribed":
                 logger.info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 취소됨")
-                
-            # 외부 시스템용 이벤트 발행 (정규화된 형태로)
-            subscription_event = {
-                "exchange_code": self.exchange_code,
-                "status": status,
-                "symbols_count": symbols_count,
-                "timestamp": time.time(),
-                "source": "order_manager"
-            }
-            
-            # 구독 상태 변화 이벤트 발행
-            asyncio.create_task(self.event_bus.publish("subscription_status_changed", subscription_event))
-            
-            # 메트릭 이벤트 발행
-            metric_event = {
-                "exchange_code": self.exchange_code,
-                "event_type": "subscription",
-                "status": status,
-                "symbols_count": symbols_count,
-                "timestamp": time.time()
-            }
-            
-            asyncio.create_task(self.event_bus.publish("metric_event", metric_event))
                 
         except Exception as e:
             logger.error(f"{self.exchange_name_kr} 구독 이벤트 처리 중 오류: {str(e)}")

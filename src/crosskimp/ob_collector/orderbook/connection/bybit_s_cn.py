@@ -85,8 +85,8 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                     # 웹소켓 연결 시도 (타임아웃 0.5초로 설정)
                     self.ws = await connect(
                         self.ws_url,
-                        ping_interval=20,
-                        ping_timeout=10,
+                        ping_interval=self.ping_interval,
+                        ping_timeout=self.ping_timeout,
                         close_timeout=10,
                         max_size=None,
                         open_timeout=self.connection_timeout  # 0.5초 타임아웃
@@ -101,7 +101,7 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                     await self.send_telegram_notification("connect", connect_msg)
                     
                     # 헬스 체크 태스크 시작
-                    if not self.health_check_task or self.health_check_task.done():
+                    if self._should_start_health_check():
                         self.health_check_task = asyncio.create_task(self.health_check())
                     
                     return True

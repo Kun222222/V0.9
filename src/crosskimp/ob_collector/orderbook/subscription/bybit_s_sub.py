@@ -6,9 +6,10 @@
 
 import json
 import asyncio
-from typing import Dict, List, Optional
+import time
+from typing import Dict, List, Optional, Any, Union
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.constants_v3 import Exchange
 
@@ -16,6 +17,10 @@ from crosskimp.config.constants_v3 import Exchange
 WS_URL = "wss://stream.bybit.com/v5/public/spot"  # 웹소켓 URL
 MAX_SYMBOLS_PER_SUBSCRIPTION = 10  # 구독당 최대 심볼 수
 DEFAULT_DEPTH = 50  # 기본 오더북 깊이
+
+# 로깅 설정
+ENABLE_RAW_LOGGING = True  # raw 데이터 로깅 활성화 여부
+ENABLE_ORDERBOOK_LOGGING = True  # 오더북 데이터 로깅 활성화 여부
 
 class BybitSubscription(BaseSubscription):
     """
@@ -43,11 +48,9 @@ class BybitSubscription(BaseSubscription):
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
         self.depth_level = DEFAULT_DEPTH
         
-        # 로깅 설정 - 활성화
-        self.log_orderbook_enabled = True
-        
-        # 바이비트 오더북 검증기 초기화
-        self.validator = BaseOrderBookValidator(Exchange.BYBIT.value)
+        # 로깅 설정
+        self.raw_logging_enabled = True  # raw 데이터 로깅 활성화
+        self.orderbook_logging_enabled = False  # 오더북 데이터 로깅 비활성화
         
         # 각 심볼별 전체 오더북 상태 저장용
         self.orderbooks = {}  # symbol -> {"bids": {...}, "asks": {...}, "timestamp": ..., "sequence": ...}
@@ -158,7 +161,10 @@ class BybitSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.metrics_manager.record_metric(self.exchange_code, "error")
+            self.publish_system_event_sync(
+                EVENT_TYPES["ERROR_EVENT"],
+                message=f"구독 중 오류 발생: {str(e)}"
+            )
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -321,6 +327,12 @@ class BybitSubscription(BaseSubscription):
             message: 수신된 원시 메시지
         """
         try:
+            # 메시지 처리 시작 시간 측정
+            start_time = time.time()
+            
+            # 상위 클래스 _on_message 호출하여 raw 로깅 및 메시지 카운트 증가
+            await super()._on_message(message)
+            
             # 내부적으로 메시지 파싱
             parsed_data = self._parse_message(message)
                 
@@ -417,7 +429,10 @@ class BybitSubscription(BaseSubscription):
                     
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            self.metrics_manager.record_metric(self.exchange_code, "error")
+            self.publish_system_event_sync(
+                EVENT_TYPES["ERROR_EVENT"],
+                message=f"메시지 처리 실패: {str(e)}"
+            )
     
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
