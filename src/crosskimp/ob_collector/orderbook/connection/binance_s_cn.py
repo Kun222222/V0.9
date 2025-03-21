@@ -19,9 +19,9 @@ logger = get_unified_logger()
 # 바이낸스 현물 웹소켓 연결 관련 상수
 # ============================
 # 웹소켓 연결 설정
-WS_URL = "wss://stream.binance.com/ws"  # 현물 웹소켓 URL
-PING_INTERVAL = 30  # 핑 전송 간격 (초)
-PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+WS_URL = "wss://stream.binance.com:9443/ws"  # 현물 웹소켓 URL (포트 9443 명시)
+PING_INTERVAL = 20  # 핑 전송 간격 (초) - 바이낸스 문서 기준 20초마다 핑 프레임 전송
+PING_TIMEOUT = 50   # 핑 응답 타임아웃 (초) - 바이낸스 문서 기준 1분 내에 퐁 응답 필요
 MESSAGE_TIMEOUT = 60  # 메시지 타임아웃 (초)
 RECONNECT_DELAY = 0.1  # 초기 재연결 시도 시간 (초)
 HEALTH_CHECK_INTERVAL = 30  # 헬스체크 간격 (초)
@@ -90,11 +90,13 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
             
             while not self.stop_event.is_set():
                 try:
-                    # 웹소켓 라이브러리의 내장 핑퐁 기능 사용
+                    # 바이낸스 웹소켓 프로토콜 요구사항에 맞게 설정:
+                    # - ping_interval: 바이낸스 서버가 보내는 ping 프레임 간격 (20초)
+                    # - ping_timeout: 연결 종료 전 pong 응답 대기 시간 (50초, 문서 상 1분이지만 여유 확보)
                     self.ws = await connect(
                         self.ws_url,
-                        ping_interval=self.ping_interval,  # 150초
-                        ping_timeout=self.ping_timeout,    # 10초
+                        ping_interval=None,  # ping은 서버가 보내므로 클라이언트는 보내지 않음
+                        ping_timeout=None,   # 서버의 ping을 자동으로 응답
                         close_timeout=10,
                         max_size=None,
                         open_timeout=self.connection_timeout
@@ -143,10 +145,15 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
                         last_message_time = self.stats.last_message_time or current_time
                         time_since_last_message = current_time - last_message_time
                         
-                        # 너무 오래 메시지가 없으면 핑 전송
-                        if time_since_last_message > self.ping_interval:
-                            # 핑 전송 메서드 호출
-                            await self._send_ping()
+                        # 10분 이상 메시지가 없으면 연결 상태 체크를 위해 구독 중인 심볼 재구독 요청
+                        # (바이낸스는 24시간 연결 유지, 실제 연결이 끊어지면 웹소켓 예외가 발생)
+                        if time_since_last_message > 600:  # 10분
+                            self.log_warning("장시간 메시지 없음, 연결 상태 체크 필요")
+                            # 연결 상태 체크 이벤트 발행
+                            await self.event_handler.handle_metric_update(
+                                metric_name="connection_check_needed",
+                                value=1
+                            )
                             
                     # 대기
                     await asyncio.sleep(self.health_check_interval)
@@ -169,33 +176,6 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
             if not self.stop_event.is_set():
                 asyncio.create_task(self._restart_health_check())
                 
-    # PING/PONG 관리
-    # ==================================
-    async def _send_ping(self) -> None:
-        """
-        PING 메시지 전송
-        """
-        try:
-            if not self.ws or self.ws.closed:
-                return
-                
-            ping_id = int(time.time() * 1000)
-            
-            # 바이낸스는 JSON 형식의 ping 메시지 사용
-            ping_message = {
-                "method": "ping",
-                "id": ping_id
-            }
-            
-            # 핑 전송 시간 기록
-            self.last_ping_time = time.time()
-            
-            await self.ws.send(json.dumps(ping_message))
-            self.log_debug(f"핑 전송 | ID: {ping_id}")
-            
-        except Exception as e:
-            self.log_error(f"핑 전송 중 오류: {str(e)}")
-            
     async def process_message(self, message: str) -> Optional[Dict]:
         """
         수신된 메시지 처리
@@ -214,25 +194,6 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
             # 메시지 파싱
             data = json.loads(message)
             
-            # Pong 메시지 처리
-            if "result" in data and data.get("id") is not None:
-                self.last_pong_time = time.time()
-                
-                # 레이턴시 계산 (밀리초 단위)
-                if self.last_ping_time > 0:
-                    latency = (self.last_pong_time - self.last_ping_time) * 1000  # ms 단위
-                    
-                    # 메트릭에 레이턴시 기록
-                    asyncio.create_task(self.event_handler.handle_metric_update(
-                        metric_name="latency_ms",
-                        value=latency
-                    ))
-                    
-                    self.log_debug(f"퐁 수신 | 지연시간: {latency:.2f}ms")
-                    
-                # 핑-퐁 메시지는 추가 처리하지 않음
-                return None
-                
             # 일반 메시지 처리
             self.stats.last_message_time = time.time()
             return data
