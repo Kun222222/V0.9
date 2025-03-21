@@ -460,23 +460,8 @@ class BaseSubscription(ABC, LoggingMixin):
             if "exchange_code" not in data:
                 data["exchange_code"] = self.exchange_code
                 
-            # 이벤트 타입에 따라 적절한 핸들러 메서드 호출
-            if event_type == EVENT_TYPES["ERROR_EVENT"]:
-                await self.event_handler.handle_error(
-                    data.get("error_type", "unknown"),
-                    data.get("message", "알 수 없는 오류"),
-                    data.get("severity", "error")
-                )
-            elif event_type == EVENT_TYPES["CONNECTION_STATUS"]:
-                await self.event_handler.handle_connection_status(
-                    data.get("status", "unknown"),
-                    data.get("message", None)
-                )
-            elif event_type == EVENT_TYPES["METRIC_UPDATE"]:
-                self.event_handler.update_metrics(
-                    data.get("metric_name", "unknown"),
-                    data.get("value", 1)
-                )
+            # EventHandler의 publish_system_event 메서드 사용
+            await self.event_handler.publish_system_event(event_type, **data)
         except Exception as e:
             self.log_warning(f"이벤트({event_type}) 발행 중 오류: {str(e)}")
 

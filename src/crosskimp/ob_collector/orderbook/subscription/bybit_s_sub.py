@@ -422,10 +422,10 @@ class BybitSubscription(BaseSubscription):
                     
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            asyncio.create_task(self.system_event_manager.publish_system_event(
-                EVENT_TYPES["ERROR_EVENT"],
-                exchange_code=self.exchange_code,
-                message=f"메시지 처리 실패: {str(e)}"
+            asyncio.create_task(self.event_handler.handle_error(
+                error_type="message_processing_error",
+                message=f"메시지 처리 실패: {str(e)}",
+                severity="error"
             ))
     
     # 6. 구독 취소 단계

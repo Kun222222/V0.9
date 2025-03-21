@@ -376,8 +376,8 @@ def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager
             Exchange.BYBIT.value, 
             Exchange.BYBIT_FUTURE.value,
             Exchange.BITHUMB.value,
-            # Exchange.BINANCE.value,
-            # Exchange.BINANCE_FUTURE.value,
+            Exchange.BINANCE.value,
+            Exchange.BINANCE_FUTURE.value,
         ]
         
         # 지원하는 거래소인지 확인

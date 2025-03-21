@@ -5,7 +5,7 @@
 
 1. **EventBus** - 이벤트를 발행하고 구독하는 중앙 채널
 2. **EventHandler** - 거래소 관련 이벤트를 처리하는 핸들러
-3. **SystemEventManager** - 시스템 상태 및 메트릭을 관리하는 매니저
+3. **MetricsManager** - 시스템 메트릭을 관리하는 중앙 매니저
 
 ## 데이터 흐름
 
@@ -15,12 +15,12 @@
 
 2. **EventHandler**
    - 전달받은 이벤트를 처리 (로깅, 알림 등)
-   - 필요한 경우 SystemEventManager를 통해 메트릭 업데이트
+   - 필요한 경우 MetricsManager를 통해 메트릭 업데이트
    - EventBus를 통해 다른 컴포넌트로 이벤트 전파
 
-3. **SystemEventManager**
-   - 거래소별 메트릭과 상태 정보를 관리
-   - 이벤트 데이터를 저장하고 필요시 요약 정보 생성
+3. **MetricsManager**
+   - 거래소별 메트릭과 상태 정보를 중앙에서 관리
+   - 이벤트 데이터를 저장하고 주기적으로 요약 정보 생성
 
 ## 주요 이벤트 유형
 
@@ -63,9 +63,9 @@ await self.event_handler.handle_error(
 
 ```python
 # 초기화 단계에서 이벤트 핸들러를 가져옴
-self.event_handler = EventHandlerFactory.get_handler(self.exchangename, self.settings)
-self.event_bus = self.event_handler.event_bus
-self.system_event_manager = self.event_handler.system_event_manager
+self.event_handler = EventHandler.get_instance(self.exchange_code, self.settings)
+self.event_bus = EventBus.get_instance()
+self.metrics_manager = MetricsManager.get_instance()
 
 # 연결 상태 변경 시
 self.is_connected = True/False  # 이 setter가 이벤트 발생시킴
@@ -87,39 +87,45 @@ async def handle_connection_status(self, status, message, **kwargs):
     # 로깅
     self.log_info(message)
     
-    # 시스템 이벤트 발행
-    await self.publish_system_event(
-        EVENT_TYPES["CONNECTION_STATUS"],
-        status=status,
-        message=message,
-        **kwargs
-    )
-    
     # 텔레그램 알림 전송
     await self.send_telegram_message(event_type, formatted_message)
     
     # 이벤트 버스로 이벤트 발행
-    await self.event_bus.publish("connection_status_changed", event_data)
+    await self.event_bus.publish(EVENT_TYPES["CONNECTION_STATUS"], event_data)
 ```
 
-### 3. SystemEventManager
+### 3. MetricsManager
 
-시스템 전체의 상태와 메트릭을 관리하는 싱글톤 클래스입니다.
+시스템 전체의 메트릭을 관리하는 싱글톤 클래스입니다.
 
 ```python
-# 메트릭 기록
-def record_metric(self, exchange_code, metric_name, **data):
-    # 거래소가 초기화되지 않았으면 초기화
+# 거래소 초기화
+def initialize_exchange(self, exchange_code):
+    # 거래소 메트릭 초기화
     if exchange_code not in self.metrics:
-        self.initialize_exchange(exchange_code)
-    
-    # 메트릭 업데이트 로직
-    self._update_metric(exchange_code, metric_name, value)
+        self.metrics[exchange_code] = {
+            "message_count": 0,
+            "error_count": 0,
+            # 기타 초기 메트릭...
+        }
 
-# 이벤트 발행
-async def publish_system_event(self, event_type, exchange_code=None, **data):
-    # 이벤트 발행 로직
-    await self.event_bus.publish("system_event", event_data)
+# 메트릭 업데이트
+def update_metrics(self, exchange_code, metric_name, value=1.0, **kwargs):
+    # 메트릭 업데이트
+    self._update_metric(exchange_code, metric_name, value)
+    
+    # 이벤트 발행
+    asyncio.create_task(
+        self.publish_metric_event(exchange_code, metric_name, value, **kwargs)
+    )
+
+# 메트릭 조회
+def get_metrics(self, exchange_code=None):
+    # 특정 거래소 또는 모든 거래소의 메트릭 반환
+    if exchange_code:
+        return self.metrics.get(exchange_code, {})
+    else:
+        return self.metrics
 ```
 
 ## 구현 이점
@@ -127,7 +133,7 @@ async def publish_system_event(self, event_type, exchange_code=None, **data):
 1. **관심사 분리**: 각 컴포넌트가 자신의 역할에만 집중
    - 커넥터: 네트워크 연결 관리
    - 이벤트 핸들러: 이벤트 처리 및 외부 알림
-   - 시스템 이벤트 매니저: 메트릭 관리 및 모니터링
+   - 메트릭 매니저: 메트릭 관리 및 모니터링
 
 2. **중앙화된 이벤트 처리**: 모든 이벤트가 일관된 방식으로 처리됨
    - 동일한 타입의 이벤트는 항상 같은 방식으로 처리

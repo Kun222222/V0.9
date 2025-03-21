@@ -19,16 +19,16 @@ from crosskimp.ob_collector.orderbook.connection.upbit_s_cn import UpbitWebSocke
 from crosskimp.ob_collector.orderbook.connection.bybit_s_cn import BybitWebSocketConnector
 from crosskimp.ob_collector.orderbook.connection.bybit_f_cn import BybitFutureWebSocketConnector
 from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
-# from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
-# from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
 
 # 구독 컴포넌트
 from crosskimp.ob_collector.orderbook.subscription.upbit_s_sub import UpbitSubscription
 from crosskimp.ob_collector.orderbook.subscription.bybit_s_sub import BybitSubscription
 from crosskimp.ob_collector.orderbook.subscription.bybit_f_sub import BybitFutureSubscription
 from crosskimp.ob_collector.orderbook.subscription.bithumb_s_sub import BithumbSubscription
-# from crosskimp.ob_collector.orderbook.subscription.binance_s_sub import BinanceSubscription
-# from crosskimp.ob_collector.orderbook.subscription.binance_f_sub import BinanceFutureSubscription
+from crosskimp.ob_collector.orderbook.subscription.binance_s_sub import BinanceSubscription
+from crosskimp.ob_collector.orderbook.subscription.binance_f_sub import BinanceFutureSubscription
 
 # 로거 설정
 logger = get_unified_logger()
@@ -38,18 +38,18 @@ EXCHANGE_CONNECTORS = {
     Exchange.UPBIT.value: UpbitWebSocketConnector,
     Exchange.BYBIT.value: BybitWebSocketConnector,
     Exchange.BYBIT_FUTURE.value: BybitFutureWebSocketConnector,
-    Exchange.BITHUMB.value: BithumbWebSocketConnector
-    # Exchange.BINANCE.value: BinanceWebSocketConnector,
-    # Exchange.BINANCE_FUTURE.value: BinanceFutureWebSocketConnector,
+    Exchange.BITHUMB.value: BithumbWebSocketConnector,
+    Exchange.BINANCE.value: BinanceWebSocketConnector,
+    Exchange.BINANCE_FUTURE.value: BinanceFutureWebSocketConnector
 }
 
 EXCHANGE_SUBSCRIPTIONS = {
     Exchange.UPBIT.value: UpbitSubscription,
     Exchange.BYBIT.value: BybitSubscription,
     Exchange.BYBIT_FUTURE.value: BybitFutureSubscription,
-    Exchange.BITHUMB.value: BithumbSubscription
-    # Exchange.BINANCE.value: BinanceSubscription,
-    # Exchange.BINANCE_FUTURE.value: BinanceFutureSubscription,
+    Exchange.BITHUMB.value: BithumbSubscription,
+    Exchange.BINANCE.value: BinanceSubscription,
+    Exchange.BINANCE_FUTURE.value: BinanceFutureSubscription
 }
 
 def create_connector(exchange_code: str, settings: Dict[str, Any]) -> Optional[BaseWebsocketConnector]:

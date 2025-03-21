@@ -8,7 +8,7 @@
 import asyncio
 import time
 from datetime import datetime
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 import inspect
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.telegrambot.telegram_notification import send_telegram_message
@@ -121,6 +121,16 @@ class EventHandler(LoggingMixin):
     거래소 이벤트 처리와 메트릭 관리를 통합하여 책임을 명확히 하고
     중복 로직을 제거합니다. SystemEventManager의 메트릭 관리 기능을
     EventHandler로 통합하여 의존성을 단순화합니다.
+    
+    [SystemEventManager 통합 과정]
+    1. 메트릭 초기화 및 관리 기능 -> initialize_metrics() 메서드로 통합
+    2. 상태 조회 기능 -> get_status(), get_metrics(), get_errors() 등으로 통합
+    3. 메트릭 요약 로그 -> _log_metrics_summary() 메서드로 통합
+    4. 이벤트 처리 -> handle_*() 메서드로 통합
+    
+    기존의 SystemEventManager는 여러 거래소의 메트릭을 모두 관리했지만,
+    EventHandler는 각 거래소별로 인스턴스가 생성되어 단일 거래소만 관리합니다.
+    이를 통해 코드의 책임이 명확해지고 중복이 제거됩니다.
     """
     
     _instances = {}  # 거래소 코드 -> 핸들러 인스턴스
@@ -199,6 +209,7 @@ class EventHandler(LoggingMixin):
         # 메트릭 요약 로그 태스크 시작
         self._start_summary_log_task()
         
+        # 초기화 완료 로그
         self.log_info(f"{self.exchange_name_kr} 이벤트 핸들러 초기화 완료")
     
     def _start_summary_log_task(self):
@@ -326,6 +337,10 @@ class EventHandler(LoggingMixin):
     async def handle_metric_update(self, metric_name: str, value: float = 1.0, data: Dict = None) -> None:
         """
         메트릭 업데이트 이벤트 처리
+        
+        이 메서드는 SystemEventManager의 _handle_metric_update 메서드와 유사한 역할을 합니다.
+        다만 차이점은 SystemEventManager는 여러 거래소의 메트릭을 처리하는 반면,
+        EventHandler는 단일 거래소의 메트릭만 처리합니다.
         
         Args:
             metric_name: 메트릭 이름
@@ -586,11 +601,131 @@ class EventHandler(LoggingMixin):
         Returns:
             Dict: 상태 정보
         """
-        return {
+        result = {
             "connection_status": self.connection_status,
             "subscription": self.subscriptions,
             "metrics": self.message_counters,
             "errors": self.errors
+        }
+        
+        # 상태 이모지 추가
+        result["emoji"] = self._get_status_emoji(self.connection_status)
+        
+        return result
+    
+    def _get_status_emoji(self, status: str) -> str:
+        """상태에 따른 이모지 반환"""
+        emojis = {
+            "connected": "🟢",
+            "disconnected": "🔴",
+            "reconnecting": "🟠",
+            "error": "⚠️",
+            "unknown": "⚪"
+        }
+        return emojis.get(status, "⚪")
+    
+    def get_connection_status(self) -> str:
+        """
+        연결 상태 가져오기
+        
+        Returns:
+            str: 연결 상태
+        """
+        return self.connection_status
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        메트릭 정보 가져오기
+        
+        Returns:
+            Dict: 메트릭 정보
+        """
+        return self.message_counters
+    
+    def get_errors(self, limit: int = None) -> List:
+        """
+        오류 목록 가져오기
+        
+        Args:
+            limit: 최대 개수 (None이면 모두 반환)
+            
+        Returns:
+            List: 오류 목록
+        """
+        if limit:
+            return self.errors[-limit:]
+        return self.errors
+
+    async def publish_system_event(self, event_type: str, **data) -> None:
+        """
+        시스템 이벤트 발행
+        
+        SystemEventManager의 publish_system_event 메서드와 유사하지만
+        단일 거래소(self.exchange_code)만 처리하도록 단순화되었습니다.
+        
+        Args:
+            event_type: 이벤트 타입
+            **data: 추가 데이터
+        """
+        try:
+            # 타임스탬프 처리 (data에 timestamp가 있으면 해당 값 사용, 없으면 현재 시간)
+            timestamp = time.time()
+            if "timestamp" in data:
+                timestamp = data.pop("timestamp")
+            
+            # 이벤트 데이터 준비
+            event_data = {
+                "exchange_code": self.exchange_code,
+                "timestamp": timestamp
+            }
+            
+            # 추가 데이터 병합
+            if data:
+                event_data["data"] = data
+            
+            # 이벤트 발행
+            await self.event_bus.publish(event_type, event_data)
+            
+        except Exception as e:
+            self.log_error(f"시스템 이벤트 발행 실패: {str(e)}")
+
+        # 기존 메트릭이 있으면 초기화하지 않음
+        if self.message_counters.get("message_count", 0) > 0:
+            return
+            
+        # 메트릭 초기화
+        self.message_counters = {
+            "message_count": 0,
+            "error_count": 0,
+            "processing_time": 0,
+            "last_message_time": 0,
+            "last_error_time": 0,
+            "last_error_message": "",
+            "first_message_time": None,
+            "message_rate": 0
+        }
+
+    def initialize_metrics(self) -> None:
+        """
+        메트릭 초기화 - 필요한 메트릭 초기값 설정
+        
+        이 메서드는 SystemEventManager의 initialize_exchange 메서드에서 
+        메트릭 초기화 관련 기능을 가져온 것입니다.
+        """
+        # 기존 메트릭이 있으면 초기화하지 않음
+        if self.message_counters.get("message_count", 0) > 0:
+            return
+            
+        # 메트릭 초기화
+        self.message_counters = {
+            "message_count": 0,
+            "error_count": 0,
+            "processing_time": 0,
+            "last_message_time": 0,
+            "last_error_time": 0,
+            "last_error_message": "",
+            "first_message_time": None,
+            "message_rate": 0
         }
 
 # 팩토리 함수로 EventHandler 인스턴스를 가져오는 함수 (호환성 유지)

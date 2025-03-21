@@ -3,35 +3,29 @@
 import asyncio
 import json
 import time
-import aiohttp
+from typing import Dict, List, Optional, Any
+import websockets
 from websockets import connect
-from typing import Dict, List, Optional
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.ob_constants import Exchange, WebSocketState, STATUS_EMOJIS, WEBSOCKET_CONFIG
-from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
-from crosskimp.ob_collector.orderbook.parser.binance_s_pa import BinanceParser
+from crosskimp.config.constants_v3 import Exchange
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy, WebSocketStats
+from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
 # ============================
-# 바이낸스 현물 웹소켓 관련 상수
+# 바이낸스 현물 웹소켓 연결 관련 상수
 # ============================
-# 기본 설정
-EXCHANGE_CODE = Exchange.BINANCE.value  # 거래소 코드
-BINANCE_CONFIG = WEBSOCKET_CONFIG[EXCHANGE_CODE]  # 바이낸스 설정
-
 # 웹소켓 연결 설정
-WS_URL = BINANCE_CONFIG["ws_url"]  # 웹소켓 URL
-PING_INTERVAL = BINANCE_CONFIG["ping_interval"]  # 핑 전송 간격 (초)
-PING_TIMEOUT = BINANCE_CONFIG["ping_timeout"]    # 핑 응답 타임아웃 (초)
-HEALTH_CHECK_INTERVAL = BINANCE_CONFIG["health_check_interval"]  # 헬스 체크 간격 (초)
-
-# 구독 관련 설정
-SUBSCRIBE_CHUNK_SIZE = BINANCE_CONFIG["subscribe_chunk_size"]  # 한 번에 구독할 심볼 수
-SUBSCRIBE_DELAY = BINANCE_CONFIG["subscribe_delay"]  # 구독 요청 간 딜레이 (초)
-DEPTH_UPDATE_STREAM = BINANCE_CONFIG["depth_update_stream"]  # 깊이 업데이트 스트림 형식
+WS_URL = "wss://stream.binance.com/ws"  # 현물 웹소켓 URL
+PING_INTERVAL = 30  # 핑 전송 간격 (초)
+PING_TIMEOUT = 10   # 핑 응답 타임아웃 (초)
+MESSAGE_TIMEOUT = 60  # 메시지 타임아웃 (초)
+RECONNECT_DELAY = 0.1  # 초기 재연결 시도 시간 (초)
+HEALTH_CHECK_INTERVAL = 30  # 헬스체크 간격 (초)
+CONNECTION_TIMEOUT = 5  # 연결 타임아웃 (초)
 
 class BinanceWebSocketConnector(BaseWebsocketConnector):
     """
@@ -39,150 +33,213 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
     
     바이낸스 현물 거래소의 웹소켓 연결을 관리하는 클래스입니다.
     
-    특징:
-    - 바이낸스 전용 핑/퐁 메커니즘 사용
-    - 재연결 전략 구현
-    - 배치 구독 지원
+    책임:
+    - 웹소켓 연결 관리 (연결, 재연결, 종료)
+    - 연결 상태 모니터링
+    - 핑-퐁 메시지 처리
     """
     def __init__(self, settings: dict):
         """
-        바이낸스 현물 웹소켓 연결 관리자 초기화
+        바이낸스 웹소켓 연결 관리자 초기화
         
         Args:
             settings: 설정 딕셔너리
         """
-        super().__init__(settings, EXCHANGE_CODE)
+        super().__init__(settings, Exchange.BINANCE.value)
         
         # 웹소켓 URL 설정
         self.ws_url = WS_URL
         
-        # 연결 관련 설정
-        self.subscribed_symbols = set()
-        self.ws = None
-        self.session = None
-        
-        # 헬스 체크 설정
+        # 상태 및 설정값
+        self.is_connected = False
+        self.connection_timeout = CONNECTION_TIMEOUT
         self.health_check_interval = HEALTH_CHECK_INTERVAL
+        self.message_timeout = MESSAGE_TIMEOUT
         
-        # 파서 초기화
-        self.parser = BinanceParser()
-
-    async def _do_connect(self):
-        """
-        실제 연결 로직 (BaseWebsocketConnector 템플릿 메서드 구현)
-        """
-        self.session = aiohttp.ClientSession()
-        self.ws = await connect(
-            self.ws_url,
-            ping_interval=PING_INTERVAL,
-            ping_timeout=PING_TIMEOUT,
-            compression=None
+        # Ping/Pong 설정 추가
+        self.ping_interval = PING_INTERVAL
+        self.ping_timeout = PING_TIMEOUT
+        self.last_ping_time = 0
+        self.last_pong_time = 0
+        
+        # 상태 추적
+        self.health_check_task = None
+        
+        # 재연결 전략
+        self.reconnect_strategy = ReconnectStrategy(
+            initial_delay=RECONNECT_DELAY,
+            max_delay=60.0,
+            multiplier=2.0,
+            max_attempts=0
         )
-        # is_connected와 connection_start_time은 부모 클래스의 connect 메소드에서 설정됨
 
-    async def _after_connect(self):
+    # 웹소켓 연결 관리
+    # ==================================
+    async def connect(self) -> bool:
         """
-        연결 후 처리 (BaseWebsocketConnector 템플릿 메서드 구현)
-        """
-        # 재연결 시 이미 구독된 심볼들에 대해 스냅샷 다시 요청
-        if self.subscribed_symbols and hasattr(self, 'manager') and self.manager:
-            self.log_info(f"재연결 후 스냅샷 다시 요청 (심볼: {len(self.subscribed_symbols)}개)")
-            for sym in self.subscribed_symbols:
-                snapshot = await self.manager.fetch_snapshot(sym)
-                if snapshot:
-                    init_res = await self.manager.initialize_orderbook(sym, snapshot)
-                    if init_res.is_valid:
-                        self.log_info(f"{sym} 재연결 후 스냅샷 초기화 성공")
-                    else:
-                        self.log_error(f"{sym} 재연결 후 스냅샷 초기화 실패: {init_res.error_messages}")
-                else:
-                    self.log_error(f"{sym} 재연결 후 스냅샷 요청 실패")
-
-    async def _prepare_start(self, symbols: List[str]) -> None:
-        """
-        시작 전 초기화 및 설정 (BaseWebsocketConnector 템플릿 메서드 구현)
+        바이낸스 웹소켓 서버에 연결
         
-        Args:
-            symbols: 구독할 심볼 목록
+        Returns:
+            bool: 연결 성공 여부
         """
-        # 필요한 초기화 작업 수행
-        pass
-
-    async def _run_message_loop(self, symbols: List[str], tasks: List[asyncio.Task]) -> None:
-        """
-        메시지 처리 루프 실행 (BaseWebsocketConnector 템플릿 메서드 구현)
-        
-        Args:
-            symbols: 구독한 심볼 목록
-            tasks: 실행 중인 백그라운드 태스크 목록
-        """
-        while not self.stop_event.is_set() and self.is_connected:
-            try:
-                msg = await asyncio.wait_for(
-                    self.ws.recv(), timeout=self.health_check_interval
-                )
-                self.stats.last_message_time = time.time()
-                self.stats.message_count += 1
-
-                # 메시지 처리 (자식 클래스에서 구현)
-                await self.process_message(msg)
+        try:
+            self.log_info("🔵 웹소켓 연결 시도")
+            self.connecting = True  # 연결 시도 중 플래그 설정
+            self.is_connected = False
+            retry_count = 0
+            
+            while not self.stop_event.is_set():
+                try:
+                    # 웹소켓 라이브러리의 내장 핑퐁 기능 사용
+                    self.ws = await connect(
+                        self.ws_url,
+                        ping_interval=self.ping_interval,  # 150초
+                        ping_timeout=self.ping_timeout,    # 10초
+                        close_timeout=10,
+                        max_size=None,
+                        open_timeout=self.connection_timeout
+                    )
                     
-            except asyncio.TimeoutError:
-                # 타임아웃은 정상적인 상황일 수 있음 (메시지가 없는 경우)
-                continue
+                    self.is_connected = True
+                    self.stats.last_message_time = time.time()  # 연결 성공 시 메시지 시간 초기화
+                    self.log_info("🟢 웹소켓 연결 성공")
+                    
+                    # 헬스 체크 태스크 시작
+                    if self._should_start_health_check():
+                        self.health_check_task = asyncio.create_task(self.health_check())
+                    
+                    self.connecting = False  # 연결 시도 중 플래그 해제
+                    return True
+                    
+                except asyncio.TimeoutError:
+                    retry_count += 1
+                    self.log_warning(f"연결 타임아웃 ({retry_count}번째 시도), 재시도...")
+                    await asyncio.sleep(self.reconnect_strategy.next_delay())
+                    continue
+                    
+                except Exception as e:
+                    retry_count += 1
+                    self.log_warning(f"연결 실패 ({retry_count}번째): {str(e)}")
+                    await asyncio.sleep(self.reconnect_strategy.next_delay())
+                    
+        except Exception as e:
+            self.log_error(f"🔴 연결 오류: {str(e)}")
+            self.is_connected = False
+            return False
+        finally:
+            self.connecting = False  # 연결 시도 중 플래그 해제
+            
+    async def health_check(self) -> None:
+        """웹소켓 상태 체크 (주기적 모니터링)"""
+        try:
+            self.log_info("상태 모니터링 시작")
+            
+            while not self.stop_event.is_set():
+                try:
+                    # 웹소켓 연결 상태 확인
+                    if self.ws and not self.ws.closed:
+                        # 마지막 메시지 수신 시간 확인
+                        current_time = time.time()
+                        last_message_time = self.stats.last_message_time or current_time
+                        time_since_last_message = current_time - last_message_time
+                        
+                        # 너무 오래 메시지가 없으면 핑 전송
+                        if time_since_last_message > self.ping_interval:
+                            # 핑 전송 메서드 호출
+                            await self._send_ping()
+                            
+                    # 대기
+                    await asyncio.sleep(self.health_check_interval)
+                    
+                except asyncio.CancelledError:
+                    raise  # 상위로 전파
+                    
+                except Exception as e:
+                    self.log_error(f"상태 체크 중 오류: {str(e)}")
+                    await asyncio.sleep(1)  # 오류 발생 시 짧게 대기
                 
-            except Exception as e:
-                self.log_error(f"메시지 루프 오류: {str(e)}")
-                # 연결 오류 발생 시 루프 종료 (부모 클래스의 start 메소드에서 재연결 처리)
-                break
-
-    async def subscribe(self, symbols: List[str]):
+        except asyncio.CancelledError:
+            self.log_info("상태 모니터링 태스크 취소됨")
+            
+        except Exception as e:
+            self.log_error(f"상태 모니터링 루프 오류: {str(e)}")
+            
+            # 모니터링 태스크가 중단되지 않도록 재시작
+            # 단, 종료 이벤트가 설정되지 않은 경우에만 재시작
+            if not self.stop_event.is_set():
+                asyncio.create_task(self._restart_health_check())
+                
+    # PING/PONG 관리
+    # ==================================
+    async def _send_ping(self) -> None:
         """
-        지정된 심볼 목록을 구독
+        PING 메시지 전송
+        """
+        try:
+            if not self.ws or self.ws.closed:
+                return
+                
+            ping_id = int(time.time() * 1000)
+            
+            # 바이낸스는 JSON 형식의 ping 메시지 사용
+            ping_message = {
+                "method": "ping",
+                "id": ping_id
+            }
+            
+            # 핑 전송 시간 기록
+            self.last_ping_time = time.time()
+            
+            await self.ws.send(json.dumps(ping_message))
+            self.log_debug(f"핑 전송 | ID: {ping_id}")
+            
+        except Exception as e:
+            self.log_error(f"핑 전송 중 오류: {str(e)}")
+            
+    async def process_message(self, message: str) -> Optional[Dict]:
+        """
+        수신된 메시지 처리
         
         Args:
-            symbols: 구독할 심볼 목록
+            message: 수신된 원시 메시지
+            
+        Returns:
+            Dict or None: 파싱된 메시지 또는 None (핑-퐁 메시지인 경우)
         """
-        if not symbols:
-            return
-
-        chunk_size = SUBSCRIBE_CHUNK_SIZE
-        for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i:i+chunk_size]
-            # 파서를 사용하여 구독 메시지 생성
-            msg = self.parser.create_subscribe_message(chunk)
-            await self.ws.send(json.dumps(msg))
-            self.log_info(f"{len(chunk)}개 심볼 구독 요청 전송")
-            await asyncio.sleep(SUBSCRIBE_DELAY)
-
-        # 구독된 심볼 추적
-        for sym in symbols:
-            self.subscribed_symbols.add(sym)
-
-    async def process_message(self, message: str) -> None:
-        """
-        수신된 메시지 처리 (자식 클래스에서 구현)
-        
-        Args:
-            message: 수신된 웹소켓 메시지
-        """
-        # 이 메서드는 자식 클래스에서 구현해야 함
-        pass
-
-    async def stop(self) -> None:
-        """
-        웹소켓 연결 종료
-        """
-        self.log_info(f"웹소켓 연결 종료 중... {STATUS_EMOJIS['DISCONNECTING']}")
-        await super().stop()
-        self.log_info(f"웹소켓 연결 종료 완료 {STATUS_EMOJIS['DISCONNECTED']}")
-        
-    def set_manager(self, manager):
-        """
-        오더북 매니저 설정
-        
-        Args:
-            manager: 오더북 매니저 객체
-        """
-        self.manager = manager
-        self.log_info("오더북 매니저 설정 완료") 
+        try:
+            # 메시지가 텍스트가 아닌 경우 무시
+            if not isinstance(message, str):
+                return None
+                
+            # 메시지 파싱
+            data = json.loads(message)
+            
+            # Pong 메시지 처리
+            if "result" in data and data.get("id") is not None:
+                self.last_pong_time = time.time()
+                
+                # 레이턴시 계산 (밀리초 단위)
+                if self.last_ping_time > 0:
+                    latency = (self.last_pong_time - self.last_ping_time) * 1000  # ms 단위
+                    
+                    # 메트릭에 레이턴시 기록
+                    asyncio.create_task(self.event_handler.handle_metric_update(
+                        metric_name="latency_ms",
+                        value=latency
+                    ))
+                    
+                    self.log_debug(f"퐁 수신 | 지연시간: {latency:.2f}ms")
+                    
+                # 핑-퐁 메시지는 추가 처리하지 않음
+                return None
+                
+            # 일반 메시지 처리
+            self.stats.last_message_time = time.time()
+            return data
+            
+        except json.JSONDecodeError:
+            self.log_error(f"JSON 디코딩 실패: {message[:100]}")
+            return None
+        except Exception as e:
+            self.log_error(f"메시지 처리 중 오류: {str(e)}")
+            return None 
