@@ -9,7 +9,8 @@ from typing import Dict, Optional, Tuple, Any
 
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy
 from crosskimp.config.constants_v3 import Exchange
-from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
+from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
+from crosskimp.ob_collector.orderbook.util.event_adapter import get_event_adapter
 
 # ============================
 # 업비트 웹소켓 연결 관련 상수
@@ -22,7 +23,8 @@ WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
 PING_INTERVAL = 30  # 핑 전송 간격 (초)
 PING_TIMEOUT = 10  # 핑 응답 타임아웃 (초)
 MESSAGE_TIMEOUT = 60  # 메시지 타임아웃 (초)
-HEALTH_CHECK_INTERVAL = 30  # 헬스 체크 간격 (초)
+RECONNECT_DELAY = 0.1  # 초기 재연결 시도 시간 (초) - 다른 거래소와 동일하게 설정
+CONNECTION_TIMEOUT = 3  # 연결 타임아웃 (초) - 다른 거래소와 동일하게 설정
 
 class UpbitWebSocketConnector(BaseWebsocketConnector):
     """
@@ -48,15 +50,15 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         super().__init__(settings, Exchange.UPBIT.value)
         self.ws_url = WS_URL
         
-        # 업비트 전용 설정
+        # 업비트 전용 설정 - 다른 거래소와 일관되게 설정
         self.ping_interval = PING_INTERVAL
         self.ping_timeout = PING_TIMEOUT
         self.message_timeout = MESSAGE_TIMEOUT
-        self.health_check_interval = HEALTH_CHECK_INTERVAL
+        self.connection_timeout = CONNECTION_TIMEOUT
         
-        # 재연결 전략 설정
+        # 재연결 전략 설정 - 다른 거래소와 일관되게 설정
         self.reconnect_strategy = ReconnectStrategy(
-            initial_delay=1.0,
+            initial_delay=RECONNECT_DELAY,  # 0.1초로 변경
             max_delay=60.0,
             multiplier=2.0,
             max_attempts=0  # 무제한 재시도
@@ -64,9 +66,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         
         # 연결 중 상태 관리 (is_connected와 별개)
         self.connecting = False
-        
-        # 헬스 체크 태스크
-        self.health_check_task = None
 
     # 웹소켓 연결 관리
     # ==================================
@@ -77,48 +76,51 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         Returns:
             bool: 연결 성공 여부
         """
-        # 이미 연결된 경우 바로 반환
-        if self.is_connected and self.ws:
-            return True
-            
-        # 연결 중인 경우 대기
-        if self.connecting:
-            self.log_debug("이미 연결 중")
-            return True
-            
-        self.connecting = True
-        
         try:
-            # 웹소켓 연결 수립 - 표준 PING/PONG 프레임 사용
-            self.ws = await connect(
-                self.ws_url,
-                ping_interval=self.ping_interval,  # 표준 PING 프레임 자동 전송
-                ping_timeout=self.ping_timeout     # PONG 응답 타임아웃
-            )
-            
-            # 연결 성공 처리 - 부모 클래스의 setter 사용
-            self.is_connected = True
-            self.stats.connection_start_time = time.time()
-            self.reconnect_strategy.reset()
-            
-            # 헬스 체크 시작
-            if self._should_start_health_check():
-                self.health_check_task = asyncio.create_task(self.health_check())
-            
-            self.log_info("웹소켓 연결 성공")
-            return True
-            
-        except asyncio.TimeoutError as e:
-            self.log_error(f"연결 타임아웃: {str(e)}")
-            
-            # 연결 실패 처리
+            self.log_info("🔵 웹소켓 연결 시도")
+            self.connecting = True  # 연결 중 플래그 추가
             self.is_connected = False
-            return False
-                
-        except Exception as e:
-            self.log_error(f"연결 오류: {str(e)}", exc_info=True)
+            retry_count = 0
             
-            # 연결 실패 처리
+            while not self.stop_event.is_set():
+                try:
+                    # 웹소켓 연결 시도 - 타임아웃 설정 추가
+                    self.ws = await connect(
+                        self.ws_url,
+                        ping_interval=self.ping_interval,
+                        ping_timeout=self.ping_timeout,
+                        close_timeout=10,
+                        max_size=None,
+                        open_timeout=self.connection_timeout  # 0.5초 타임아웃 추가
+                    )
+                    
+                    # 연결 성공 처리 - 부모 클래스의 setter 사용
+                    self.is_connected = True
+                    self.stats.connection_start_time = time.time()
+                    self.reconnect_strategy.reset()
+                    
+                    self.log_info("🟢 웹소켓 연결 성공")
+                    return True
+                
+                except asyncio.TimeoutError:
+                    retry_count += 1
+                    self.log_warning(f"연결 타임아웃 ({retry_count}번째 시도), 재시도...")
+                    # 재연결 전략에 따른 지연 시간 적용
+                    delay = self.reconnect_strategy.next_delay()
+                    self.log_info(f"{delay:.2f}초 후 재연결 시도...")
+                    await asyncio.sleep(delay)
+                    continue
+                    
+                except Exception as e:
+                    retry_count += 1
+                    self.log_warning(f"연결 실패 ({retry_count}번째): {str(e)}")
+                    # 재연결 전략에 따른 지연 시간 적용
+                    delay = self.reconnect_strategy.next_delay()
+                    self.log_info(f"{delay:.2f}초 후 재연결 시도...")
+                    await asyncio.sleep(delay)
+                    
+        except Exception as e:
+            self.log_error(f"🔴 연결 오류: {str(e)}")
             self.is_connected = False
             return False
             

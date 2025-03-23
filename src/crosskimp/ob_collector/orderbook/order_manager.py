@@ -15,8 +15,10 @@ from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.util.component_factory import create_connector, create_subscription, create_validator
-from crosskimp.ob_collector.orderbook.util.event_bus import EventBus
+from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
+from crosskimp.ob_collector.orderbook.util.event_adapter import get_event_adapter
 from crosskimp.ob_collector.orderbook.util.event_handler import EventHandler, LoggingMixin
+from crosskimp.system_manager.metric_manager import get_metric_manager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -27,6 +29,9 @@ class OrderManager(LoggingMixin):
     
     베이스 클래스들을 활용하여 중앙에서 컨트롤 타워 역할을 합니다.
     거래소별 특화 로직은 설정과 콜백으로 처리합니다.
+    
+    [v0.6 업데이트]
+    중앙 메트릭 관리자와 통합되어 메트릭 데이터 관리가 일원화됩니다.
     """
     
     def __init__(self, settings: dict, exchange_code: str):
@@ -50,11 +55,14 @@ class OrderManager(LoggingMixin):
         # 이벤트 핸들러 초기화
         self.event_handler = EventHandler.get_instance(self.exchange_code, self.settings)
         
+        # 중앙 메트릭 관리자 가져오기
+        self.metric_manager = get_metric_manager()
+        
         # 이벤트 버스 인스턴스 가져오기
-        self.event_bus = EventBus.get_instance()
+        self.event_bus = get_event_adapter()
         
         # 컴포넌트들
-        self.connection = None       # 웹소켓 연결 객체
+        self.connector = None       # 웹소켓 연결 객체
         self.subscription = None     # 구독 객체
         self.validator = None        # 검증 객체
         
@@ -71,63 +79,87 @@ class OrderManager(LoggingMixin):
     
     async def initialize(self) -> bool:
         """
-        모든 컴포넌트 초기화
+        초기화 - 연결 객체 및 구독 객체 생성
         
         Returns:
             bool: 초기화 성공 여부
         """
         try:
-            # 팩토리를 사용하여 컴포넌트 생성
-            self.connection = create_connector(self.exchange_code, self.settings)
-            if not self.connection:
-                self.log_error(f"{self.exchange_name_kr} 연결 객체를 생성할 수 없습니다")
-                return False
+            # 중앙 메트릭 관리자 가져오기
+            self.metric_manager = get_metric_manager()
             
-            self.subscription = create_subscription(self.exchange_code, self.connection)
-            if not self.subscription:
-                self.log_error(f"{self.exchange_name_kr} 구독 객체를 생성할 수 없습니다")
+            # 메트릭 초기화
+            self.metric_manager.initialize_metrics(self.exchange_code)
+            self.metric_manager.update_metric(self.exchange_code, "initialization_time", time.time())
+            
+            # 컴포넌트 팩토리를 통해 연결 객체 생성
+            self.connector = create_connector(self.exchange_code, self.settings)
+            if not self.connector:
+                self.log_error(f"{self.exchange_name_kr} 연결 객체 생성 실패")
+                self.metric_manager.update_metric(self.exchange_code, "error_count", 1, 
+                    error_type="initialization_error", error_message="연결 객체 생성 실패")
                 return False
                 
+            # 구독 객체 생성
+            self.subscription = create_subscription(self.exchange_code, self.connector)
+            if not self.subscription:
+                self.log_error(f"{self.exchange_name_kr} 구독 객체 생성 실패")
+                self.metric_manager.update_metric(self.exchange_code, "error_count", 1, 
+                    error_type="initialization_error", error_message="구독 객체 생성 실패")
+                return False
+                
+            # 검증기 생성 및 설정
             self.validator = create_validator(self.exchange_code)
             if self.validator and self.subscription:
                 self.subscription.set_validator(self.validator)
+                self.log_debug(f"{self.exchange_name_kr} 검증기 설정 완료")
+            else:
+                self.log_warning(f"{self.exchange_name_kr} 검증기 생성 실패, 검증 없이 진행")
+                self.metric_manager.update_metric(self.exchange_code, "warning_count", 1, 
+                    warning_type="validator_missing", warning_message="검증기 생성 실패")
             
             # 이벤트 구독 설정
-            # 1. 커넥터의 연결 상태 변경 이벤트 구독 (비동기 람다로 변경)
+            # 1. 커넥터의 연결 상태 변경 이벤트 구독
             self.event_bus.subscribe(
-                "connection_status", 
+                OrderbookEventTypes.CONNECTION_STATUS, 
                 lambda event_data: asyncio.create_task(self.handle_connector_event(event_data))
             )
             
-            # 2. 구독 상태 변경 이벤트 구독 (비동기 람다로 변경)
+            # 2. 구독 상태 변경 이벤트 구독
             self.event_bus.subscribe(
-                "subscription_status",
+                OrderbookEventTypes.SUBSCRIPTION_STATUS,
                 lambda event_data: asyncio.create_task(self.handle_subscription_event(event_data))
             )
             
             # 3. 데이터 스냅샷 이벤트 구독
             self.event_bus.subscribe(
-                "data_snapshot",
+                OrderbookEventTypes.SNAPSHOT_RECEIVED,
                 lambda event_data: asyncio.create_task(self.handle_data_event(event_data, "snapshot"))
             )
             
             # 4. 데이터 델타 이벤트 구독
             self.event_bus.subscribe(
-                "data_delta",
+                OrderbookEventTypes.DELTA_RECEIVED,
                 lambda event_data: asyncio.create_task(self.handle_data_event(event_data, "delta"))
             )
             
             # 5. 오류 이벤트 구독
             self.event_bus.subscribe(
-                "error_event",
+                OrderbookEventTypes.ERROR_EVENT,
                 lambda event_data: asyncio.create_task(self.handle_error_event(event_data))
             )
+                
+            # 초기화 성공 상태 기록
+            self.initialized = True
+            self.metric_manager.update_metric(self.exchange_code, "initialized", 1)
+            self.log_info(f"{self.exchange_name_kr} OrderManager 초기화 완료")
             
-            self.log_info(f"{self.exchange_name_kr} 컴포넌트 초기화 및 이벤트 구독 완료")
             return True
             
         except Exception as e:
             self.log_error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}")
+            self.metric_manager.update_metric(self.exchange_code, "error_count", 1, 
+                error_type="initialization_error", error_message=str(e))
             return False
     
     async def start(self, symbols: List[str]) -> bool:
@@ -146,7 +178,7 @@ class OrderManager(LoggingMixin):
                 return False
                 
             # 필수 컴포넌트 검증
-            if not self.connection:
+            if not self.connector:
                 self.log_error(f"{self.exchange_name_kr} 연결 객체가 초기화되지 않았습니다. 먼저 initialize()를 호출해야 합니다.")
                 return False
                 
@@ -174,8 +206,12 @@ class OrderManager(LoggingMixin):
             if self.validator and self.subscription:
                 self.subscription.set_validator(self.validator)
             
-            # 구독 시작 - 이벤트 버스 기반 구독
-            subscription_success = await self.subscription.subscribe(symbols_to_subscribe)
+            # 구독과 웹소켓 연결을 병렬로 처리
+            # 구독 시작 태스크 실행 (백그라운드로 실행)
+            subscription_task = asyncio.create_task(self.subscription.subscribe(symbols_to_subscribe))
+            
+            # 구독 결과 확인
+            subscription_success = await subscription_task
             
             if subscription_success:
                 self.log_info(f"{self.exchange_name_kr} 오더북 수집 시작 - 심볼 {len(self.symbols)}개")
@@ -204,8 +240,8 @@ class OrderManager(LoggingMixin):
                     self.log_warning(f"{self.exchange_name_kr} 구독 취소 중 일부 오류 발생")
             
             # 연결 객체 정리 (웹소켓 종료)
-            if self.connection:
-                await self.connection.disconnect()
+            if self.connector:
+                await self.connector.disconnect()
                 self.log_info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
             
             # 오더북 관리자 정리 (OrderManager의 역할)
@@ -231,131 +267,302 @@ class OrderManager(LoggingMixin):
             bool: 현재 연결 상태
         """
         # 연결 객체가 있으면 그 상태를 사용 (단일 소스 오브 트루스)
-        return self.connection.is_connected if self.connection else False
+        return self.connector.is_connected if self.connector else False
 
     async def get_status(self) -> Dict[str, Any]:
         """
-        현재 상태 정보 가져오기
+        현재 상태 정보 반환
+        
+        중앙 메트릭 관리자로부터 메트릭 데이터를 가져옵니다.
         
         Returns:
             Dict: 상태 정보
         """
-        # 가동 시간 계산
-        uptime = time.time() - self.start_time
+        now = time.time()
         
-        # 메트릭 정보 가져오기
-        metrics = self.event_handler.message_counters
+        # 연결 상태 확인
+        connected = self.connector.is_connected if self.connector else False
         
-        # 연결 정보
-        connection_info = {}
-        if self.connection:
-            connection_info = {
-                "is_connected": self.connection.is_connected,
-                "reconnect_count": self.connection.stats.reconnect_count if hasattr(self.connection, 'stats') else 0
-            }
+        # 구독 상태 확인
+        subscribed_symbols = []
+        if self.subscription:
+            try:
+                subscription_status = self.subscription.subscriptions
+                if isinstance(subscription_status, dict) and "symbols" in subscription_status:
+                    subscribed_symbols = subscription_status.get("symbols", [])
+            except Exception as e:
+                self.log_error(f"구독 상태 확인 오류: {str(e)}")
         
-        # 종합 상태 정보
-        status = {
+        # 중앙 메트릭 관리자에서 메트릭 가져오기
+        metrics = self.metric_manager.get_metrics(self.exchange_code)
+        
+        # 데이터 수신 여부는 connected 상태로 대체 (connection이 살아있으면 receiving으로 간주)
+        receiving = connected
+            
+        # 마지막 오류 메시지 가져오기
+        last_error = "없음"
+        errors = self.metric_manager.get_errors(self.exchange_code, 1)
+        if errors and len(errors) > 0:
+            error = errors[0]
+            last_error = f"{error.get('type', 'unknown')}: {error.get('message', '?')}"
+            # 너무 긴 오류 메시지는 축약
+            if len(last_error) > 50:
+                last_error = last_error[:47] + "..."
+        
+        # 상태 데이터 구성
+        status_data = {
             "exchange": self.exchange_code,
-            "exchange_kr": self.exchange_name_kr,
-            "is_running": self.is_running,
-            "uptime_seconds": uptime,
-            "uptime_formatted": f"{int(uptime // 3600)}시간 {int((uptime % 3600) // 60)}분 {int(uptime % 60)}초",
-            "symbols_count": len(self.symbols),
-            "connection": connection_info,
-            "metrics": metrics
+            "exchange_name_kr": self.exchange_name_kr,
+            "connected": connected,
+            "receiving": receiving,
+            "subscribed_symbols": subscribed_symbols,
+            "subscribed_count": len(subscribed_symbols),
+            "message_count": metrics.get("message_count", 0),
+            "error_count": metrics.get("error_count", 0),
+            "last_error": last_error,
+            "message_rate": metrics.get("message_rate", 0)
         }
         
-        return status
+        return status_data
     
     async def handle_connector_event(self, event_data: dict) -> None:
         """
-        커넥터 이벤트 처리 (이벤트 버스에서 호출됨)
+        컨넥터 이벤트 처리
+        
+        중앙 메트릭 관리자를 활용하여 이벤트 데이터를 처리합니다.
         
         Args:
-            event_data: 연결 상태 이벤트 데이터
+            event_data: 이벤트 데이터
         """
         try:
-            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
-            if event_data.get("exchange_code") != self.exchange_code:
+            exchange_code = event_data.get("exchange_code")
+            
+            # 다른 거래소의 이벤트는 무시
+            if exchange_code != self.exchange_code:
                 return
                 
-            # 연결 상태 정보 추출 및 로깅만 수행
-            status = event_data.get("status", "unknown")
-            event_text = "연결됨" if status == "connected" else "연결 끊김"
-            self.log_info(f"{self.exchange_name_kr} 상태 변경: {event_text}")
+            # 연결 상태 이벤트 처리
+            status = event_data.get("status")
+            timestamp = event_data.get("timestamp", time.time())
+            
+            # 중앙 메트릭 관리자에 상태 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code, 
+                "connection_status", 
+                status,
+                timestamp=timestamp
+            )
+            
+            if status == "connected":
+                self.log_info(f"웹소켓 연결 성공: {self.exchange_name_kr}")
+                # 연결 시간 기록
+                self.metric_manager.update_metric(
+                    self.exchange_code,
+                    "connection_time",
+                    timestamp
+                )
+                    
+            elif status == "disconnected":
+                self.log_warning(f"웹소켓 연결 종료: {self.exchange_name_kr}")
+                # 연결 종료 시간 기록
+                self.metric_manager.update_metric(
+                    self.exchange_code,
+                    "disconnection_time",
+                    timestamp
+                )
+                    
+                # 재연결 시도 횟수 증가
+                self.metric_manager.update_metric(
+                    self.exchange_code,
+                    "reconnect_count",
+                    1,
+                    op="increment"
+                )
                 
+            elif status == "reconnecting":
+                self.log_warning(f"웹소켓 재연결 시도 중: {self.exchange_name_kr}")
+              
         except Exception as e:
-            self.log_error(f"{self.exchange_name_kr} 커넥터 이벤트 처리 중 오류: {str(e)}")
+            self.log_error(f"컨넥터 이벤트 처리 중 오류: {str(e)}")
+            # 오류 카운트 증가
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "error_count",
+                1,
+                op="increment",
+                error_type="event_handler_error",
+                error_message=str(e)
+            )
 
     async def handle_subscription_event(self, event_data: dict) -> None:
         """
-        구독 상태 이벤트 처리 (이벤트 버스에서 호출됨)
+        구독 이벤트 처리
+        
+        중앙 메트릭 관리자를 활용하여 구독 상태를 추적합니다.
         
         Args:
             event_data: 구독 이벤트 데이터
         """
         try:
-            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
-            if event_data.get("exchange_code") != self.exchange_code:
+            # 이벤트 데이터 확인
+            exchange_code = event_data.get("exchange_code")
+            status = event_data.get("status")
+            symbols = event_data.get("symbols", [])
+            
+            # 다른 거래소 이벤트는 무시
+            if exchange_code != self.exchange_code:
                 return
                 
-            # 구독 상태 정보 로깅
-            status = event_data.get("status", "unknown")
-            symbols_count = len(event_data.get("symbols", []))
-            
+            # 구독 상태 변경 로깅
             if status == "subscribed":
-                self.log_info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 성공")
+                symbol_text = ", ".join(symbols) if len(symbols) <= 3 else f"{len(symbols)}개 심볼"
+                self.log_info(f"구독 완료: {symbol_text}")
             elif status == "unsubscribed":
-                self.log_info(f"{self.exchange_name_kr} {symbols_count}개 심볼 구독 취소됨")
-                
+                symbol_text = ", ".join(symbols) if len(symbols) <= 3 else f"{len(symbols)}개 심볼"
+                self.log_info(f"구독 해제: {symbol_text}")
+            
+            # 중앙 메트릭 관리자에 상태 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "subscription_status",
+                status == "subscribed" and 1.0 or 0.0,
+                status=status,
+                symbols_count=len(symbols)
+            )
+            
+            # 구독 심볼 수 메트릭 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "subscribed_symbols_count",
+                float(len(symbols))
+            )
+            
         except Exception as e:
-            self.log_error(f"{self.exchange_name_kr} 구독 이벤트 처리 중 오류: {str(e)}")
+            self.log_error(f"구독 이벤트 처리 중 오류: {str(e)}")
 
     async def handle_data_event(self, event_data: dict, event_type: str) -> None:
         """
-        데이터 이벤트 처리 (이벤트 버스에서 호출됨)
+        데이터 이벤트 처리 (스냅샷 또는 델타)
         
-        OrderManager는 이벤트가 자신이 관리하는 거래소와 관련된 것인지만 확인하고,
-        특별한 액션이 필요한 경우에만 처리합니다.
-        대부분의 데이터 이벤트는 BaseSubscription과 EventHandler가 처리합니다.
+        중앙 메트릭 관리자를 활용하여 데이터 이벤트를 처리합니다.
         
         Args:
-            event_data: 데이터 이벤트 정보
-            event_type: 이벤트 타입 ('snapshot' 또는 'delta')
+            event_data: 이벤트 데이터
+            event_type: 이벤트 타입 (snapshot 또는 delta)
         """
-        # 거래소 코드 확인
-        if event_data.get("exchange_code") != self.exchange_code:
-            return
+        try:
+            exchange_code = event_data.get("exchange_code")
+            symbol = event_data.get("symbol")
+            timestamp = event_data.get("timestamp", time.time())
             
-        # 여기서는 특별한 처리가 필요 없음
-        # 모든 처리는 이미 BaseSubscription과 EventHandler에서 완료됨
-        # 필요한 경우 여기에 고유한 OrderManager 로직 추가 가능
+            # 다른 거래소의 이벤트는 무시
+            if exchange_code != self.exchange_code:
+                return
+            
+            # 이벤트 타입별 메트릭 업데이트
+            if event_type == "snapshot":
+                self.metric_manager.update_metric(
+                    self.exchange_code,
+                    "snapshot_count",
+                    1,
+                    op="increment",
+                    symbol=symbol
+                )
+            elif event_type == "delta":
+                self.metric_manager.update_metric(
+                    self.exchange_code,
+                    "delta_count",
+                    1,
+                    op="increment",
+                    symbol=symbol
+                )
+                
+            # 메시지 수신 메트릭 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "message_count",
+                1,  # 명시적으로 정수 타입 사용
+                op="increment",  # 증가 연산임을 명시
+                symbol=symbol,
+                message_type=event_type
+            )
+            
+        except Exception as e:
+            self.log_error(f"데이터 이벤트 처리 중 오류: {str(e)}")
+            # 오류 메트릭 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "error_count",
+                1,
+                op="increment",
+                error_type="data_event_error",
+                error_message=str(e)
+            )
 
     async def handle_error_event(self, event_data: dict) -> None:
         """
-        오류 이벤트 처리 (이벤트 버스에서 호출됨)
+        오류 이벤트 처리
+        
+        중앙 메트릭 관리자를 활용하여 오류 이벤트를 처리합니다.
         
         Args:
             event_data: 오류 이벤트 데이터
         """
         try:
-            # 이벤트가 현재 관리 중인 거래소와 관련된 것인지 확인
-            if event_data.get("exchange_code") != self.exchange_code:
-                return
-                
-            # 오류 정보 추출 및 로깅
             error_type = event_data.get("error_type", "unknown")
             message = event_data.get("message", "알 수 없는 오류")
+            exchange_code = event_data.get("exchange_code", self.exchange_code)
             severity = event_data.get("severity", "error")
+            timestamp = event_data.get("timestamp", time.time())
+            symbol = event_data.get("symbol", None)
             
-            if severity == "critical":
-                self.log_critical(f"{self.exchange_name_kr} 심각한 오류: [{error_type}] {message}")
-            else:
-                self.log_error(f"{self.exchange_name_kr} 오류: [{error_type}] {message}")
+            # 다른 거래소의 이벤트는 무시
+            if exchange_code != self.exchange_code:
+                return
                 
+            # 오류 심각도에 따른 로깅
+            if severity == "critical":
+                self.log_critical(f"{error_type} 오류: {message}")
+            elif severity == "warning":
+                self.log_warning(f"{error_type} 경고: {message}")
+            else:
+                self.log_error(f"{error_type} 오류: {message}")
+                
+            # 중앙 메트릭 관리자에 오류 기록
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "error_count",
+                1,  # 명시적으로 정수 타입 사용
+                op="increment",  # 증가 연산임을 명시
+                error_type=error_type,
+                error_message=message,
+                error_severity=severity,
+                error_timestamp=timestamp,
+                symbol=symbol
+            )
+            
+            # 마지막 오류 정보 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "last_error_time",
+                timestamp
+            )
+            
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "last_error_type",
+                error_type
+            )
+            
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "last_error_message",
+                message
+            )
+            
         except Exception as e:
-            self.log_error(f"{self.exchange_name_kr} 오류 이벤트 처리 중 오류: {str(e)}")
+            self.log_error(f"오류 이벤트 처리 중 오류: {str(e)}")
+            # 이 오류마저 처리하지 못하면 마지막 시도로 로깅만 수행
 
 # OrderManager 팩토리 함수
 def create_order_manager(exchange: str, settings: dict) -> Optional[OrderManager]:
@@ -410,7 +617,7 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
     """
     try:
         # 이벤트 버스 인스턴스 가져오기
-        event_bus = EventBus.get_instance()
+        event_bus = get_event_adapter()
         
         # WebsocketManager가 연결 상태 변경 이벤트를 직접 구독하도록 설정
         event_bus.subscribe(

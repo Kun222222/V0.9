@@ -10,7 +10,8 @@ import time
 import datetime
 from typing import Dict, List, Union, Optional, Any
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.constants_v3 import Exchange
 
@@ -140,6 +141,16 @@ class UpbitSubscription(BaseSubscription):
                 self.log_error("웹소켓 연결이 없어 구독 실패")
                 return False
             
+            # 연결 후 안정화를 위한 대기
+            # 웹소켓 연결이 완전히 설정될 시간 확보
+            self.log_info("웹소켓 연결 안정화를 위해 1초 대기")
+            await asyncio.sleep(1.0)
+            
+            # 연결 상태 다시 확인
+            if not self.connection.is_connected or not await self.connection.get_websocket():
+                self.log_error("웹소켓 연결이 유지되지 않아 구독 실패")
+                return False
+                
             # 심볼 전처리
             symbols = await self._preprocess_symbols(symbol)
             if not symbols:
@@ -155,9 +166,24 @@ class UpbitSubscription(BaseSubscription):
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
-            # 구독 요청 전송
-            if not await self._send_subscription_requests(symbols):
-                raise Exception("구독 메시지 전송 실패")
+            # 구독 요청 전송 - 최대 3번 재시도
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                try:
+                    if await self._send_subscription_requests(symbols):
+                        break
+                    else:
+                        if attempt < max_retries:
+                            self.log_warning(f"구독 시도 {attempt}/{max_retries} 실패, 재시도...")
+                            await asyncio.sleep(0.5)
+                        else:
+                            raise Exception(f"구독 메시지 전송 최대 시도 횟수({max_retries}회) 초과")
+                except Exception as e:
+                    if attempt < max_retries:
+                        self.log_warning(f"구독 시도 {attempt}/{max_retries} 중 오류: {e}, 재시도...")
+                        await asyncio.sleep(0.5)
+                    else:
+                        raise
             
             # 구독 이벤트 발행
             try:
@@ -374,13 +400,13 @@ class UpbitSubscription(BaseSubscription):
                         # 메트릭 업데이트
                         if result.is_valid:
                             processing_time_ms = (time.time() - start_time) * 1000
-                            self._update_metrics(self.exchange_code, start_time, "snapshot", parsed_data)
+                            self._update_metrics("orderbook_processing_time", processing_time_ms, message_type="snapshot")
                     else:
                         result = await self.validator.update(symbol, parsed_data)
                         # 메트릭 업데이트
                         if result.is_valid:
                             processing_time_ms = (time.time() - start_time) * 1000
-                            self._update_metrics(self.exchange_code, start_time, "delta", parsed_data)
+                            self._update_metrics("orderbook_processing_time", processing_time_ms, message_type="delta")
                     
                     if result.is_valid:
                         # 유효한 오더북 데이터 가져오기
@@ -421,7 +447,7 @@ class UpbitSubscription(BaseSubscription):
         
         # 스냅샷 처리 완료 이벤트 발행
         asyncio.create_task(self.event_handler.handle_data_event(
-            event_type=EVENT_TYPES["DATA_UPDATED"],
+            event_type=OrderbookEventTypes.ORDERBOOK_UPDATED,
             symbol=symbol,
             data={
                 "msg_type": parsed_data.get("type", "unknown"),

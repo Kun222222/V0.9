@@ -20,11 +20,19 @@ from crosskimp.system_manager.scheduler import (
     get_scheduled_tasks
 )
 
-from crosskimp.system_manager.health_monitor import (
-    get_system_info,
-    get_process_info,
-    start_monitoring,
-    stop_monitoring
+from crosskimp.system_manager.metric_manager import (
+    MetricManager,
+    get_metric_manager
+)
+
+from crosskimp.system_manager.status_manager import (
+    StatusManager,
+    get_status_manager
+)
+
+from crosskimp.system_manager.notification_manager import (
+    NotificationManager,
+    get_notification_manager
 )
 
 __all__ = [
@@ -44,9 +52,15 @@ __all__ = [
     'schedule_daily_restart',
     'get_scheduled_tasks',
     
-    # 상태 모니터링
-    'get_system_info',
-    'get_process_info',
-    'start_monitoring',
-    'stop_monitoring'
+    # 메트릭 관리
+    'MetricManager',
+    'get_metric_manager',
+    
+    # 상태 관리
+    'StatusManager',
+    'get_status_manager',
+    
+    # 알림 관리
+    'NotificationManager',
+    'get_notification_manager'
 ]

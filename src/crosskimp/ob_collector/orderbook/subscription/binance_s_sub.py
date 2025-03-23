@@ -16,8 +16,11 @@ import datetime
 from typing import Dict, List, Optional, Any, Union
 import aiohttp
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
+from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.constants_v3 import Exchange
+from crosskimp.system_manager.error_manager import ErrorSeverity, ErrorCategory
 
 # 바이낸스 현물 웹소켓 및 REST API 설정
 WS_URL = "wss://stream.binance.com:9443/ws"  # 웹소켓 URL (포트 9443 명시)
@@ -202,7 +205,7 @@ class BinanceSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.event_handler.update_metrics("error_count")
+            self._update_metrics("error_count")
             return False
 
     # 4. 스냅샷 요청 및 처리
@@ -549,7 +552,7 @@ class BinanceSubscription(BaseSubscription):
                 self.log_orderbook_data(symbol, updated_data)
             
             # 메트릭 업데이트
-            await self.event_handler.handle_metric_update(
+            await self.handle_metric_update(
                 metric_name="message_processed",
                 value=1,
                 data={

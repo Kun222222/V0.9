@@ -1,5 +1,5 @@
 """
-크로스킴프 아비트리지 - 핵심 상수 정의
+크로스 김프 아비트리지 - 핵심 상수 정의
 
 거래소 식별자와 시스템 상수를 정의합니다.
 """
@@ -135,12 +135,8 @@ CONFIG_DIR = PROJECT_ROOT / 'src/crosskimp/config'
 
 # 로그 하위 디렉토리 경로 설정
 LOG_SUBDIRS = {
-    'queue': LOGS_DIR / 'queue',
-    'error': LOGS_DIR / 'error',
-    'telegram': LOGS_DIR / 'telegram',
-    'archive': LOGS_DIR / 'archive',
     'raw_data': LOGS_DIR / 'raw_data',
-    'serialized_data': LOGS_DIR / 'serialized_data'
+    'orderbook_data': LOGS_DIR / 'orderbook_data'
 }
 
 # 설정 파일 경로
@@ -155,6 +151,7 @@ ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 # 로깅 관련 상수
 # ============================
 LOG_SYSTEM = "[시스템]"
+LOG_TELEGRAM = "[텔레그램]"  # 텔레그램 관련 로그 프리픽스
 LOG_FORMAT = "%(asctime)s.%(msecs)03d - %(filename)-20s:%(lineno)-3d / %(levelname)-7s - %(message)s"
 DEBUG_LOG_FORMAT = "%(asctime)s.%(msecs)03d - %(filename)-20s:%(lineno)-3d / %(levelname)-7s - %(message)s"
 LOG_ENCODING = "utf-8"
@@ -205,6 +202,10 @@ API_ENV_VARS = {
     "user": {
         "first_superuser": "FIRST_SUPERUSER",
         "first_superuser_password": "FIRST_SUPERUSER_PASSWORD"
+    },
+    "telegram": {
+        "bot_token": "TELEGRAM_BOT_TOKEN",
+        "chat_id": "TELEGRAM_CHAT_ID"
     }
 }
 

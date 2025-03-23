@@ -6,19 +6,15 @@
 이 모듈은 애플리케이션 전체에서 사용되는 로깅 시스템을 제공합니다.
 주요 기능:
 1. 통합 로거 (일반 로그)
-2. 큐 로거 (데이터 로깅)
-3. Raw 로거 (거래소별 원시 데이터)
-4. 로그 파일 관리 (로테이션, 정리)
-5. 로그 레벨 관리
-6. 예외 처리 및 복구
-
+2. Raw 로거 (거래소별 원시 데이터)
+3. 로그 파일 관리 (로테이션, 정리)
+4. 로그 레벨 관리
+5. 예외 처리 및 복구
 """
 
 import logging
 import os
 import time
-import gzip
-import shutil
 import threading
 import re
 from datetime import datetime
@@ -29,8 +25,7 @@ from typing import Dict, Optional, List, Union, Any
 from crosskimp.config.constants_v3 import (
     LOG_SYSTEM, LOG_FORMAT, DEBUG_LOG_FORMAT, LOG_ENCODING, LOG_MODE,
     DEFAULT_CONSOLE_LEVEL, DEFAULT_FILE_LEVEL, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    LOG_CLEANUP_DAYS, PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS, ensure_directories,
-    EXCHANGE_NAMES_KR
+    LOG_CLEANUP_DAYS, PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS
 )
 
 # ============================
@@ -73,20 +68,35 @@ def _get_internal_logger():
     return _internal_logger
 
 def cleanup_old_logs(max_days: int = LOG_CLEANUP_DAYS) -> None:
-    """오래된 로그 파일 정리 및 압축 (최적화 버전)"""
+    """오래된 로그 파일 정리"""
     internal_logger = _get_internal_logger()
     
     try:
         current_time = time.time()
-        archive_dir = LOG_SUBDIRS['archive']
         
-        # 압축 대상 및 삭제 대상 파일 목록 미리 수집
-        compress_files = []
+        # 삭제 대상 파일 목록 미리 수집
         delete_files = []
         
-        # 모든 로그 디렉토리 순회
+        # 메인 로그 디렉토리 정리
+        if os.path.exists(LOGS_DIR):
+            for filename in os.listdir(LOGS_DIR):
+                filepath = os.path.join(LOGS_DIR, filename)
+                
+                # 디렉토리는 건너뜀
+                if not os.path.isfile(filepath) or filepath.endswith('.gz'):
+                    continue
+                    
+                # 파일 수정 시간 확인
+                file_time = os.path.getmtime(filepath)
+                file_age_days = (current_time - file_time) / 86400  # 일 단위로 변환
+                
+                # 삭제 대상: max_days일 이상 된 파일
+                if file_age_days >= max_days:
+                    delete_files.append(filepath)
+        
+        # 모든 로그 하위 디렉토리 순회
         for dir_name, dir_path in LOG_SUBDIRS.items():
-            if dir_name == 'archive' or not os.path.exists(dir_path):
+            if not os.path.exists(dir_path):
                 continue
                 
             # 디렉토리 내 모든 파일 확인
@@ -101,26 +111,9 @@ def cleanup_old_logs(max_days: int = LOG_CLEANUP_DAYS) -> None:
                 file_time = os.path.getmtime(filepath)
                 file_age_days = (current_time - file_time) / 86400  # 일 단위로 변환
                 
-                # 압축 대상: 3일 이상 된 파일
-                if 3 <= file_age_days < max_days:
-                    archive_path = os.path.join(archive_dir, f"{filename}.gz")
-                    if not os.path.exists(archive_path):
-                        compress_files.append((filepath, archive_path))
-                
                 # 삭제 대상: max_days일 이상 된 파일
-                elif file_age_days >= max_days:
+                if file_age_days >= max_days:
                     delete_files.append(filepath)
-        
-        # 압축 작업 수행
-        for filepath, archive_path in compress_files:
-            try:
-                with open(filepath, 'rb') as f_in:
-                    with gzip.open(archive_path, 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-                os.remove(filepath)
-                internal_logger.info(f"{LOG_SYSTEM} 로그 파일 압축: {filepath} -> {archive_path}")
-            except Exception as e:
-                internal_logger.error(f"{LOG_SYSTEM} 로그 파일 압축 실패: {filepath} | {str(e)}")
         
         # 삭제 작업 수행
         for filepath in delete_files:
@@ -312,7 +305,8 @@ def create_logger(
     
     current_time = get_current_time_str()
     
-    # 로그 디렉토리 존재 확인은 constants_v3.py의 ensure_directories()로 대체하므로 제거
+    # 로그 디렉토리 존재 확인
+    os.makedirs(log_dir, exist_ok=True)
     
     # 일반 로그 핸들러
     log_file = f"{log_dir}/{current_time}_{name}.log"
@@ -337,7 +331,7 @@ def create_logger(
     
     # 에러 전용 로그 파일 추가
     if add_error_file:
-        error_log_file = f"{LOG_SUBDIRS['error']}/{current_time}_{name}_error.log"
+        error_log_file = f"{log_dir}/{current_time}_{name}_error.log"
         try:
             error_handler = SafeRotatingFileHandler(
                 filename=error_log_file,
@@ -378,11 +372,12 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
     """
     logger_name = f"{exchange_name}_raw_logger"
     
-    # 한글 거래소 이름 사용 (상수에서 가져옴)
+    # 한글 거래소 이름 사용 
+    from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR
     exchange_name_kr = EXCHANGE_NAMES_KR.get(exchange_name, f"[{exchange_name}]")
     
-    # 'raw' 디렉토리 대신 'raw_data/{exchange_name}' 디렉토리에 로그 생성
-    raw_data_dir = os.path.join(LOGS_DIR, 'raw_data', exchange_name)
+    # 하위 폴더 생성하지 않고 raw_data 디렉토리에 직접 로깅
+    raw_data_dir = LOG_SUBDIRS['raw_data']
     os.makedirs(raw_data_dir, exist_ok=True)
     
     logger = create_logger(
@@ -395,7 +390,7 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
         add_error_file=False
     )
     
-    logger.debug(f"{exchange_name_kr} raw 로거 초기화 완료 (raw_data 디렉토리)")
+    logger.debug(f"{exchange_name_kr} raw 로거 초기화 완료")
     return logger
 
 # ============================
@@ -411,8 +406,10 @@ def initialize_logging() -> None:
             return
             
         try:
-            # 로그 디렉토리 생성 (constants_v3.py의 함수 직접 호출)
-            ensure_directories()
+            # 로그 디렉토리 생성 - error 폴더 제외
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            for dir_name, dir_path in LOG_SUBDIRS.items():
+                os.makedirs(dir_path, exist_ok=True)
             
             # 오래된 로그 파일 정리
             cleanup_old_logs()
@@ -436,7 +433,11 @@ def get_unified_logger() -> logging.Logger:
     
     with _lock:
         if _unified_logger is None:
-            ensure_directories()
+            # 로그 디렉토리 생성 - error 폴더 제외
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            for dir_name, dir_path in LOG_SUBDIRS.items():
+                os.makedirs(dir_path, exist_ok=True)
+                
             _unified_logger = create_logger(
                 name='unified_logger',
                 log_dir=LOGS_DIR,
@@ -449,31 +450,6 @@ def get_unified_logger() -> logging.Logger:
             _unified_logger.info(f"{LOG_SYSTEM} 통합 로거 초기화 완료")
             
         return _unified_logger
-
-def get_queue_logger() -> logging.Logger:
-    """큐 로거 싱글톤 인스턴스 반환"""
-    logger_name = 'queue_logger'
-    
-    with _lock:
-        try:
-            if logger_name not in _loggers or not _loggers[logger_name].handlers:
-                ensure_directories()
-                _loggers[logger_name] = create_logger(
-                    name=logger_name,
-                    log_dir=LOG_SUBDIRS['queue'],
-                    level=logging.DEBUG,
-                    console_level=DEFAULT_CONSOLE_LEVEL,
-                    format_str=DEBUG_LOG_FORMAT,
-                    add_console=False,
-                    add_error_file=False
-                )
-                _loggers[logger_name].debug(f"{LOG_SYSTEM} 큐 로거 초기화 완료")
-            
-            return _loggers[logger_name]
-        except Exception as e:
-            unified_logger = get_unified_logger()
-            unified_logger.error(f"{LOG_SYSTEM} 큐 로거 가져오기 실패: {str(e)}")
-            return unified_logger
 
 def get_logger(name: str, log_dir: Optional[str] = None, add_console: bool = False) -> logging.Logger:
     """
@@ -490,21 +466,21 @@ def get_logger(name: str, log_dir: Optional[str] = None, add_console: bool = Fal
         logging.Logger: 로거 인스턴스
     """
     # 특별한 로거가 아니면 통합 로거 반환 (불필요한 로그 파일 생성 방지)
-    special_loggers = ['unified_logger', 'queue_logger', 'metrics_logger', 
-                       'error_logger', 'telegram_logger']
+    special_loggers = ['unified_logger', 'metrics_logger']
     if name not in special_loggers:
         return get_unified_logger()
         
     with _lock:
         if name not in _loggers or not _loggers[name].handlers:
-            ensure_directories()
+            # 로그 디렉토리 생성
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            for dir_name, dir_path in LOG_SUBDIRS.items():
+                os.makedirs(dir_path, exist_ok=True)
             
             # 로그 디렉토리 설정
             if log_dir is None:
                 if name == 'metrics_logger':
                     log_dir = LOGS_DIR
-                elif name in ['error_logger', 'telegram_logger']:
-                    log_dir = LOG_SUBDIRS.get(name.split('_')[0], LOGS_DIR)
                 else:
                     log_dir = LOGS_DIR
             
@@ -565,8 +541,8 @@ _get_internal_logger().info(f"{LOG_SYSTEM} logger.py 모듈 초기화 완료")
 __all__ = [
     'initialize_logging',
     'get_unified_logger',
-    'get_queue_logger',
     'get_logger',
     'shutdown_logging',
-    'get_current_time_str'
+    'get_current_time_str',
+    'create_raw_logger'
 ]

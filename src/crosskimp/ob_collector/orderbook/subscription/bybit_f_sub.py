@@ -10,9 +10,11 @@ import time
 import datetime
 from typing import Dict, List, Optional, Any, Union
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.constants_v3 import Exchange
+from crosskimp.system_manager.error_manager import ErrorSeverity, ErrorCategory
 
 # 웹소켓 설정
 WS_URL = "wss://stream.bybit.com/v5/public/linear"  # 웹소켓 URL 
@@ -42,19 +44,75 @@ class BybitFutureSubscription(BaseSubscription):
         Args:
             connection: 웹소켓 연결 객체
         """
-        # 부모 클래스 초기화 (exchange_code 전달)
+        # 부모 클래스 초기화
         super().__init__(connection, Exchange.BYBIT_FUTURE.value)
         
-        # 구독 관련 설정
-        self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
+        # 구독 설정
         self.depth_level = DEFAULT_DEPTH
+        self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
         
         # 로깅 설정
         self.raw_logging_enabled = ENABLE_RAW_LOGGING
         self.orderbook_logging_enabled = ENABLE_ORDERBOOK_LOGGING
         
-        # 각 심볼별 전체 오더북 상태 저장용
-        self.orderbooks = {}  # symbol -> orderbook_data
+        # 각 심볼별 오더북 상태 저장용
+        self.orderbooks = {}  # symbol -> {"bids": {...}, "asks": {...}, "timestamp": ..., "sequence": ...}
+
+    async def _ensure_websocket(self) -> bool:
+        """
+        웹소켓 연결 확보 - 바이빗 선물용 무제한 연결 시도 버전
+        
+        바이빗 선물은 연결이 불안정할 수 있으므로 무제한 재시도를 수행합니다.
+        """
+        # 이미 연결되어 있는지 확인
+        if self.is_connected:
+            # 웹소켓 객체도 확인
+            self.ws = await self.connection.get_websocket()
+            if self.ws:
+                return True
+            else:
+                self.log_warning("연결 상태와 웹소켓 객체 불일치, 연결 재시도")
+        
+        # 연결 시도
+        self.log_info("바이빗 선물 웹소켓 연결 확보 시도 (무제한 재시도)")
+        
+        try:
+            # 최초 연결 시도
+            await self.connection.connect_with_timeout(timeout=0.5)  # 짧은 타임아웃 설정
+            
+            # 무제한 연결 시도 루프
+            retry_count = 0
+            while not self.is_connected:
+                retry_count += 1
+                await asyncio.sleep(0.1)  # 0.1초 간격으로 체크
+                
+                # 연결 상태 확인
+                if self.is_connected:
+                    self.log_info(f"바이빗 선물 웹소켓 연결 확인됨 (시도 {retry_count}회)")
+                    break
+                
+                # 10번마다 로그 출력 (1초마다)
+                if retry_count % 10 == 0:
+                    self.log_info(f"바이빗 선물 웹소켓 연결 대기 중... (시도 {retry_count}회)")
+                
+                # 60번(6초)마다 재연결 시도
+                if retry_count % 60 == 0:
+                    self.log_info(f"바이빗 선물 웹소켓 재연결 시도 (총 {retry_count}회 시도)")
+                    await self.connection.connect_with_timeout(timeout=0.5)
+            
+            # 웹소켓 객체 가져오기
+            self.ws = await self.connection.get_websocket()
+            
+            if not self.ws:
+                self.log_error("바이빗 선물 웹소켓 객체를 가져올 수 없음 (연결은 완료됨)")
+                return False
+            
+            self.log_info("바이빗 선물 웹소켓 연결 및 객체 확보 완료")
+            return True
+            
+        except Exception as e:
+            self.log_error(f"바이빗 선물 웹소켓 연결 시도 중 오류: {str(e)}")
+            return False
 
     # 3. 구독 처리 단계
     async def create_subscribe_message(self, symbols: List[str]) -> Dict:
@@ -155,7 +213,7 @@ class BybitFutureSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.event_handler.update_metrics("error_count")
+            self._update_metrics("error_count")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -369,7 +427,7 @@ class BybitFutureSubscription(BaseSubscription):
                                 self.publish_event(symbol, orderbook_data, "snapshot")
                                 
                                 # 메트릭 업데이트
-                                self._update_metrics(self.exchange_code, start_time, "snapshot", orderbook_data)
+                                self._update_metrics("orderbook_processing_time", (time.time() - start_time) * 1000, message_type="snapshot")
                             
                             elif msg_type == "delta":
                                 # 델타 처리 (기존 오더북 업데이트)
@@ -438,7 +496,7 @@ class BybitFutureSubscription(BaseSubscription):
                                     self.publish_event(symbol, orderbook_data, "delta")
                                     
                                     # 메트릭 업데이트
-                                    self._update_metrics(self.exchange_code, start_time, "delta", orderbook_data)
+                                    self._update_metrics("orderbook_processing_time", (time.time() - start_time) * 1000, message_type="delta")
                                 else:
                                     # 스냅샷 없이 델타 수신 로그는 중요하므로 유지
                                     self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")

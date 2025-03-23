@@ -2,16 +2,23 @@
 
 import asyncio
 import time
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict, Any, List, Tuple
 from asyncio import Event
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+import datetime
+from threading import Event
+import logging
 
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.telegrambot.telegram_notification import send_telegram_message
+from crosskimp.system_manager.notification_manager import NotificationType
 from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR, normalize_exchange_code
-from crosskimp.ob_collector.orderbook.util.event_bus import EVENT_TYPES
+from crosskimp.common.events import EventPriority
+from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
+from crosskimp.ob_collector.orderbook.util.event_adapter import get_event_adapter
 from crosskimp.ob_collector.orderbook.util.event_handler import EventHandler, LoggingMixin
+from crosskimp.system_manager.error_manager import get_error_manager, ErrorSeverity, ErrorCategory
+from crosskimp.system_manager.metric_manager import get_metric_manager
 
 # 전역 로거 설정
 logger = get_unified_logger()
@@ -22,7 +29,6 @@ class WebSocketStats:
     message_count: int = 0
     error_count: int = 0
     reconnect_count: int = 0
-    last_message_time: float = 0.0
     last_error_time: float = 0.0
     last_error_message: str = ""
     connection_start_time: float = 0.0
@@ -88,21 +94,22 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
         self.stats = WebSocketStats()
         
         # 이벤트 핸들러 초기화
-        self.event_handler = EventHandler.get_instance(self.exchangename, self.settings)
+        self.event_handler = EventHandler.get_instance(self.exchange_code, self.settings)
         
-        # 이벤트 버스 가져오기 (이벤트 핸들러로부터)
-        self.event_bus = self.event_handler.event_bus
+        # 이벤트 버스 가져오기 (어댑터 사용)
+        self.event_bus = get_event_adapter()
+        
+        # 오류 관리자 가져오기 (추가)
+        self.error_manager = get_error_manager()
+        
+        # 메트릭 관리자 추가
+        self.metric_manager = get_metric_manager()
         
         # 자식 클래스에서 설정해야 하는 변수들
         self.reconnect_strategy = None  # 재연결 전략
         self.message_timeout = None     # 메시지 타임아웃 (초)
-        self.health_check_interval = 5  # 헬스 체크 간격 기본값 (초)
         self.ping_interval = None       # 핑 전송 간격 (초)
         self.ping_timeout = None        # 핑 응답 타임아웃 (초)
-        
-        # 헬스 체크 태스크 변수 추가
-        self.health_check_task = None
-        self._start_health_check_task()
 
     # 속성 관리
     @property
@@ -122,33 +129,33 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
             if value:
                 self.stats.connection_start_time = time.time()
             
-            # 이벤트 핸들러로 연결 상태 변경 이벤트 처리 위임
-            # 외부 처리(로깅, 알림, 이벤트 발행)는 모두 EventHandler가 담당
-            status = "connected" if value else "disconnected"
-            asyncio.create_task(self.event_handler.handle_connection_status(
-                status=status,
-                timestamp=time.time()
-            ))
-
-    def _start_health_check_task(self) -> None:
-        """헬스 체크 태스크 시작"""
-        # 이미 실행 중인 태스크가 있는지 확인
-        if hasattr(self, 'health_check_task') and self.health_check_task and not self.health_check_task.done():
-            # 이미 실행 중인 태스크가 있으면 새로 시작하지 않음
-            self.log_debug("헬스 체크 태스크가 이미 실행 중입니다")
-            return
-            
-        self.health_check_task = asyncio.create_task(self.health_check())
-        self.log_debug("헬스 체크 태스크 시작됨")
-
-    def _should_start_health_check(self) -> bool:
-        """
-        헬스 체크 태스크를 시작해야 하는지 확인
-        
-        Returns:
-            bool: 태스크가 없거나 완료된 경우 True, 실행 중인 경우 False
-        """
-        return not hasattr(self, 'health_check_task') or self.health_check_task is None or self.health_check_task.done()
+            # 연결 상태 변경 이벤트 처리
+            if hasattr(self, 'event_handler') and self.event_handler:
+                # 초기 연결 여부 확인 (disconnected -> connected 상태 변화일 때)
+                initial_connection = prev_status is False and value is True
+                
+                # 비동기 호출이지만 create_task로 백그라운드에서 실행
+                asyncio.create_task(self.event_handler.handle_connection_status(
+                    status="connected" if value else "disconnected",
+                    exchange=self.exchange_code,
+                    timestamp=time.time(),
+                    initial_connection=initial_connection  # 초기 연결 여부 전달
+                ))
+                
+            # 메트릭 업데이트
+            if hasattr(self, 'metric_manager'):
+                self.metric_manager.update_metric(
+                    self.exchange_code,
+                    "websocket_connected",
+                    1 if value else 0
+                )
+                
+            # 연결 상태 메시지 로깅
+            if value:
+                self.log_info(f"웹소켓 연결 성공 ({self.ws_url})")
+            else:
+                # 연결 해제 메시지는 오류가 아닐 수 있음
+                self.log_info(f"웹소켓 연결 해제됨")
 
     # 웹소켓 연결 관리
     @abstractmethod
@@ -159,19 +166,6 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
     async def disconnect(self) -> bool:
         """웹소켓 연결 종료"""
         try:
-            # 헬스 체크 태스크 취소 (완전히 종료되는 경우)
-            local_task = getattr(self, 'health_check_task', None)
-            if local_task and not local_task.done():
-                try:
-                    local_task.cancel()
-                    await asyncio.wait_for(asyncio.shield(local_task), timeout=0.5)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
-                except Exception as e:
-                    self.log_debug(f"태스크 취소 중 예외 발생: {e}")
-                finally:
-                    self.health_check_task = None
-            
             # 웹소켓 연결 종료
             if self.ws:
                 await self.ws.close()
@@ -196,6 +190,14 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
             reconnect_msg = f"웹소켓 재연결 시도"
             self.log_info(reconnect_msg)
             
+            # 메트릭에 재연결 카운트 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "reconnect_count",
+                1,
+                op="increment"
+            )
+            
             # 재연결 이벤트 처리 (이벤트 핸들러 사용)
             await self.event_handler.handle_connection_status(
                 status="reconnecting",
@@ -215,108 +217,186 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
         except Exception as e:
             self.log_error(f"재연결 실패: {str(e)}")
             return False
-    
+
+    async def connect_with_timeout(self, timeout: float = 1.0) -> bool:
+        """
+        시간 제한이 있는 웹소켓 연결
+        
+        여러 거래소가 병렬로 연결될 수 있도록, 지정된 시간 내에 연결을 시도하고
+        시간이 초과되면 백그라운드에서 연결을 계속 시도합니다.
+        
+        Args:
+            timeout: 연결 타임아웃 (초)
+            
+        Returns:
+            bool: 연결 성공 여부 (시간 내에 연결 성공시 True, 아니면 False)
+        """
+        # 이미 연결된 경우 바로 반환
+        if self.is_connected and self.ws:
+            self.log_debug("이미 연결되어 있음")
+            return True
+            
+        # 연결 중인 경우 대기 중임을 알림
+        if self.connecting:
+            self.log_debug(f"이미 연결 시도 중")
+            
+            # 짧은 시간(0.1초) 동안 대기한 후 상태 다시 확인
+            for _ in range(int(timeout * 10)):  # timeout을 0.1초 단위로 나눠서 반복
+                await asyncio.sleep(0.1)
+                if self.is_connected:
+                    return True
+                
+            # 타임아웃 내에 연결 안됨
+            return False
+            
+        # 연결 상태 업데이트
+        self.connecting = True
+        
+        try:
+            # 연결 태스크 생성
+            connect_task = asyncio.create_task(self.connect())
+            
+            try:
+                # 제한 시간 내에 연결 완료 시도
+                await asyncio.wait_for(connect_task, timeout=timeout)
+                return self.is_connected
+            except asyncio.TimeoutError:
+                # 시간 초과되었지만 연결 태스크는 계속 실행
+                self.log_debug(f"연결 시간 초과 ({timeout}초), 백그라운드에서 계속 시도")
+                # 오류 없이 False 반환
+                return False
+            except Exception as e:
+                # 기타 예외 발생 시, 연결 태스크 취소 
+                if not connect_task.done():
+                    connect_task.cancel()
+                self.log_error(f"연결 중 오류 발생: {str(e)}")
+                return False
+        finally:
+            # 연결 상태가 설정되면 connecting 플래그 해제
+            # 별도 태스크로 실행 중인 경우 해당 태스크에서 처리
+            if not self.is_connected:
+                self.connecting = False
+
     async def get_websocket(self):
         """
-        웹소켓 객체 반환 (필요시 자동 연결)
+        현재 웹소켓 인스턴스 반환 (존재하는 경우)
         
         Returns:
-            웹소켓 객체 또는 None (연결 실패 시)
+            WebSocket: 웹소켓 인스턴스 또는 None
         """
-        # 이미 연결된 상태면 현재 웹소켓 반환
-        if self.is_connected and self.ws:
-            return self.ws
-        
-        # 연결 중이면 중복 연결 방지
-        if self.connecting:
-            self.log_debug("이미 연결 시도 중")
-            # 잠시 대기 후 상태 확인 (동시 연결 시도 방지)
-            for _ in range(10):  # 최대 1초 대기
-                await asyncio.sleep(0.1)
-                if self.is_connected and self.ws:
-                    return self.ws
-            # 여전히 연결되지 않았다면 현재 상태 반환 (None일 수 있음)
-            return self.ws
-        
-        # 연결되지 않았다면 자동으로 연결 시도
-        self.log_info("웹소켓 연결이 없어 자동 연결 시도")
-        
-        try:
-            # connect()는 is_connected 속성을 설정하므로 여기서는 설정하지 않음
-            success = await self.connect()
-            return self.ws if success else None
-        except Exception as e:
-            self.log_error(f"자동 연결 중 오류 발생: {str(e)}")
+        if not self.is_connected or not self.ws:
             return None
+        return self.ws
 
-    # 상태 모니터링 (중앙화)
-    async def health_check(self) -> None:
-        """웹소켓 상태 체크 (주기적 모니터링)"""
-        cancel_log_shown = False
-        try:
-            self.log_info("상태 모니터링 시작")
-            
-            while not self.stop_event.is_set():
-                try:
-                    # 연결 상태 확인 로직
-                    current_connection_state = False
-                    
-                    # 웹소켓 객체가 존재하는지 확인
-                    if self.ws:
-                        # 여기서 추가적인 연결 상태 확인 (자식 클래스에서 구현 가능)
-                        current_connection_state = True
-                    
-                    # 상태가 변경되었거나 특정 조건을 만족하면 상태 업데이트
-                    if current_connection_state != self.is_connected:
-                        self.is_connected = current_connection_state
-                    
-                    # 핑 전송 등 추가 상태 체크 로직은 자식 클래스에서 구현
-                    
-                    # 대기
-                    await asyncio.sleep(self.health_check_interval)
-                    
-                except asyncio.CancelledError:
-                    cancel_log_shown = True
-                    raise  # 상위로 전파
-                    
-                except Exception as e:
-                    self.log_error(f"상태 체크 중 오류: {str(e)}")
-                    await asyncio.sleep(1)  # 오류 발생 시 짧게 대기
-                
-        except asyncio.CancelledError:
-            if not cancel_log_shown:
-                self.log_info("상태 모니터링 태스크 취소됨")
-        
-        except Exception as e:
-            self.log_error(f"상태 모니터링 루프 오류: {str(e)}")
-            
-            # 모니터링 태스크가 중단되지 않도록 재시작
-            # 단, 종료 이벤트가 설정되지 않은 경우에만 재시작
-            if not self.stop_event.is_set():
-                asyncio.create_task(self._restart_health_check())
-
-    async def _restart_health_check(self) -> None:
-        """헬스 체크 태스크 재시작 (오류 발생 시)"""
-        try:
-            await asyncio.sleep(1)  # 잠시 대기
-            self._start_health_check_task()
-        except Exception as e:
-            self.log_error(f"헬스 체크 태스크 재시작 실패: {str(e)}")
-
-    # 이벤트 처리는 이벤트 핸들러에 위임
-    async def handle_error(self, error_type: str, message: str, severity: str = "error", **kwargs) -> None:
-        """오류 이벤트 처리 (이벤트 핸들러 사용)"""
-        await self.event_handler.handle_error(error_type, message, severity, **kwargs)
-        
-        # 웹소켓 통계 업데이트 - 오류 카운트 증가
-        self.stats.error_count += 1
-        self.stats.last_error_time = time.time()
-        self.stats.last_error_message = message
-    
     async def handle_message(self, message_type: str, size: int = 0, **kwargs) -> None:
-        """메시지 수신 이벤트 처리 (이벤트 핸들러 사용)"""
-        await self.event_handler.handle_message_received(message_type, size, **kwargs)
+        """
+        메시지 처리 공통 메서드
         
-        # 웹소켓 통계 업데이트
-        self.stats.message_count += 1
-        self.stats.last_message_time = time.time()
+        Args:
+            message_type: 메시지 유형
+            size: 메시지 크기 (바이트)
+            **kwargs: 추가 데이터
+        """
+        try:
+            # 메시지 수신 시간 기록
+            self.last_message_received = time.time()
+            
+            # 내부 통계 업데이트
+            self.stats.message_count += 1
+            
+            # 메트릭 직접 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "message_count",
+                1,
+                op="increment"
+            )
+            
+            # 마지막 메시지 시간 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "last_message_time",
+                time.time()
+            )
+            
+            # 메시지 타입별 카운트
+            if message_type in ["snapshot", "delta"]:
+                self.metric_manager.update_metric(
+                    self.exchange_code,
+                    f"{message_type}_count",
+                    1,
+                    op="increment"
+                )
+            
+            # 이벤트 핸들러를 통해 메시지 수신 이벤트 처리 (로깅 및 이벤트 발행용)
+            # 메트릭 업데이트는 이미 위에서 직접 처리했음
+            await self.event_handler.handle_message_received(
+                message_type=message_type,
+                size=size,
+                **kwargs
+            )
+            
+        except Exception as e:
+            self.log_error(f"메시지 처리 중 예외 발생: {str(e)}")
+
+    async def handle_error(self, error_type: str, message: str, severity: str = "error", **kwargs) -> None:
+        """
+        오류 처리 공통 메서드
+        
+        Args:
+            error_type: 오류 유형
+            message: 오류 메시지
+            severity: 오류 심각도 (error, warning, critical)
+            **kwargs: 추가 데이터
+        """
+        try:
+            # 내부 통계 업데이트
+            self.stats.error_count += 1
+            self.stats.last_error_time = time.time()
+            self.stats.last_error_message = message
+            
+            # 메트릭 직접 업데이트
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "error_count",
+                1,
+                op="increment",
+                error_type=error_type,
+                message=message,
+                severity=severity
+            )
+            
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "last_error_time",
+                time.time()
+            )
+            
+            self.metric_manager.update_metric(
+                self.exchange_code,
+                "last_error_message",
+                message
+            )
+            
+            # 중앙 오류 관리자에 오류 보고
+            exchange_code = kwargs.get('exchange_code', self.exchange_code)
+            await self.error_manager.handle_error(
+                message=message,
+                source=f"connector:{self.exchange_code}",
+                category=ErrorCategory.CONNECTION, 
+                severity=severity,
+                exchange_code=exchange_code,
+                **kwargs
+            )
+            
+            # EventHandler를 통해 오류 이벤트 처리 (로깅 및 알림용)
+            # 메트릭 업데이트는 이미 위에서 직접 처리했음
+            await self.event_handler.handle_error(
+                error_type=error_type,
+                message=message,
+                severity=severity,
+                **kwargs
+            )
+            
+        except Exception as e:
+            self.log_error(f"오류 처리 중 예외 발생: {str(e)}")

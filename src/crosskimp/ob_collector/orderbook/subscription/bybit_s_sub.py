@@ -9,9 +9,11 @@ import asyncio
 import time
 from typing import Dict, List, Optional, Any, Union
 
-from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription, EVENT_TYPES
+from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
+from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 from crosskimp.config.constants_v3 import Exchange
+from crosskimp.system_manager.error_manager import ErrorSeverity, ErrorCategory
 
 # 웹소켓 설정
 WS_URL = "wss://stream.bybit.com/v5/public/spot"  # 웹소켓 URL
@@ -54,6 +56,76 @@ class BybitSubscription(BaseSubscription):
         
         # 각 심볼별 전체 오더북 상태 저장용
         self.orderbooks = {}  # symbol -> {"bids": {...}, "asks": {...}, "timestamp": ..., "sequence": ...}
+    
+    async def _ensure_websocket(self) -> bool:
+        """
+        웹소켓 연결 확보 - 바이빗용 무제한 연결 시도 버전
+        
+        바이빗은 연결이 불안정할 수 있으므로 무제한 재시도를 수행합니다.
+        """
+        # 이미 연결되어 있는지 확인
+        if self.is_connected:
+            # 웹소켓 객체도 확인
+            self.ws = await self.connection.get_websocket()
+            if self.ws:
+                return True
+            else:
+                self.log_warning("연결 상태와 웹소켓 객체 불일치, 연결 재시도")
+        
+        # 연결 시도
+        self.log_info("바이빗 웹소켓 연결 확보 시도 (무제한 재시도)")
+        
+        try:
+            # 최초 연결 시도
+            await self.connection.connect_with_timeout(timeout=0.5)  # 짧은 타임아웃 설정
+            
+            # 무제한 연결 시도 루프
+            retry_count = 0
+            while not self.is_connected and not self.stop_event.is_set():  # 종료 신호 확인 추가
+                retry_count += 1
+                await asyncio.sleep(0.1)  # 0.1초 간격으로 체크
+                
+                # 연결 상태 확인
+                if self.is_connected:
+                    self.log_info(f"바이빗 웹소켓 연결 확인됨 (시도 {retry_count}회)")
+                    break
+                
+                # 프로그램 종료 신호 확인
+                if self.stop_event.is_set():
+                    self.log_info("종료 신호 감지됨, 연결 시도 중단")
+                    return False
+                
+                # 10번마다 로그 출력 (1초마다)
+                if retry_count % 10 == 0:
+                    self.log_info(f"바이빗 웹소켓 연결 대기 중... (시도 {retry_count}회)")
+                
+                # 60번(6초)마다 재연결 시도
+                if retry_count % 60 == 0:
+                    # 종료 신호 다시 확인
+                    if self.stop_event.is_set():
+                        self.log_info("종료 신호 감지됨, 연결 시도 중단")
+                        return False
+                    self.log_info(f"바이빗 웹소켓 재연결 시도 (총 {retry_count}회 시도)")
+                    await self.connection.connect_with_timeout(timeout=0.5)
+            
+            # 종료 신호 확인
+            if self.stop_event.is_set():
+                self.log_info("종료 신호 감지됨, 연결 시도 중단")
+                return False
+                
+            # 웹소켓 객체 가져오기
+            self.ws = await self.connection.get_websocket()
+            
+            if not self.ws:
+                self.log_error("바이빗 웹소켓 객체를 가져올 수 없음 (연결은 완료됨)")
+                return False
+            
+            self.log_info("바이빗 웹소켓 연결 및 객체 확보 완료")
+            return True
+            
+        except Exception as e:
+            self.log_error(f"바이빗 웹소켓 연결 시도 중 오류: {str(e)}")
+            return False
     
     # 3. 구독 처리 단계
     async def create_subscribe_message(self, symbols: List[str]) -> Dict:
@@ -157,7 +229,7 @@ class BybitSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self.event_handler.update_metrics("error_count")
+            self._update_metrics("error_count")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -457,9 +529,4 @@ class BybitSubscription(BaseSubscription):
             error_type="websocket_error",
             message=message,
             severity="error"
-        ))
-
-        # 에러 상태 기록
-        self.error_count += 1
-        self.last_error = message
-        self.last_error_time = time.time() 
+        )) 

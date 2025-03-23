@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "last_updated": "2024-03-19",
-  "description": "크로스킴프 아비트리지 거래 시스템 설정",
+  "description": "크로스 김프 아비트리지 거래 시스템 설정",
   
   "exchanges": {
     "description": "지원하는 거래소별 설정",

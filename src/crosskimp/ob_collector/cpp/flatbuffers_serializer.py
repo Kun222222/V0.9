@@ -16,13 +16,16 @@ from pathlib import Path
 import flatbuffers
 from crosskimp.ob_collector.cpp.flatbuffers.OrderBookData import OrderBook, PriceLevel
 from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import LOG_SUBDIRS
+from crosskimp.config.constants_v3 import LOGS_DIR
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
 # 직렬화 데이터 저장 디렉토리
-SERIALIZED_DATA_DIR = LOG_SUBDIRS['serialized_data']
+SERIALIZED_DATA_DIR = LOGS_DIR / 'orderbook_data'  # 기본 로그 폴더 아래 새 폴더 사용
+
+# 디렉토리 생성
+os.makedirs(SERIALIZED_DATA_DIR, exist_ok=True)
 
 # FlatBuffers 파일 식별자 (4바이트)
 FILE_IDENTIFIER = b'ORDB'
