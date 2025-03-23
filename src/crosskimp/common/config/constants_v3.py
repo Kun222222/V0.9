@@ -6,6 +6,7 @@
 
 import os
 import json
+import configparser
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
@@ -131,7 +132,7 @@ PROJECT_ROOT = get_project_root()
 SRC_DIR = PROJECT_ROOT / 'src'
 LOGS_DIR = PROJECT_ROOT / 'src/logs'
 DATA_DIR = PROJECT_ROOT / 'src/data'
-CONFIG_DIR = PROJECT_ROOT / 'src/crosskimp/config'
+CONFIG_DIR = PROJECT_ROOT / 'src/crosskimp/common/config'
 
 # 로그 하위 디렉토리 경로 설정
 LOG_SUBDIRS = {
@@ -140,7 +141,7 @@ LOG_SUBDIRS = {
 }
 
 # 설정 파일 경로
-SETTINGS_FILE = "settings.json"
+SETTINGS_FILE = "settings.cfg"
 SETTINGS_PATH = os.path.join(CONFIG_DIR, SETTINGS_FILE)
 BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
 
@@ -159,7 +160,7 @@ LOG_MODE = "a"
 
 # 로그 레벨 설정
 DEFAULT_CONSOLE_LEVEL = 20  # INFO
-DEFAULT_FILE_LEVEL = 10     # DEBUG
+DEFAULT_FILE_LEVEL = 20     # INFO로 변경 (기존 10=DEBUG)
 
 # 로그 파일 관리
 LOG_MAX_BYTES = 100 * 1024 * 1024  # 100MB
@@ -219,12 +220,64 @@ def get_settings() -> Dict[str, Any]:
     global _cached_settings
     if _cached_settings is None:
         try:
-            with open(SETTINGS_PATH, 'r', encoding='utf-8') as f:
-                _cached_settings = json.load(f)
+            config = configparser.ConfigParser()
+            config.read(SETTINGS_PATH, encoding='utf-8')
+            
+            # ConfigParser 객체를 딕셔너리로 변환
+            _cached_settings = {}
+            for section in config.sections():
+                if '.' in section:
+                    # 계층 구조 처리 (예: exchanges.binance)
+                    main_section, sub_section = section.split('.', 1)
+                    if main_section not in _cached_settings:
+                        _cached_settings[main_section] = {}
+                    if 'description' in config[section]:
+                        if sub_section not in _cached_settings[main_section]:
+                            _cached_settings[main_section][sub_section] = {}
+                        _cached_settings[main_section][sub_section]['description'] = config[section]['description']
+                    for key, value in config[section].items():
+                        if key != 'description':
+                            if sub_section not in _cached_settings[main_section]:
+                                _cached_settings[main_section][sub_section] = {}
+                            _cached_settings[main_section][sub_section][key] = _parse_config_value(value)
+                else:
+                    # 일반 섹션
+                    _cached_settings[section] = {}
+                    if 'description' in config[section]:
+                        _cached_settings[section]['description'] = config[section]['description']
+                    for key, value in config[section].items():
+                        if key != 'description':
+                            _cached_settings[section][key] = _parse_config_value(value)
+            
         except Exception as e:
             print(f"설정 파일 로드 오류: {e}")
             _cached_settings = {}
     return _cached_settings
+
+def _parse_config_value(value):
+    """설정 값을 적절한 타입으로 변환"""
+    # 불리언 처리
+    if value.lower() in ('true', 'yes', '1'):
+        return True
+    elif value.lower() in ('false', 'no', '0'):
+        return False
+    
+    # 숫자 처리
+    try:
+        # 정수 처리
+        if value.isdigit():
+            return int(value)
+        # 실수 처리
+        return float(value)
+    except (ValueError, TypeError):
+        pass
+    
+    # 리스트 처리 (쉼표로 구분된 값)
+    if ',' in value:
+        return [item.strip() for item in value.split(',')]
+    
+    # 기본적으로 문자열 반환
+    return value
 
 def get_value_from_settings(path: str, default: Any = None) -> Any:
     """설정에서 특정 경로의 값을 반환합니다.

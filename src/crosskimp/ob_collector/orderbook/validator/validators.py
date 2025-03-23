@@ -9,7 +9,7 @@ from typing import List, Dict, Optional, Tuple
 from enum import Enum
 import time
 
-from crosskimp.logger.logger import get_unified_logger
+from crosskimp.common.logger.logger import get_unified_logger
 
 class ValidationError(Enum):
     """검증 오류 유형"""

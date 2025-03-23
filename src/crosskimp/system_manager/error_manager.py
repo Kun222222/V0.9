@@ -13,11 +13,11 @@ import logging
 from typing import Dict, List, Set, Optional, Any, Callable, Union, Tuple
 import traceback
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import LOG_SYSTEM
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import LOG_SYSTEM
 from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes
 from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
-from crosskimp.system_manager.notification_manager import get_notification_manager
+from crosskimp.telegrambot.notification_manager import get_notification_manager
 
 # 로거 설정
 logger = get_unified_logger()

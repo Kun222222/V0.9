@@ -1,7 +1,7 @@
 """
-바이빗 선물 구독 클래스
+바이비트 선물 구독 모듈
 
-이 모듈은 바이빗 선물 거래소의 웹소켓 연결을 통해 오더북 데이터를 구독하는 클래스를 제공합니다.
+바이비트 선물 웹소켓 구독 및 메시지 처리 클래스를 제공합니다.
 """
 
 import asyncio
@@ -10,11 +10,12 @@ import time
 import datetime
 from typing import Dict, List, Optional, Any, Union
 
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import Exchange
+
+from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
-from crosskimp.config.constants_v3 import Exchange
-from crosskimp.system_manager.error_manager import ErrorSeverity, ErrorCategory
 
 # 웹소켓 설정
 WS_URL = "wss://stream.bybit.com/v5/public/linear"  # 웹소켓 URL 
@@ -25,11 +26,14 @@ DEFAULT_DEPTH = 50  # 기본 오더북 깊이
 ENABLE_RAW_LOGGING = True  # raw 데이터 로깅 활성화 여부
 ENABLE_ORDERBOOK_LOGGING = True  # 오더북 데이터 로깅 활성화 여부
 
+# 로거 설정
+logger = get_unified_logger()
+
 class BybitFutureSubscription(BaseSubscription):
     """
-    바이빗 선물 구독 클래스
+    바이비트 선물 구독 클래스
     
-    바이빗 선물 거래소의 웹소켓 연결을 통해 오더북 데이터를 구독하는 클래스입니다.
+    바이비트 선물 거래소의 웹소켓 연결을 통해 오더북 데이터를 구독하는 클래스입니다.
     
     특징:
     - 메시지 형식: 스냅샷 및 델타 업데이트 지원
@@ -60,59 +64,29 @@ class BybitFutureSubscription(BaseSubscription):
 
     async def _ensure_websocket(self) -> bool:
         """
-        웹소켓 연결 확보 - 바이빗 선물용 무제한 연결 시도 버전
+        웹소켓 연결 확보 - 바이비트 선물용 버전
         
-        바이빗 선물은 연결이 불안정할 수 있으므로 무제한 재시도를 수행합니다.
+        부모 클래스의 _ensure_websocket 메서드를 사용하여 연결을 확보합니다.
+        연결 관리는 Connector 클래스에서 전담합니다.
         """
-        # 이미 연결되어 있는지 확인
-        if self.is_connected:
-            # 웹소켓 객체도 확인
-            self.ws = await self.connection.get_websocket()
-            if self.ws:
-                return True
-            else:
-                self.log_warning("연결 상태와 웹소켓 객체 불일치, 연결 재시도")
+        self.log_info("바이비트 선물 웹소켓 연결 확보 시도")
         
-        # 연결 시도
-        self.log_info("바이빗 선물 웹소켓 연결 확보 시도 (무제한 재시도)")
+        # 부모 클래스의 _ensure_websocket 메서드 호출
+        success = await super()._ensure_websocket()
         
-        try:
-            # 최초 연결 시도
-            await self.connection.connect_with_timeout(timeout=0.5)  # 짧은 타임아웃 설정
+        if success:
+            self.log_info("바이비트 선물 웹소켓 연결 확보 완료")
+        else:
+            self.log_error("바이비트 선물 웹소켓 연결 확보 실패")
             
-            # 무제한 연결 시도 루프
-            retry_count = 0
-            while not self.is_connected:
-                retry_count += 1
-                await asyncio.sleep(0.1)  # 0.1초 간격으로 체크
-                
-                # 연결 상태 확인
-                if self.is_connected:
-                    self.log_info(f"바이빗 선물 웹소켓 연결 확인됨 (시도 {retry_count}회)")
-                    break
-                
-                # 10번마다 로그 출력 (1초마다)
-                if retry_count % 10 == 0:
-                    self.log_info(f"바이빗 선물 웹소켓 연결 대기 중... (시도 {retry_count}회)")
-                
-                # 60번(6초)마다 재연결 시도
-                if retry_count % 60 == 0:
-                    self.log_info(f"바이빗 선물 웹소켓 재연결 시도 (총 {retry_count}회 시도)")
-                    await self.connection.connect_with_timeout(timeout=0.5)
-            
-            # 웹소켓 객체 가져오기
-            self.ws = await self.connection.get_websocket()
-            
-            if not self.ws:
-                self.log_error("바이빗 선물 웹소켓 객체를 가져올 수 없음 (연결은 완료됨)")
-                return False
-            
-            self.log_info("바이빗 선물 웹소켓 연결 및 객체 확보 완료")
-            return True
-            
-        except Exception as e:
-            self.log_error(f"바이빗 선물 웹소켓 연결 시도 중 오류: {str(e)}")
-            return False
+            # 이벤트 발행 - 구독 실패 알림
+            await self.publish_system_event(
+                EventTypes.SUBSCRIPTION_FAILURE,
+                exchange_code=self.exchange_code,
+                reason="websocket_connection_failure"
+            )
+        
+        return success
 
     # 3. 구독 처리 단계
     async def create_subscribe_message(self, symbols: List[str]) -> Dict:
@@ -213,7 +187,7 @@ class BybitFutureSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self._update_metrics("error_count")
+            self._update_metrics("error_count", 1, op="increment")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -426,8 +400,9 @@ class BybitFutureSubscription(BaseSubscription):
                                 # 스냅샷 이벤트 발행
                                 self.publish_event(symbol, orderbook_data, "snapshot")
                                 
-                                # 메트릭 업데이트
-                                self._update_metrics("orderbook_processing_time", (time.time() - start_time) * 1000, message_type="snapshot")
+                                # 성능 측정 종료
+                                processing_time_ms = (time.time() - start_time) * 1000
+                                self.log_debug(f"[{symbol}] 스냅샷 처리 완료 (처리 시간: {processing_time_ms:.2f}ms)")
                             
                             elif msg_type == "delta":
                                 # 델타 처리 (기존 오더북 업데이트)
@@ -495,8 +470,9 @@ class BybitFutureSubscription(BaseSubscription):
                                     # 델타 이벤트 발행
                                     self.publish_event(symbol, orderbook_data, "delta")
                                     
-                                    # 메트릭 업데이트
-                                    self._update_metrics("orderbook_processing_time", (time.time() - start_time) * 1000, message_type="delta")
+                                    # 성능 측정 종료
+                                    processing_time_ms = (time.time() - start_time) * 1000
+                                    self.log_debug(f"[{symbol}] 델타 처리 완료 (처리 시간: {processing_time_ms:.2f}ms)")
                                 else:
                                     # 스냅샷 없이 델타 수신 로그는 중요하므로 유지
                                     self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")

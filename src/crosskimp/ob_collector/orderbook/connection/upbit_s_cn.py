@@ -1,16 +1,22 @@
 # file: orderbook/connection/upbit_s_cn.py
 
 import asyncio
-import time
 import json
+import time
 from websockets import connect
-import websockets.exceptions
-from typing import Dict, Optional, Tuple, Any
+import websockets
+import uuid
+from typing import Dict, Optional
 
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import Exchange
+
+from crosskimp.ob_collector.eventbus.types import EventTypes
+from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy
-from crosskimp.config.constants_v3 import Exchange
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
-from crosskimp.ob_collector.orderbook.util.event_adapter import get_event_adapter
+
+# 로거 인스턴스 가져오기
+logger = get_unified_logger()
 
 # ============================
 # 업비트 웹소켓 연결 관련 상수
@@ -78,8 +84,11 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         """
         try:
             self.log_info("🔵 웹소켓 연결 시도")
-            self.connecting = True  # 연결 중 플래그 추가
             self.is_connected = False
+            
+            # 연결 시도 중 상태 업데이트
+            self._update_connection_metric("status", "connecting")
+            
             retry_count = 0
             
             while not self.stop_event.is_set():
@@ -101,19 +110,28 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                     
                     self.log_info("🟢 웹소켓 연결 성공")
                     return True
-                
+                 
                 except asyncio.TimeoutError:
                     retry_count += 1
                     self.log_warning(f"연결 타임아웃 ({retry_count}번째 시도), 재시도...")
+                    
+                    # 오류 메트릭 업데이트
+                    self._update_connection_metric("last_error", "연결 타임아웃")
+                    self._update_connection_metric("last_error_time", time.time())
+                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
                     await asyncio.sleep(delay)
-                    continue
                     
                 except Exception as e:
                     retry_count += 1
                     self.log_warning(f"연결 실패 ({retry_count}번째): {str(e)}")
+                    
+                    # 오류 메트릭 업데이트
+                    self._update_connection_metric("last_error", str(e))
+                    self._update_connection_metric("last_error_time", time.time())
+                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -121,6 +139,11 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                     
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
+            
+            # 오류 메트릭 업데이트
+            self._update_connection_metric("last_error", str(e))
+            self._update_connection_metric("last_error_time", time.time())
+            
             self.is_connected = False
             return False
             

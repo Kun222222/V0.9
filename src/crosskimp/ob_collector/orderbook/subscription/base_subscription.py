@@ -1,22 +1,28 @@
+"""
+거래소 구독 관리 모듈의 기본 클래스
+"""
+
 import asyncio
 import time
+import random
 import json
+import os
+from typing import Dict, List, Any, Optional, Set, Tuple, Union
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List, Any, Union
 import websockets
 import datetime
-import os
 
-from crosskimp.logger.logger import get_unified_logger, create_raw_logger
+from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
+from crosskimp.common.config.constants_v3 import EXCHANGE_NAMES_KR, LOG_SUBDIRS, normalize_exchange_code
+from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
+
+from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority
+from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus, EventHandler, LoggingMixin, get_event_handler
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
-from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR, LOG_SUBDIRS, normalize_exchange_code
-from crosskimp.common.events import EventPriority
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
-from crosskimp.ob_collector.orderbook.util.event_adapter import get_event_adapter
-from crosskimp.ob_collector.orderbook.util.event_handler import EventHandler, LoggingMixin
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
-from crosskimp.system_manager.metric_manager import get_metric_manager
-from crosskimp.system_manager.error_manager import get_error_manager, ErrorSeverity, ErrorCategory
+
+# 로거 설정
+logger = get_unified_logger()
 
 class BaseSubscription(ABC, LoggingMixin):
     def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None):
@@ -30,14 +36,11 @@ class BaseSubscription(ABC, LoggingMixin):
         
         # 웹소켓 및 이벤트 관련 초기화
         self.ws = None
-        self.event_handler = EventHandler.get_instance(self.exchange_code, connection.settings)
-        self.event_bus = get_event_adapter()
+        self.event_handler = get_event_handler(self.exchange_code, connection.settings)
+        self.event_bus = get_orderbook_event_bus()
         
-        # 오류 관리자 초기화
-        self.error_manager = get_error_manager()
-        
-        # 중앙 메트릭 관리자 가져오기
-        self.metric_manager = get_metric_manager()
+        # 시스템 이벤트 버스 가져오기
+        self.sys_event_bus = self._get_sys_event_bus()
         
         # 구독 및 태스크 관리
         self.subscribed_symbols = {}
@@ -53,7 +56,7 @@ class BaseSubscription(ABC, LoggingMixin):
         self._count_update_interval = 1.0
         self._start_metric_update_task()
         
-        # 로깅 및 검증 관련 설정
+        # 메시지 로깅 및 검증 관련 설정
         self.raw_logging_enabled = False
         self.orderbook_logging_enabled = False
         self.raw_logger = None
@@ -64,7 +67,6 @@ class BaseSubscription(ABC, LoggingMixin):
         # 상태 추적 변수들
         self.message_count = {}
         self.last_sequence = {}
-        self.processing_times = []
         self.orderbooks = {}
         self.last_timestamps = {}
         self.output_depth = 10
@@ -121,24 +123,19 @@ class BaseSubscription(ABC, LoggingMixin):
             # 연결 요청. 타임아웃은 2초로 설정 (더 넉넉하게)
             connection_started = await self.connection.connect_with_timeout(timeout=2.0)
             
-            # 연결 완료 대기 (최대 30초)
+            # 연결 완료 대기
             retry_count = 0
-            max_retries = 60  # 30초로 늘림 (0.5초 * 60)
-            while not self.is_connected and retry_count < max_retries:
+            max_retries = 0  # 0으로 설정하면 무제한 대기
+            while not self.is_connected and (max_retries == 0 or retry_count < max_retries):
                 retry_count += 1
                 await asyncio.sleep(0.5)  # 0.5초씩 대기
                 
-                # 웹소켓 연결 상태 확인
-                if self.is_connected:
-                    self.log_info(f"웹소켓 연결 확인됨 (시도 {retry_count}회)")
-                    break
-                
                 # 로그 메시지는 4번째마다 출력 (2초마다)
                 if retry_count % 4 == 0:
-                    self.log_debug(f"웹소켓 연결 대기 중... ({retry_count}/{max_retries})")
+                    self.log_debug(f"웹소켓 연결 대기 중... ({retry_count}회)")
             
-            # 재시도 후에도 연결 안 됨
-            if not self.is_connected and retry_count >= max_retries:
+            # 재시도 후에도 연결 안 됨 (max_retries가 0이 아닌 경우에만)
+            if max_retries > 0 and not self.is_connected and retry_count >= max_retries:
                 self.log_error(f"웹소켓 연결 타임아웃 ({max_retries * 0.5}초)")
                 return False
                 
@@ -374,22 +371,16 @@ class BaseSubscription(ABC, LoggingMixin):
             # 로우 메시지 로깅 (설정된 경우)
             self.log_raw_message(message)
             
-            # ===== 중요: connection의 handle_message 호출 (메트릭 일원화) =====
             # 메시지 수신 정보를 connector에 전달하여 last_message_time을 일관되게 유지
             if self.connection:
                 await self.connection.handle_message("websocket", len(message))
             
             # 메시지 카운트 증가 및 메트릭 업데이트
-            message_size = len(message)
             self._message_count += 1  # 로컬 카운트 증가 (메트릭 태스크에서 사용)
-            self._update_message_metrics(1, message_size)  # 중앙 메트릭 관리자 업데이트
+            self._update_message_metrics(1)  # 중앙 메트릭 관리자 업데이트
             
             # 메시지 디코딩 및 처리
             # 이 부분은 각 구독 클래스에서 구현해야 함
-            
-            # 처리 시간 계산 및 메트릭 업데이트
-            processing_time = (time.time() - start_time) * 1000  # 밀리초 단위
-            self._update_metrics("processing_time", processing_time)
             
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
@@ -441,15 +432,8 @@ class BaseSubscription(ABC, LoggingMixin):
         """오류 처리"""
         self.log_error(f"{symbol} 오류: {error}")
         
-        # 중앙 오류 관리자 및 메트릭 업데이트
-        self.metric_manager.update_metric(
-            self.exchange_code,
-            "error_count",
-            1,
-            op="increment",
-            error_type="subscription_error",
-            message=error
-        )
+        # 오류 카운트 메트릭 업데이트
+        self._update_metrics("error_count", 1, op="increment", error_type="subscription_error", message=error)
             
         asyncio.create_task(self.event_handler.handle_error(
             error_type="subscription_error",
@@ -466,91 +450,106 @@ class BaseSubscription(ABC, LoggingMixin):
             value: 메트릭 값
             data: 추가 데이터 (딕셔너리)
         """
+        # 허용된 메트릭 목록
+        allowed_metrics = [
+            "message_count", 
+            "error_count", 
+            "subscription_count", 
+            "last_message_time", 
+            "message_rate"
+        ]
+        
         try:
-            kwargs = {}
-            if data:
-                kwargs.update(data)
+            # 허용된 메트릭만 업데이트
+            if metric_name in allowed_metrics:
+                metric_data = {
+                    "exchange_code": self.exchange_code,
+                    "metric_name": metric_name,
+                    "value": value
+                }
                 
-            # 메트릭 관리자에 직접 업데이트
-            self.metric_manager.update_metric(
-                self.exchange_code,
-                metric_name,
-                value,
-                **kwargs
-            )
+                # 추가 데이터가 있으면 병합
+                if data:
+                    metric_data.update(data)
+                
+                # 시스템 이벤트 버스로 메트릭 업데이트 이벤트 발행
+                await self.sys_event_bus.publish(
+                    EventType.STATUS_UPDATE,
+                    metric_data
+                )
         except Exception as e:
             self.log_error(f"메트릭 업데이트 처리 중 오류: {str(e)}")
 
     def _update_metrics(self, metric_name: str, value: float = 1.0, **kwargs) -> None:
         """
-        메트릭 업데이트 (중앙 메트릭 관리자 사용)
+        메트릭 업데이트 (이벤트 버스 사용)
+        
+        허용된 메트릭:
+        - message_count: 수신한 총 메시지 수
+        - error_count: 발생한 오류 수
+        - subscription_count: 구독 중인 심볼 수
+        - last_message_time: 마지막 메시지 수신 시간
+        - message_rate: 초당 메시지 수
         
         Args:
             metric_name: 메트릭 이름
             value: 메트릭 값
             **kwargs: 추가 데이터
         """
+        # 허용된 메트릭 목록
+        allowed_metrics = [
+            "message_count", 
+            "error_count", 
+            "subscription_count", 
+            "last_message_time", 
+            "message_rate"
+        ]
+        
         try:
-            # 메트릭 관리자에 직접 업데이트
-            self.metric_manager.update_metric(
-                self.exchange_code,
-                metric_name,
-                value,
-                **kwargs
-            )
+            # 허용된 메트릭이면 업데이트
+            if metric_name in allowed_metrics:
+                # 비동기 함수가 아니므로 새 태스크로 처리
+                metric_data = {
+                    "exchange_code": self.exchange_code,
+                    "metric_name": metric_name,
+                    "value": value
+                }
+                
+                # 추가 데이터가 있으면 병합
+                if kwargs:
+                    metric_data.update(kwargs)
+                
+                # 새 태스크로 전송 (비동기 함수를 동기 함수에서 호출)
+                asyncio.create_task(self.sys_event_bus.publish(
+                    EventType.STATUS_UPDATE,
+                    metric_data
+                ))
         except Exception as e:
             self.log_error(f"메트릭 업데이트 중 오류: {str(e)}")
     
-    def _update_message_metrics(self, msg_count: int = 1, message_size: int = None) -> None:
+    def _update_message_metrics(self, msg_count: int = 1) -> None:
         """
         메시지 관련 메트릭 업데이트
         
-        중앙 메트릭 관리자를 사용합니다.
+        이벤트 버스를 통해 메트릭 업데이트
         
         Args:
             msg_count: 메시지 개수
-            message_size: 메시지 크기 (바이트)
         """
         try:
             # 메시지 카운트 증가
-            self.metric_manager.update_metric(
-                self.exchange_code,
-                "message_count",
-                msg_count,
-                op="increment"
-            )
+            self._update_metrics("message_count", msg_count, op="increment")
             
             # 마지막 메시지 시간 업데이트
-            self.metric_manager.update_metric(
-                self.exchange_code,
-                "last_message_time",
-                time.time()
-            )
+            self._update_metrics("last_message_time", time.time())
         except Exception as e:
             self.log_error(f"메시지 메트릭 업데이트 중 오류: {str(e)}")
     
-    def increment_message_count(self, n: int = 1) -> None:
-        """
-        메시지 카운트 증가 (중앙 메트릭 관리자 사용)
-        
-        Args:
-            n: 증가시킬 값
-        """
+    def increment_message_count(self) -> None:
+        """메시지 카운트 증가"""
         try:
-            # 메시지 카운트 업데이트
-            self.metric_manager.update_metric(
-                self.exchange_code,
-                "message_count",
-                n,
-                op="increment"
-            )
-            
-            # 마지막 메시지 시간 업데이트
-            self.metric_manager.update_metric(
-                self.exchange_code,
-                "last_message_time",
-                time.time()
-            )
+            self._message_count += 1
+            self._update_message_metrics(1)
         except Exception as e:
             self.log_error(f"메시지 카운트 증가 중 오류: {str(e)}")
     
@@ -558,11 +557,11 @@ class BaseSubscription(ABC, LoggingMixin):
         """오더북 이벤트 발행"""
         try:
             if event_type == "snapshot":
-                bus_event_type = OrderbookEventTypes.SNAPSHOT_RECEIVED
+                bus_event_type = EventTypes.SNAPSHOT_RECEIVED
             elif event_type == "delta":
-                bus_event_type = OrderbookEventTypes.DELTA_RECEIVED
+                bus_event_type = EventTypes.DELTA_RECEIVED
             elif event_type == "error":
-                bus_event_type = OrderbookEventTypes.ERROR_EVENT
+                bus_event_type = EventTypes.ERROR_EVENT
             else:
                 self.log_warning(f"알 수 없는 이벤트 타입: {event_type}")
                 return
@@ -652,14 +651,7 @@ class BaseSubscription(ABC, LoggingMixin):
             self.log_error(f"구독 취소 중 오류 발생: {e}")
             
             # 오류 메트릭 업데이트
-            self.metric_manager.update_metric(
-                self.exchange_code,
-                "error_count",
-                1,
-                op="increment",
-                error_type="unsubscribe_error",
-                error_message=str(e)
-            )
+            self._update_metrics("error_count", 1, op="increment", error_type="unsubscribe_error", error_message=str(e))
             
             if hasattr(self, 'event_handler') and self.event_handler is not None:
                 try:
@@ -682,7 +674,7 @@ class BaseSubscription(ABC, LoggingMixin):
         self.orderbooks.pop(symbol, None)
         
         # 메트릭 초기화 - 심볼별 메트릭 초기화
-        self.metric_manager.reset_metrics(f"{self.exchange_code}.{symbol}")
+        self._update_metrics("subscription_count", -1, op="decrement")
     
     async def _publish_subscription_status_event(self, symbols: List[str], status: str) -> None:
         """
@@ -713,7 +705,7 @@ class BaseSubscription(ABC, LoggingMixin):
         """
         메트릭 업데이트 태스크 시작
         
-        중앙 메트릭 관리자를 활용하여 주기적으로 메시지 속도 메트릭을 업데이트합니다.
+        주기적으로 메시지 속도 메트릭을 업데이트합니다.
         """
         try:
             async def update_metrics():
@@ -738,11 +730,16 @@ class BaseSubscription(ABC, LoggingMixin):
                             
                             # 메시지 속도 메트릭 업데이트
                             if count_diff > 0:
-                                self.metric_manager.update_metric(
-                                    self.exchange_code,
+                                self._update_metrics(
                                     "message_rate",
                                     messages_per_second
                                 )
+                            
+                            # 구독 중인 심볼 수 메트릭 추가
+                            self._update_metrics(
+                                "subscription_count",
+                                len(self.subscribed_symbols)
+                            )
                             
                             # 상태 업데이트
                             self._prev_message_count = self._message_count
@@ -761,4 +758,17 @@ class BaseSubscription(ABC, LoggingMixin):
         except RuntimeError:
             # 이벤트 루프가 실행 중이 아닌 경우
             self.log_debug("이벤트 루프가 실행 중이 아니므로 메트릭 업데이트 태스크를 시작할 수 없습니다.")
+
+    def _get_sys_event_bus(self) -> SimpleEventBus:
+        """
+        시스템 이벤트 버스 인스턴스 반환
+        
+        Note:
+            크로스킴프 시스템 전체에서 사용하는 간소화된 이벤트 버스 반환
+        
+        Returns:
+            SimpleEventBus: 글로벌 이벤트 버스 인스턴스
+        """
+        from crosskimp.common.events import get_event_bus
+        return get_event_bus()
 

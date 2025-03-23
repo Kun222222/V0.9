@@ -1,289 +1,281 @@
 """
-크로스 김프 시스템 컨트롤 타워 - 모든 서비스의 시작/중지 및 모니터링을 담당합니다.
+시스템 진입점 모듈
+
+이 모듈은 시스템의 메인 진입점으로, 필요한 모든 구성 요소를 초기화하고 
+이벤트 버스, 오케스트레이터, 텔레그램 커맨더 등을 설정합니다.
+시스템 종료 시 모든 구성 요소가 안전하게 종료되도록 처리합니다.
 """
 
-import os
-import sys
 import asyncio
-import argparse
-import logging
 import signal
-from typing import Dict, List, Optional, Any
-
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import LOG_SYSTEM
-from crosskimp.common.events import (
-    initialize_event_system, 
-    shutdown_event_system, 
-    EventTypes, 
-    Component,
-    publish_system_event
-)
+import sys
+import logging
+import time
+from datetime import datetime
+import traceback
 
 # 로거 설정
-logger = get_unified_logger()
+from crosskimp.common.logger.logger import initialize_logging, get_unified_logger
 
-# 시스템 상태
-system_running = False
+# 인프라 레이어
+from crosskimp.common.events import get_event_bus
+from crosskimp.common.events.sys_event_bus import EventType
 
-# 메인 컨트롤러 클래스
-class CrossKimpController:
-    """크로스 김프 시스템 통합 컨트롤러"""
-    
-    def __init__(self):
-        """컨트롤러를 초기화합니다."""
-        self.bot_manager = None
-        self.system_monitor = None
-        
-        # 실행 중인 작업 추적
-        self.tasks = []
-        
-        logger.info(f"{LOG_SYSTEM} 크로스 김프 컨트롤러 초기화됨")
-    
-    async def initialize(self) -> None:
-        """모든 서브시스템을 초기화합니다."""
-        # 이벤트 시스템 초기화를 가장 먼저 실행
-        await initialize_event_system()
-        logger.info(f"{LOG_SYSTEM} 이벤트 시스템 초기화 완료")
-        
-        # 프로세스 관리자 초기화
-        from crosskimp.system_manager.process_manager import initialize as init_process_manager
-        await init_process_manager()
-        logger.info(f"{LOG_SYSTEM} 프로세스 관리자 초기화 완료")
-        
-        # 텔레그램 봇 초기화
-        from crosskimp.telegrambot import get_bot_manager
-        self.bot_manager = get_bot_manager()
-        logger.info(f"{LOG_SYSTEM} 텔레그램 봇 초기화 완료")
-        
-        # 시스템 모니터링 초기화
-        from crosskimp.telegrambot.monitoring import SystemMonitor
-        self.system_monitor = SystemMonitor(self.bot_manager.notification_service)
-        logger.info(f"{LOG_SYSTEM} 시스템 모니터링 초기화 완료")
-        
-        logger.info(f"{LOG_SYSTEM} 모든 서브시스템 초기화 완료")
-    
-    async def start(self) -> None:
-        """시스템을 시작합니다."""
-        global system_running
-        
-        if system_running:
-            logger.warning(f"{LOG_SYSTEM} 시스템이 이미 실행 중입니다.")
-            return
-        
-        logger.info(f"{LOG_SYSTEM} 크로스 김프 시스템 시작 중...")
-        
-        try:
-            # 텔레그램 봇 시작
-            await self.bot_manager.start()
-            
-            # 시스템 모니터링 시작
-            monitor_task = asyncio.create_task(self.system_monitor.start(interval=300))
-            self.tasks.append(monitor_task)
-            
-            # 자동 재시작 설정
-            from crosskimp.system_manager.process_manager import set_auto_restart
-            # ob_collector에 대해 자동 재시작 활성화, radar는 비활성화
-            set_auto_restart("ob_collector", True)
-            set_auto_restart("radar", False)
-            logger.info(f"{LOG_SYSTEM} 프로세스 자동 재시작 설정 완료")
-            
-            # 일일 작업 스케줄링
-            await self._schedule_daily_tasks()
-            
-            # 프로세스 상태 주기적 업데이트 작업
-            from crosskimp.system_manager.process_manager import publish_status_event
-            status_update_task = asyncio.create_task(self._periodic_status_update(publish_status_event))
-            self.tasks.append(status_update_task)
-            
-            system_running = True
-            logger.info(f"{LOG_SYSTEM} 크로스 김프 시스템이 실행 중입니다.")
-            
-            # 시스템 시작 이벤트 발행
-            await publish_system_event(EventTypes.SYSTEM_STARTUP, {
-                "message": "크로스 김프 시스템이 시작되었습니다."
-            })
-            
-            # 모든 프로세스 자동 시작 (옵션과 상관없이 항상 시작)
-            await self.start_all_processes()
-            
-        except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 시스템 시작 중 오류 발생: {str(e)}")
-            await self.stop()
-    
-    async def stop(self) -> None:
-        """시스템을 중지합니다."""
-        global system_running
-        
-        if not system_running:
-            logger.warning(f"{LOG_SYSTEM} 시스템이 실행 중이지 않습니다.")
-            return
-        
-        logger.info(f"{LOG_SYSTEM} 크로스 김프 시스템 종료 중...")
-        
-        try:
-            # 시스템 종료 이벤트 발행
-            await publish_system_event(EventTypes.SYSTEM_SHUTDOWN, {
-                "message": "크로스 김프 시스템이 종료됩니다."
-            })
-            
-            # 모든 작업 취소
-            for task in self.tasks:
-                if not task.done():
-                    task.cancel()
-            
-            # 시스템 모니터링 중지
-            if self.system_monitor:
-                await self.system_monitor.stop()
-            
-            # 텔레그램 봇 중지
-            if self.bot_manager:
-                await self.bot_manager.stop()
-            
-            # 실행 중인 모든 프로세스 중지
-            from crosskimp.system_manager.process_manager import get_process_status, stop_process
-            status = await get_process_status()
-            for name, info in status.items():
-                if info["running"]:
-                    logger.info(f"{LOG_SYSTEM} 프로세스 {name} 종료 중...")
-                    await stop_process(name)
-            
-            # 이벤트 시스템 종료
-            await shutdown_event_system()
-            
-            system_running = False
-            logger.info(f"{LOG_SYSTEM} 크로스 김프 시스템이 정상적으로 종료되었습니다.")
-            
-        except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 시스템 종료 중 오류 발생: {str(e)}")
-            system_running = False
-    
-    async def _schedule_daily_tasks(self) -> None:
-        """일일 작업을 스케줄링합니다."""
-        try:
-            from crosskimp.system_manager.scheduler import schedule_daily_restart, schedule_task, calculate_next_time
-            
-            # ob_collector 자정 재시작
-            await schedule_daily_restart("ob_collector", 0, 0)
-            logger.info(f"{LOG_SYSTEM} ob_collector 00:00 자동 재시작 예약됨")
-            
-            # radar 00:05 재시작 (자원 부하 분산)
-            await schedule_daily_restart("radar", 0, 5)
-            logger.info(f"{LOG_SYSTEM} radar 00:05 자동 재시작 예약됨")
-            
-            # 오전 9시 일일 보고서
-            report_time = calculate_next_time(9, 0, 0)
-            await schedule_task(
-                "daily_report",
-                report_time,
-                self.system_monitor.send_daily_report
-            )
-            logger.info(f"{LOG_SYSTEM} 일일 보고서 09:00 예약됨")
-            
-        except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 일일 작업 스케줄링 중 오류: {str(e)}")
-    
-    async def _periodic_status_update(self, publish_status_fn, interval: int = 60) -> None:
-        """
-        주기적으로 프로세스 상태를 업데이트합니다.
-        
-        Args:
-            publish_status_fn: 상태 발행 함수
-            interval: 업데이트 간격 (초)
-        """
-        while True:
-            try:
-                await publish_status_fn()
-            except Exception as e:
-                logger.error(f"{LOG_SYSTEM} 상태 업데이트 중 오류: {str(e)}")
-            
-            await asyncio.sleep(interval)
-    
-    async def start_all_processes(self) -> None:
-        """모든 프로세스를 시작합니다."""
-        logger.info(f"{LOG_SYSTEM} 모든 프로세스 시작 중...")
-        
-        # 필요할 때 import
-        from crosskimp.system_manager.process_manager import start_process
-        
-        # ob_collector 시작
-        logger.info(f"{LOG_SYSTEM} ob_collector 시작 중...")
-        await start_process("ob_collector")
-        
-        # 약간의 지연 후 radar 시작
-        await asyncio.sleep(5)
-        logger.info(f"{LOG_SYSTEM} radar 시작 중...")
-        await start_process("radar")
-        
-        logger.info(f"{LOG_SYSTEM} 모든 프로세스가 시작되었습니다.")
+# 서비스 레이어
+from crosskimp.services.orchestrator import get_orchestrator
+from crosskimp.services.telegram_commander import get_telegram_commander
 
-# 시그널 핸들러
-async def signal_handler(controller: CrossKimpController) -> None:
-    """
-    시그널 핸들러 함수
-    
-    Args:
-        controller: 컨트롤러 인스턴스
-    """
-    await controller.stop()
-    logger.info(f"{LOG_SYSTEM} 프로그램 종료")
+# 애플리케이션 레이어 (필요에 따라 추가)
+from crosskimp.ob_collector import get_orderbook_manager
 
-# CLI 인자 파서
-def parse_arguments():
+# 글로벌 변수
+_logger = None
+_shutdown_event = None
+_is_shutting_down = False
+
+async def init_system():
     """
-    명령행 인자를 파싱합니다.
+    시스템 초기화
     
-    Returns:
-        argparse.Namespace: 파싱된 인자
+    - 이벤트 버스 초기화
+    - 오케스트레이터 초기화
+    - 텔레그램 커맨더 초기화
+    - 모든 구성 요소 연결
     """
-    parser = argparse.ArgumentParser(description="크로스 김프 시스템 컨트롤러")
+    global _shutdown_event
     
-    parser.add_argument(
-        "--autostart",
-        action="store_true",
-        help="시작 시 모든 프로세스 자동 시작"
+    # 종료 이벤트 생성
+    _shutdown_event = asyncio.Event()
+    
+    try:
+        # 이벤트 버스 초기화 (인프라 레이어)
+        event_bus = get_event_bus()
+        await event_bus.initialize()
+        _logger.info("이벤트 버스가 초기화되었습니다.")
+        
+        # 텔레그램 커맨더 초기화
+        telegram_commander = get_telegram_commander()
+        await telegram_commander.initialize()
+        _logger.info("텔레그램 커맨더가 초기화되었습니다.")
+        
+        # 오케스트레이터 초기화
+        orchestrator = get_orchestrator()
+        await orchestrator.initialize()
+        _logger.info("오케스트레이터가 초기화되었습니다.")
+        
+        # 오더북 관리자 오케스트레이터에 등록 (객체만 전달)
+        orderbook_manager = get_orderbook_manager()
+        await orchestrator.register_process(
+            "ob_collector",           # 프로세스 이름
+            orderbook_manager,        # 객체만 전달 (start, run, initialize 등의 메서드를 자동 탐색)
+            description="오더북 수집기" # 설명
+        )
+        _logger.info("오더북 수집기가 등록되었습니다.")
+        
+        # 초기 시작이 필요한 프로세스 시작
+        await orchestrator.start_process("ob_collector", "시스템 시작 시 자동 시작")
+        
+        # 시스템 시작 로깅 (알림 제거)
+        _logger.info("🚀 크로스킴프 시스템이 시작되었습니다.")
+        
+        _logger.info("========== 시스템 초기화 완료 ==========")
+        return True
+        
+    except Exception as e:
+        _logger.error(f"시스템 초기화 중 오류 발생: {str(e)}")
+        _logger.error(traceback.format_exc())
+        
+        # 시작 실패 로깅 (알림 제거)
+        _logger.error(f"🚨 크로스킴프 시스템 시작 실패! 오류: {str(e)}")
+            
+        return False
+
+async def shutdown_system():
+    """
+    시스템 종료
+    
+    모든 구성 요소를 안전하게 종료합니다.
+    """
+    global _is_shutting_down
+    
+    # 이미 종료 중이면 중복 실행 방지
+    if _is_shutting_down:
+        return
+        
+    _is_shutting_down = True
+    
+    if _logger:
+        _logger.info("========== 시스템 종료 시작 ==========")
+    else:
+        print("========== 시스템 종료 시작 ==========")
+    
+    try:
+        # 시스템 종료 로깅 (알림 제거)
+        if _logger:
+            _logger.info("🔄 크로스킴프 시스템이 종료 중입니다...")
+        else:
+            print("🔄 크로스킴프 시스템이 종료 중입니다...")
+            
+        # 오케스트레이터 종료 (모든 프로세스 종료)
+        orchestrator = get_orchestrator()
+        if orchestrator.is_initialized():
+            await orchestrator.shutdown()
+            if _logger:
+                _logger.info("오케스트레이터가 종료되었습니다.")
+            else:
+                print("오케스트레이터가 종료되었습니다.")
+        
+        # 텔레그램 커맨더 종료
+        telegram_commander = get_telegram_commander()
+        if telegram_commander.is_initialized():
+            await telegram_commander.shutdown()
+            if _logger:
+                _logger.info("텔레그램 커맨더가 종료되었습니다.")
+            else:
+                print("텔레그램 커맨더가 종료되었습니다.")
+        
+        # 이벤트 버스 종료 (마지막에 종료)
+        event_bus = get_event_bus()
+        await event_bus.stop()
+        if _logger:
+            _logger.info("이벤트 버스가 종료되었습니다.")
+        else:
+            print("이벤트 버스가 종료되었습니다.")
+        
+    except Exception as e:
+        if _logger:
+            _logger.error(f"시스템 종료 중 오류 발생: {str(e)}")
+        else:
+            print(f"시스템 종료 중 오류 발생: {str(e)}")
+    
+    # 종료 완료 로깅
+    if _logger:
+        _logger.info("========== 시스템 종료 완료 ==========")
+    else:
+        print("========== 시스템 종료 완료 ==========")
+        
+    # 종료 이벤트 설정
+    if _shutdown_event:
+        _shutdown_event.set()
+
+def setup_signal_handlers():
+    """
+    시스템 신호 핸들러 설정
+    
+    SIGINT, SIGTERM 등의 신호를 처리하여 안전한 종료를 보장합니다.
+    """
+    loop = asyncio.get_event_loop()
+    
+    # SIGINT (Ctrl+C) 처리
+    loop.add_signal_handler(
+        signal.SIGINT,
+        lambda: asyncio.create_task(handle_termination_signal("SIGINT"))
     )
     
-    return parser.parse_args()
+    # SIGTERM 처리
+    loop.add_signal_handler(
+        signal.SIGTERM,
+        lambda: asyncio.create_task(handle_termination_signal("SIGTERM"))
+    )
+    
+    _logger.info("시스템 신호 핸들러가 설정되었습니다.")
 
-# 메인 함수
-async def main() -> None:
-    """메인 함수"""
-    # 인자 파싱
-    args = parse_arguments()
+async def handle_termination_signal(signal_name):
+    """
+    종료 신호 처리
     
-    # 컨트롤러 초기화
-    controller = CrossKimpController()
-    await controller.initialize()
-    
-    # 시그널 핸들러 등록
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(
-            sig,
-            lambda: asyncio.create_task(signal_handler(controller))
-        )
+    Args:
+        signal_name: 신호 이름
+    """
+    _logger.info(f"{signal_name} 신호를 수신했습니다. 시스템을 종료합니다...")
+    await shutdown_system()
+
+async def run_forever():
+    """
+    시스템을 계속 실행하면서 종료 신호를 대기합니다.
+    """
+    # 종료 이벤트가 설정될 때까지 대기
+    await _shutdown_event.wait()
+    _logger.info("메인 루프가 종료됩니다.")
+
+async def main_async():
+    """
+    비동기 메인 함수
+    """
+    global _logger
     
     try:
-        # 컨트롤러 시작 (이제 내부에서 모든 프로세스를 자동으로 시작합니다)
-        await controller.start()
+        # 로깅 설정 (여기서 먼저 초기화)
+        initialize_logging()
+        _logger = get_unified_logger()
+        _logger.info("========== 시스템 시작 ==========")
         
-        # 프로그램이 종료되지 않도록 대기
-        while system_running:
-            await asyncio.sleep(1)
-            
+        # 신호 핸들러 설정
+        setup_signal_handlers()
+        
+        # 시스템 초기화
+        init_success = await init_system()
+        if not init_success:
+            _logger.error("시스템 초기화 실패로 종료합니다.")
+            return 1
+        
+        # 메인 루프 실행
+        await run_forever()
+        
+        return 0
+        
     except Exception as e:
-        logger.error(f"{LOG_SYSTEM} 예기치 않은 오류: {str(e)}")
+        if _logger:
+            _logger.critical(f"치명적인 오류 발생: {str(e)}")
+            _logger.critical(traceback.format_exc())
+        else:
+            print(f"치명적인 오류 발생: {str(e)}")
+            print(traceback.format_exc())
+        return 1
     finally:
-        # 안전하게 종료
-        await controller.stop()
+        # 안전장치: 종료가 호출되지 않았다면 호출
+        if not _is_shutting_down:
+            await shutdown_system()
 
-# 프로그램 진입점
-if __name__ == "__main__":
+def main():
+    """
+    시스템 메인 진입점
+    """
+    exit_code = 0
+    
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n프로그램이 사용자에 의해 중단되었습니다.")
+        # 이벤트 루프 생성 및 메인 함수 실행
+        loop = asyncio.get_event_loop()
+        exit_code = loop.run_until_complete(main_async())
+        
     except Exception as e:
-        print(f"심각한 오류: {str(e)}")
-        sys.exit(1) 
+        print(f"치명적인 오류 발생: {str(e)}")
+        print(traceback.format_exc())
+        exit_code = 1
+        
+    finally:
+        # 이벤트 루프 종료
+        try:
+            pending_tasks = asyncio.all_tasks(loop)
+            if pending_tasks:
+                # 남은 태스크 취소
+                for task in pending_tasks:
+                    task.cancel()
+                
+                # 모든 태스크가 종료될 때까지 대기
+                loop.run_until_complete(
+                    asyncio.gather(*pending_tasks, return_exceptions=True)
+                )
+                
+            # 이벤트 루프 종료
+            loop.close()
+            
+        except Exception as e:
+            print(f"이벤트 루프 종료 중 오류: {str(e)}")
+    
+    # 종료 코드 반환
+    sys.exit(exit_code)
+
+# 스크립트로 직접 실행 시 메인 함수 호출
+if __name__ == "__main__":
+    main()

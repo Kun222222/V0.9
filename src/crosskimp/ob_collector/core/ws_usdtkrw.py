@@ -4,8 +4,8 @@ import websockets
 from typing import Dict, Callable
 import time
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 
 # 웹소켓 URL 정의
 WEBSOCKET_URLS = {

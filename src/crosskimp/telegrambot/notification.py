@@ -7,8 +7,8 @@ import logging
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import LOG_TELEGRAM
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import LOG_TELEGRAM
 
 # 새 이벤트 시스템 임포트로 변경
 from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes, TelegramEventTypes

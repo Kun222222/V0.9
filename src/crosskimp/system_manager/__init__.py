@@ -10,7 +10,7 @@ from crosskimp.system_manager.process_manager import (
     PROCESS_INFO
 )
 
-from crosskimp.system_manager.scheduler import (
+from crosskimp.system_manager.sys_scheduler import (
     calculate_next_midnight,
     calculate_next_time,
     format_remaining_time,
@@ -28,11 +28,6 @@ from crosskimp.system_manager.metric_manager import (
 from crosskimp.system_manager.status_manager import (
     StatusManager,
     get_status_manager
-)
-
-from crosskimp.system_manager.notification_manager import (
-    NotificationManager,
-    get_notification_manager
 )
 
 __all__ = [
@@ -59,8 +54,4 @@ __all__ = [
     # 상태 관리
     'StatusManager',
     'get_status_manager',
-    
-    # 알림 관리
-    'NotificationManager',
-    'get_notification_manager'
 ]

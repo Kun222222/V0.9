@@ -8,9 +8,9 @@ import time
 import asyncio
 from typing import Dict, Any, Optional, Callable
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.ob_collector.cpp.shared_memory_manager import get_shared_memory_manager
-from crosskimp.ob_collector.cpp.flatbuffers_serializer import get_orderbook_serializer
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.ob_collector._disable_cpp.shared_memory_manager import get_shared_memory_manager
+from crosskimp.ob_collector._disable_cpp.flatbuffers_serializer import get_orderbook_serializer
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

@@ -5,8 +5,8 @@
 """
 
 from typing import Optional, Dict, Any, Type
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
 
 # 기본 클래스 임포트
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector

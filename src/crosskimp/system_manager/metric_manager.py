@@ -12,9 +12,8 @@ from typing import Dict, List, Any, Optional, Set, Union, Tuple
 from collections import defaultdict
 import logging
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR, LOG_SYSTEM
-from crosskimp.system_manager.notification_manager import get_notification_manager
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import EXCHANGE_NAMES_KR, LOG_SYSTEM
 
 # 로거 설정
 logger = get_unified_logger()
@@ -394,38 +393,22 @@ class MetricManager:
     
     async def _send_alert(self, alert_type: str, message: str) -> None:
         """
-        알림 메시지 전송 (NotificationManager 활용)
+        알림 전송
         
         Args:
-            alert_type: 알림 유형
+            alert_type: 알림 유형 (warning, error, info 등)
             message: 알림 메시지
         """
         try:
-            # 알림 관리자 인스턴스 가져오기
-            notification_manager = get_notification_manager()
-            
-            # 알림 유형 결정
-            notification_type = "METRIC"
-            
-            # 알림 키 생성
-            key = f"metric_alert:{alert_type}:{hash(message)}"
-            
-            # 메타데이터 설정
-            metadata = {
-                "alert_type": alert_type,
-                "source_module": "metric_manager"
-            }
-            
-            # 알림 관리자를 통해 알림 전송
-            await notification_manager.send_notification(
-                message=message,
-                notification_type=notification_type,
-                source="metric_manager",
-                key=key,
-                metadata=metadata
-            )
+            # 텔레그램 알림 대신 로깅으로 대체
+            if alert_type == "warning":
+                logger.warning(f"[메트릭 알림] {message}")
+            elif alert_type == "error":
+                logger.error(f"[메트릭 알림] {message}")
+            else:
+                logger.info(f"[메트릭 알림] {message}")
         except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 알림 전송 중 오류: {str(e)}")
+            logger.error(f"메트릭 알림 전송 중 오류: {str(e)}")
     
     async def _summary_loop(self) -> None:
         """메트릭 요약 루프 - 주기적으로 요약 정보 출력"""

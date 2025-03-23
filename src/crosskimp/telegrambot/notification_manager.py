@@ -12,8 +12,9 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Union, List, Callable
 import logging
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.telegrambot import get_bot_manager
+from crosskimp.common.logger.logger import get_unified_logger
+# 순환 참조 해결을 위해 지연 임포트
+# from crosskimp.telegrambot import get_bot_manager
 from crosskimp.common.events import get_component_event_bus, Component, EventTypes
 
 # NotificationType 정의 (문자열 리터럴 사용)
@@ -110,7 +111,8 @@ class NotificationManager:
         if self.is_initialized:
             return
             
-        # 텔레그램 봇 매니저 가져오기
+        # 텔레그램 봇 매니저 가져오기 - 순환 참조 해결을 위해 지연 임포트
+        from crosskimp.telegrambot import get_bot_manager
         bot_manager = get_bot_manager()
         # 봇 시작은 main.py에서 처리
         

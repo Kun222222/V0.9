@@ -15,8 +15,8 @@ from typing import Dict, List, Set, Callable, Any, Optional, Pattern
 from collections import defaultdict
 from functools import partial
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.common.events.types import EventPriority, EventTypes, DEFAULT_PRIORITY
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.events._legacy.types import EventPriority, EventTypes, DEFAULT_PRIORITY
 
 # 로거 설정
 logger = get_unified_logger()

@@ -1,0 +1,252 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2024-03-19",
+  "description": "크로스 김프 아비트리지 거래 시스템 설정",
+  
+  "exchanges": {
+    "description": "지원하는 거래소별 설정",
+    "binance": {
+      "description": "바이낸스 현물 거래소 설정",
+      "maker_fee": 0.1,
+      "taker_fee": 0.1,
+      "min_order_usdt": 10,
+      "max_order_usdt": 100000
+    },
+    "bybit": {
+      "description": "바이빗 현물 거래소 설정",
+      "maker_fee": 0.1,
+      "taker_fee": 0.1,
+      "min_order_usdt": 10,
+      "max_order_usdt": 10000
+    },
+    "upbit": {
+      "description": "업비트 현물 거래소 설정",
+      "maker_fee": 0.05,
+      "taker_fee": 0.05,
+      "min_order_krw": 5000,
+      "max_order_krw": 100000000
+    },
+    "bithumb": {
+      "description": "빗썸 현물 거래소 설정",
+      "maker_fee": 0.037,
+      "taker_fee": 0.037,
+      "min_order_krw": 5000,
+      "max_order_krw": 100000000
+    },
+    "binance_future": {
+      "description": "바이낸스 선물 거래소 설정",
+      "maker_fee": 0.05,
+      "taker_fee": 0.05,
+      "max_leverage": 5,
+      "default_leverage": 1
+    },
+    "bybit_future": {
+      "description": "바이빗 선물 거래소 설정",
+      "maker_fee": 0.055,
+      "taker_fee": 0.055,
+      "max_leverage": 5,
+      "default_leverage": 1
+    }
+  },
+  
+  "trading": {
+    "description": "거래 및 아비트리지 전략 설정",
+    "settings": {
+      "description": "기본 거래 설정",
+      "base_order_amount_krw": {
+        "description": "기본 주문 금액 (KRW)",
+        "value": 10000000
+      },
+      "min_volume_krw": {
+        "description": "최소 거래량 기준 (KRW)",
+        "value": 10000000000
+      },
+      "interval_sec": {
+        "description": "거래 갱신 주기 (초)",
+        "value": 1
+      },
+      "max_open_positions": {
+        "description": "최대 동시 오픈 포지션 수",
+        "value": 5
+      },
+      "max_daily_trades": {
+        "description": "일일 최대 거래 횟수",
+        "value": 100
+      },
+      "max_daily_loss_krw": {
+        "description": "일일 최대 손실 한도 (KRW)",
+        "value": 5000000
+      },
+      "min_profit_threshold_krw": {
+        "description": "최소 수익 임계값 (KRW)",
+        "value": 50000
+      },
+      "price_precision": {
+        "description": "가격 소수점 자릿수",
+        "value": 0
+      },
+      "amount_precision": {
+        "description": "수량 소수점 자릿수",
+        "value": 4
+      },
+      
+      "min_price_krw": {
+        "description": "최소 코인 가격 필터 (KRW)",
+        "value": 1000
+      },
+      "max_price_krw": {
+        "description": "최대 코인 가격 필터 (KRW)",
+        "value": 100000000
+      },
+      "min_daily_volume_krw": {
+        "description": "최소 일일 거래량 필터 (KRW)",
+        "value": 1000000000
+      },
+      "min_market_cap_krw": {
+        "description": "최소 시가총액 필터 (KRW)",
+        "value": 100000000000
+      },
+      "max_spread_pct": {
+        "description": "최대 허용 스프레드 비율 (%)",
+        "value": 1
+      },
+      "min_orderbook_depth_krw": {
+        "description": "최소 오더북 깊이 필터 (KRW)",
+        "value": 500000000
+      },
+      
+      "volume_surge_threshold": {
+        "description": "거래량 급증 감지 임계값 (배수)",
+        "value": 3
+      },
+      "price_change_threshold_pct": {
+        "description": "급격한 가격 변동 임계값 (%)",
+        "value": 5
+      },
+      "max_slippage_pct": {
+        "description": "최대 허용 슬리피지 비율 (%)",
+        "value": 1
+      },
+      "order_timeout_sec": {
+        "description": "주문 타임아웃 시간 (초)",
+        "value": 30
+      },
+      "partial_fill_timeout_sec": {
+        "description": "부분 체결 타임아웃 시간 (초)",
+        "value": 60
+      },
+      "min_fill_rate_pct": {
+        "description": "최소 체결률 요구사항 (%)",
+        "value": 90
+      }
+    },
+    
+    "symbols": {
+      "description": "코인 심볼 필터링 설정",
+      "excluded": {
+        "description": "제외할 코인 심볼 목록",
+        "value": [
+          "MOVE", "SUSHI", "MORPHO", "MOCA", "LDO", "BTC",
+          "LEVER", "AIOZ", "RSS3", "ETH", "LSK"
+        ]
+      },
+      "included": {
+        "description": "항상 포함할 코인 심볼 목록",
+        "value": [
+          "SOL", "AVAX"
+        ]
+      },
+      "excluded_patterns": {
+        "description": "제외할 정규표현식 패턴 목록",
+        "value": [
+          "^LEVERAGE", "TEST$", "IEO"
+        ]
+      }
+    }
+  },
+  
+  "monitoring": {
+    "description": "모니터링 및 로깅 설정",
+    "port": {
+      "description": "모니터링 웹 서버 포트",
+      "value": 8000
+    },
+    "host": {
+      "description": "모니터링 웹 서버 호스트",
+      "value": "localhost"
+    },
+    "update_interval_ms": {
+      "description": "데이터 갱신 주기 (밀리초)",
+      "value": 1000
+    },
+    "debug_logging": {
+      "description": "디버그 로깅 활성화 여부",
+      "value": true
+    },
+    "metrics": {
+      "description": "수집할 메트릭 종류 설정",
+      "system": {
+        "description": "시스템 메트릭 수집 여부",
+        "value": true
+      },
+      "network": {
+        "description": "네트워크 메트릭 수집 여부",
+        "value": true
+      },
+      "websocket": {
+        "description": "웹소켓 메트릭 수집 여부",
+        "value": true
+      }
+    }
+  },
+  
+  "notifications": {
+    "description": "알림 설정",
+    "telegram": {
+      "description": "텔레그램 알림 설정",
+      "enabled": {
+        "description": "텔레그램 알림 활성화 여부",
+        "value": true
+      },
+      "alert_types": {
+        "description": "전송할 알림 유형 목록",
+        "value": [
+          "error",
+          "trade",
+          "profit"
+        ]
+      }
+    }
+  },
+  
+  "database": {
+    "description": "데이터베이스 설정",
+    "enabled": {
+      "description": "데이터베이스 사용 여부",
+      "value": false
+    },
+    "type": {
+      "description": "데이터베이스 유형",
+      "value": "sqlite"
+    },
+    "path": {
+      "description": "데이터베이스 파일 경로",
+      "value": "data/trading.db"
+    },
+    "tables": {
+      "description": "테이블별 저장 설정",
+      "trades": {
+        "description": "거래 내역 저장 여부",
+        "value": true
+      },
+      "orderbooks": {
+        "description": "오더북 데이터 저장 여부",
+        "value": false
+      },
+      "balances": {
+        "description": "잔고 데이터 저장 여부",
+        "value": true
+      }
+    }
+  }
+}

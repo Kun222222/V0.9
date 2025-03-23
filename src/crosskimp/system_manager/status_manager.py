@@ -12,8 +12,8 @@ import logging
 from typing import Dict, List, Optional, Any, Tuple, Set
 from datetime import datetime
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import LOG_SYSTEM, EXCHANGE_NAMES_KR
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import LOG_SYSTEM, EXCHANGE_NAMES_KR
 
 from crosskimp.common.events import get_component_event_bus, Component
 from crosskimp.common.events.domains.status import StatusEventTypes

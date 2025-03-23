@@ -7,11 +7,12 @@ from typing import Dict, List, Optional, Any
 import websockets
 from websockets import connect
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import Exchange
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import Exchange
+
+from crosskimp.ob_collector.eventbus.types import EventTypes
+from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy, WebSocketStats
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
-from crosskimp.ob_collector.orderbook.util.event_adapter import get_event_adapter
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -84,6 +85,9 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
             self.is_connected = False
             retry_count = 0
             
+            # 연결 시도 중 상태 업데이트
+            self._update_connection_metric("status", "connecting")
+            
             while not self.stop_event.is_set():
                 try:
                     # 바이낸스 웹소켓 프로토콜 요구사항에 맞게 설정:
@@ -110,6 +114,11 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
                 except asyncio.TimeoutError:
                     retry_count += 1
                     self.log_warning(f"연결 타임아웃 ({retry_count}번째 시도), 재시도...")
+                    
+                    # 오류 메트릭 업데이트
+                    self._update_connection_metric("last_error", "연결 타임아웃")
+                    self._update_connection_metric("last_error_time", time.time())
+                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -119,6 +128,11 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
                 except Exception as e:
                     retry_count += 1
                     self.log_warning(f"연결 실패 ({retry_count}번째): {str(e)}")
+                    
+                    # 오류 메트릭 업데이트
+                    self._update_connection_metric("last_error", str(e))
+                    self._update_connection_metric("last_error_time", time.time())
+                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -126,6 +140,11 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
                     
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
+            
+            # 오류 메트릭 업데이트
+            self._update_connection_metric("last_error", str(e))
+            self._update_connection_metric("last_error_time", time.time())
+            
             self.is_connected = False
             return False
         finally:
@@ -154,7 +173,17 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
             
         except json.JSONDecodeError:
             self.log_error(f"JSON 디코딩 실패: {message[:100]}")
+            
+            # 오류 메트릭 업데이트
+            self._update_connection_metric("last_error", "JSON 디코딩 실패")
+            self._update_connection_metric("last_error_time", time.time())
+            
             return None
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
+            
+            # 오류 메트릭 업데이트
+            self._update_connection_metric("last_error", f"메시지 처리 오류: {str(e)}")
+            self._update_connection_metric("last_error_time", time.time())
+            
             return None 

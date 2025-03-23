@@ -1,26 +1,22 @@
 """
 바이낸스 현물 구독 클래스
 
-이 모듈은 바이낸스 현물 거래소의 웹소켓 구독을 담당하는 클래스를 제공합니다.
-바이낸스 공식 API 문서를 기반으로 구현되었으며, 오더북 데이터의 정합성을 유지하는 방법을 포함합니다.
-
-참고 문서:
-- https://developers.binance.com/docs/binance-spot-api-docs/web-socket-api
-- https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md
+바이낸스 현물 거래소의 웹소켓 연결 및 데이터 구독을 담당하는 클래스입니다.
 """
 
 import json
 import asyncio
-import time
-import datetime
-from typing import Dict, List, Optional, Any, Union
 import aiohttp
+import datetime
+import time
+from typing import Dict, List, Optional, Union, Any
 
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import Exchange
+
+from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
-from crosskimp.config.constants_v3 import Exchange
-from crosskimp.system_manager.error_manager import ErrorSeverity, ErrorCategory
 
 # 바이낸스 현물 웹소켓 및 REST API 설정
 WS_URL = "wss://stream.binance.com:9443/ws"  # 웹소켓 URL (포트 9443 명시)
@@ -205,7 +201,7 @@ class BinanceSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self._update_metrics("error_count")
+            self._update_metrics("error_count", 1, op="increment")
             return False
 
     # 4. 스냅샷 요청 및 처리
@@ -551,27 +547,11 @@ class BinanceSubscription(BaseSubscription):
             if self.orderbook_logging_enabled:
                 self.log_orderbook_data(symbol, updated_data)
             
-            # 메트릭 업데이트
-            await self.handle_metric_update(
-                metric_name="message_processed",
-                value=1,
-                data={
-                    "exchange": self.exchange_name,
-                    "symbol": symbol,
-                    "message_type": "delta"
-                }
-            )
-            
             # 이벤트 발행 (델타)
             self.publish_event(symbol, updated_data, "delta")
             
         except Exception as e:
             self.log_error(f"[{symbol}] 델타 처리 중 오류: {str(e)}")
-            await self.event_handler.handle_error(
-                error_type="message_processing_error",
-                message=f"델타 처리 실패: {str(e)}",
-                symbol=symbol
-            )
 
     async def _on_message(self, message: str) -> None:
         """

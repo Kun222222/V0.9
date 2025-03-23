@@ -22,7 +22,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Dict, Optional, List, Union, Any
 
 # paths.py 대신 constants_v3.py에서 모든 경로 관련 상수와 함수 임포트
-from crosskimp.config.constants_v3 import (
+from crosskimp.common.config.constants_v3 import (
     LOG_SYSTEM, LOG_FORMAT, DEBUG_LOG_FORMAT, LOG_ENCODING, LOG_MODE,
     DEFAULT_CONSOLE_LEVEL, DEFAULT_FILE_LEVEL, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
     LOG_CLEANUP_DAYS, PROJECT_ROOT, LOGS_DIR, LOG_SUBDIRS
@@ -373,7 +373,7 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
     logger_name = f"{exchange_name}_raw_logger"
     
     # 한글 거래소 이름 사용 
-    from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR
+    from crosskimp.common.config.constants_v3 import EXCHANGE_NAMES_KR
     exchange_name_kr = EXCHANGE_NAMES_KR.get(exchange_name, f"[{exchange_name}]")
     
     # 하위 폴더 생성하지 않고 raw_data 디렉토리에 직접 로깅

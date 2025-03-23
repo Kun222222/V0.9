@@ -10,11 +10,11 @@ import datetime
 import time
 from typing import Dict, List, Optional, Union, Any
 
+from crosskimp.common.config.constants_v3 import Exchange
+
+from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
-from crosskimp.config.constants_v3 import Exchange
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
-from crosskimp.system_manager.error_manager import ErrorSeverity, ErrorCategory
 
 # 빗썸 REST API 및 웹소켓 관련 설정
 WS_URL = "wss://ws-api.bithumb.com/websocket/v1"  # 웹소켓 URL
@@ -157,7 +157,7 @@ class BithumbSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 실패: {str(e)}")
-            self._update_metrics("error_count")
+            self._update_metrics("error_count", 1, op="increment")
             return False
 
     # 4. 메시지 수신 및 처리 단계
@@ -333,7 +333,7 @@ class BithumbSubscription(BaseSubscription):
             
             # 메트릭 업데이트 - 오더북 메시지 처리 및 처리 시간
             processing_time_ms = (time.time() - start_time) * 1000
-            self._update_metrics("orderbook_processing_time", processing_time_ms, message_type="snapshot" if is_snapshot else "delta")
+            self.log_debug(f"[{symbol}] 오더북 처리 완료 (처리 시간: {processing_time_ms:.2f}ms)")
             
             return result
             
@@ -369,13 +369,13 @@ class BithumbSubscription(BaseSubscription):
                             # 메트릭 업데이트
                             if result.is_valid:
                                 processing_time_ms = (time.time() - start_time) * 1000
-                                self._update_metrics("orderbook_processing_time", processing_time_ms, message_type="snapshot")
+                                self.log_debug(f"[{symbol}] 스냅샷 처리 완료 (처리 시간: {processing_time_ms:.2f}ms)")
                         else:
                             result = await self.validator.update(symbol, parsed_data)
                             # 메트릭 업데이트
                             if result.is_valid:
                                 processing_time_ms = (time.time() - start_time) * 1000
-                                self._update_metrics("orderbook_processing_time", processing_time_ms, message_type="delta")
+                                self.log_debug(f"[{symbol}] 델타 처리 완료 (처리 시간: {processing_time_ms:.2f}ms)")
                     except Exception as val_error:
                         # 구체적인 검증 오류 메시지
                         self.log_error(f"{symbol} 오더북 검증 처리 중 오류: {str(val_error)}")
@@ -410,11 +410,10 @@ class BithumbSubscription(BaseSubscription):
                     
             # 스냅샷 처리 완료 이벤트 발행
             asyncio.create_task(self.event_handler.handle_data_event(
-                event_type=OrderbookEventTypes.ORDERBOOK_UPDATED,
+                event_type=EventTypes.ORDERBOOK_UPDATED,
                 symbol=symbol,
                 data={
-                    "msg_type": parsed_data.get("type", "unknown"),
-                    "processing_time": time.time() - start_time
+                    "msg_type": parsed_data.get("type", "unknown")
                 }
             ))
             

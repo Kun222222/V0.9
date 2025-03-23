@@ -9,8 +9,8 @@ import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 
-from crosskimp.logger.logger import get_unified_logger
-from crosskimp.config.constants_v3 import LOG_SYSTEM, LOG_TELEGRAM
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import LOG_SYSTEM, LOG_TELEGRAM
 from crosskimp.system_manager.process_manager import get_process_status
 
 # 기존 이벤트 버스 임포트 제거

@@ -7,13 +7,15 @@ import signal
 import sys
 import shutil
 
-from crosskimp.logger.logger import get_unified_logger
+from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.constants_v3 import LOG_SYSTEM, EXCHANGE_NAMES_KR, get_settings
+from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
+
+from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus, EventHandler, get_event_handler
+from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority
 from crosskimp.ob_collector.core.aggregator import Aggregator
-from crosskimp.config.constants_v3 import LOG_SYSTEM, EXCHANGE_NAMES_KR, get_settings
-from crosskimp.ob_collector.orderbook.order_manager import create_order_manager
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.system_manager.metric_manager import MetricManager, get_metric_manager
-from crosskimp.common.events import get_component_event_bus, Component, EventTypes
+from crosskimp.ob_collector.orderbook.order_manager import create_order_manager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
@@ -31,6 +33,8 @@ else:
 
 # 이벤트 버스 인스턴스 가져오기
 event_bus = None
+# 시스템 이벤트 버스 인스턴스 추가
+sys_event_bus = None
 
 class OrderbookCollector:
     """
@@ -53,23 +57,39 @@ class OrderbookCollector:
         self.stop_event = asyncio.Event()
         self.usdtkrw_monitor = None  # USDT/KRW 모니터링 객체
         
-        # 중앙 메트릭 관리자 가져오기
-        self.metric_manager = get_metric_manager()
+        # 중앙 메트릭 관리자 대신 시스템 이벤트 버스 사용
+        self.sys_event_bus = SimpleEventBus()
         
-        # 초기 메트릭 설정
-        self.metric_manager.update_metric("system", "init_time", time.time())
-        self.metric_manager.update_metric("system", "collector_status", "initializing")
+        # 내부 이벤트 버스 초기화
+        self.event_bus = get_orderbook_event_bus()
+        
+        # 초기 시스템 메트릭 이벤트 발행
+        self._update_system_metric("init_time", time.time())
+        self._update_system_metric("collector_status", "initializing")
         
         # 환경 정보 메트릭 설정
         env = "production" if os.getenv("CROSSKIMP_ENV") == "production" else "development"
-        self.metric_manager.update_metric("system", "environment", env)
-        self.metric_manager.update_metric("system", "python_version", sys.version.split()[0])
+        self._update_system_metric("environment", env)
+        self._update_system_metric("python_version", sys.version.split()[0])
         
         # 독립 실행 모드에서만 시그널 핸들러 설정
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
         logger.info(f"{LOG_SYSTEM} 오더북 수집기 초기화 완료")
+    
+    def _update_system_metric(self, metric_name, value):
+        """시스템 메트릭을 이벤트 버스를 통해 업데이트"""
+        if self.sys_event_bus:
+            asyncio.create_task(self.sys_event_bus.publish(
+                EventType.STATUS_UPDATE, 
+                {
+                    "component": "orderbook",
+                    "metric": f"system.{metric_name}",
+                    "value": value,
+                    "timestamp": time.time()
+                }
+            ))
     
     def _signal_handler(self, sig, frame):
         """시그널 핸들러"""
@@ -95,13 +115,17 @@ class OrderbookCollector:
                 await self.usdtkrw_monitor.stop()
                 logger.info(f"{LOG_SYSTEM} USDT/KRW 가격 모니터링 종료")
                 
-            # 중앙 메트릭 관리자 종료
-            await self.metric_manager.stop()
-            logger.info(f"{LOG_SYSTEM} 중앙 메트릭 관리자 종료됨")
+            # 시스템 종료 메트릭 업데이트
+            self._update_system_metric("collector_status", "stopped")
+            self._update_system_metric("stop_time", time.time())
+            
+            # 시스템 이벤트 버스 정리 (비동기 함수이므로 await 필요)
+            if self.sys_event_bus and hasattr(self.sys_event_bus, 'stop'):
+                await self.sys_event_bus.stop()
             
             # 프로그램 종료 이벤트 발행
-            if event_bus:
-                await event_bus.publish(EventTypes.SYSTEM_EVENT, {
+            if self.event_bus:
+                await self.event_bus.publish(EventTypes.SYSTEM_SHUTDOWN, {
                     "type": "orderbook_shutdown",
                     "message": "오더북 수집기가 종료되었습니다",
                     "timestamp": time.time()
@@ -119,17 +143,18 @@ class OrderbookCollector:
     async def run(self):
         """실행"""
         try:
-            # 독립 실행 모드에서만 중앙 메트릭 관리자 시작
-            await self.metric_manager.start()
-            logger.info(f"{LOG_SYSTEM} 중앙 메트릭 관리자 시작됨")
+            # 시스템 이벤트 버스 시작
+            if self.sys_event_bus and hasattr(self.sys_event_bus, 'start'):
+                await self.sys_event_bus.start()
+                logger.info(f"{LOG_SYSTEM} 시스템 이벤트 버스 시작됨")
             
             # 기본 시스템 메트릭 초기화
-            self.metric_manager.update_metric("system", "startup_time", time.time())
-            self.metric_manager.update_metric("system", "collector_status", "starting")
+            self._update_system_metric("startup_time", time.time())
+            self._update_system_metric("collector_status", "starting")
             
             # 프로그램 시작 이벤트 발행
-            if event_bus:
-                await event_bus.publish(EventTypes.SYSTEM_EVENT, {
+            if self.event_bus:
+                await self.event_bus.publish(EventTypes.SYSTEM_STARTUP, {
                     "type": "orderbook_startup",
                     "message": "오더북 수집기가 시작되었습니다",
                     "timestamp": time.time(),
@@ -148,8 +173,8 @@ class OrderbookCollector:
             
             if not filtered_data:
                 logger.error(f"{LOG_SYSTEM} 필터링된 심볼이 없습니다.")
-                self.metric_manager.update_metric("system", "collector_status", "error")
-                self.metric_manager.update_metric("system", "error_reason", "no_filtered_symbols")
+                self._update_system_metric("collector_status", "error")
+                self._update_system_metric("error_reason", "no_filtered_symbols")
                 return
             
             # 필터링 결과 로그 출력
@@ -158,15 +183,13 @@ class OrderbookCollector:
                 log_msg += f"\n{EXCHANGE_NAMES_KR[exchange_code]} - {len(symbols)}개: {', '.join(symbols[:5])}"
                 if len(symbols) > 5:
                     log_msg += f" 외 {len(symbols)-5}개"
-                # 거래소별 심볼 수 메트릭 업데이트
-                self.metric_manager.update_metric(exchange_code, "filtered_symbols_count", len(symbols))
             logger.info(log_msg)
             
             # OrderManager 초기화 및 시작
             await self._start_order_managers(filtered_data)
             
             # 시스템 상태 업데이트 - 정상 실행 중
-            self.metric_manager.update_metric("system", "collector_status", "running")
+            self._update_system_metric("collector_status", "running")
             
             # 종료 이벤트 대기 - 독립 실행 모드에서만 직접 안내
             logger.info(f"{LOG_SYSTEM} 프로그램을 종료하려면 Ctrl+C를 누르세요")
@@ -176,8 +199,8 @@ class OrderbookCollector:
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 실행 중 오류 발생: {str(e)}")
             # 오류 상태 기록
-            self.metric_manager.update_metric("system", "collector_status", "error")
-            self.metric_manager.update_metric("system", "error_reason", str(e))
+            self._update_system_metric("collector_status", "error")
+            self._update_system_metric("error_reason", str(e))
             
             await self._stop_order_managers()
             
@@ -185,8 +208,9 @@ class OrderbookCollector:
             if self.usdtkrw_monitor:
                 await self.usdtkrw_monitor.stop()
                 
-            # 독립 실행 모드에서만 중앙 메트릭 관리자 종료
-            await self.metric_manager.stop()
+            # 시스템 이벤트 버스 정리
+            if self.sys_event_bus and hasattr(self.sys_event_bus, 'stop'):
+                await self.sys_event_bus.stop()
     
     async def _start_order_managers(self, filtered_data):
         """
@@ -240,21 +264,17 @@ class OrderbookCollector:
     
     async def _stop_order_managers(self):
         """OrderManager 종료"""
-        from crosskimp.ob_collector.orderbook.util.event_handler import EventHandler
-        
         # 시스템 상태 업데이트
-        self.metric_manager.update_metric("system", "collector_status", "stopping")
+        self._update_system_metric("collector_status", "stopping")
         
         # 먼저 모든 이벤트 핸들러에 종료 상태 설정
         for exchange_code in list(EventHandler._instances.keys()):
             try:
-                event_handler = EventHandler._instances.get(exchange_code)
+                event_handler = get_event_handler(exchange_code)
                 if event_handler:
                     try:
                         # 종료 상태 설정
                         event_handler.set_shutting_down()
-                        # 거래소 종료 상태 메트릭 업데이트 - 직접 메트릭 관리자 사용
-                        self.metric_manager.update_metric(exchange_code, "connection_status", "disconnecting")
                     except AttributeError:
                         logger.warning(f"{EXCHANGE_NAMES_KR[exchange_code]} set_shutting_down 메서드 없음")
                     except Exception as e:
@@ -277,26 +297,21 @@ class OrderbookCollector:
         for exchange, manager in self.order_managers.items():
             try:
                 await manager.stop()
-                # 거래소 종료 완료 메트릭 업데이트 - 직접 메트릭 관리자 사용
-                self.metric_manager.update_metric(exchange, "connection_status", "disconnected")
                 logger.info(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 중지 완료")
             except Exception as e:
                 logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 중지 중 오류: {str(e)}", exc_info=True)
-                # 오류 메트릭 업데이트 - 직접 메트릭 관리자 사용
-                self.metric_manager.update_metric(exchange, "error_count", 1, 
-                    op="increment", error_type="stop_error", error_message=str(e))
         
         self.order_managers.clear()
         
         # 시스템 상태 최종 업데이트
-        self.metric_manager.update_metric("system", "collector_status", "stopped")
-        self.metric_manager.update_metric("system", "stop_time", time.time())
+        self._update_system_metric("collector_status", "stopped")
+        self._update_system_metric("stop_time", time.time())
         
         logger.info(f"{LOG_SYSTEM} 오더북 수집기 중지 완료")
 
 async def async_main():
     """비동기 메인 함수"""
-    global event_bus
+    global event_bus, sys_event_bus
     
     try:
         # 설정 로드
@@ -320,14 +335,20 @@ async def async_main():
         except Exception as e:
             print(f"로그 폴더 초기화 중 오류 발생: {str(e)}")
         
-        # 중앙 메트릭 관리자 초기화 및 시작
-        metric_manager = get_metric_manager()
-        await metric_manager.start()
-        logger.info(f"{LOG_SYSTEM} 중앙 메트릭 관리자 초기화 및 시작 완료")
+        # 시스템 이벤트 버스 초기화 및 시작
+        sys_event_bus = SimpleEventBus()
+        await sys_event_bus.start()
+        logger.info(f"{LOG_SYSTEM} 시스템 이벤트 버스 초기화 및 시작 완료")
         
         # 이벤트 버스 초기화
         try:
-            event_bus = get_component_event_bus(Component.ORDERBOOK)
+            # 내부 이벤트 버스 사용으로 변경
+            event_bus = get_orderbook_event_bus()
+            
+            # 이벤트 버스가 실행 중이 아니면 시작
+            if hasattr(event_bus, 'is_running') and not event_bus.is_running:
+                asyncio.create_task(event_bus.start())
+            
             logger.info(f"{LOG_SYSTEM} 이벤트 버스 초기화 완료")
         except Exception as e:
             logger.warning(f"{LOG_SYSTEM} 이벤트 버스 초기화 실패, 이벤트 발행 기능이 동작하지 않습니다: {str(e)}")
@@ -344,10 +365,21 @@ async def async_main():
         
     finally:
         try:
-            # 중앙 메트릭 관리자 종료
-            metric_manager = get_metric_manager()
-            await metric_manager.stop()
-            logger.info(f"{LOG_SYSTEM} 중앙 메트릭 관리자 종료 완료")
+            # 시스템 이벤트 버스 종료
+            if sys_event_bus:
+                try:
+                    await sys_event_bus.stop()
+                    logger.info(f"{LOG_SYSTEM} 시스템 이벤트 버스 종료 완료")
+                except Exception as e:
+                    logger.error(f"{LOG_SYSTEM} 시스템 이벤트 버스 종료 중 오류: {str(e)}")
+            
+            # 내부 이벤트 버스 종료
+            if event_bus:
+                try:
+                    await event_bus.stop()
+                    logger.info(f"{LOG_SYSTEM} 이벤트 버스 종료 완료")
+                except Exception as e:
+                    logger.error(f"{LOG_SYSTEM} 이벤트 버스 종료 중 오류: {str(e)}")
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 메인 함수 종료 처리 중 오류: {str(e)}")
 

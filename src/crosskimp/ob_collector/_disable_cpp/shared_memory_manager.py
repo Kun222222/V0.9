@@ -12,7 +12,7 @@ import threading
 import posix_ipc
 from typing import Dict, Optional, Tuple, Any
 
-from crosskimp.logger.logger import get_unified_logger
+from crosskimp.common.logger.logger import get_unified_logger
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

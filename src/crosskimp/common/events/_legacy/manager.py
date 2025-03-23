@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Dict, List, Set, Optional
 
-from crosskimp.logger.logger import get_unified_logger
+from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.events.bus import ComponentEventBus, EventFilter
 from crosskimp.common.events.types import EventTypes, Component
 

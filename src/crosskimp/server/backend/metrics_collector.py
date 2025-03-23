@@ -6,7 +6,7 @@ import aiohttp
 import time
 from typing import Dict
 
-from crosskimp.logger.logger import get_unified_logger
+from crosskimp.common.logger.logger import get_unified_logger
 
 logger = get_unified_logger(__name__)
 

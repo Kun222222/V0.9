@@ -13,8 +13,8 @@ from typing import Dict, List, Any, Optional, Set, Tuple
 
 from crosskimp.logger.logger import get_unified_logger
 from crosskimp.config.constants_v3 import EXCHANGE_NAMES_KR
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
-from crosskimp.ob_collector.orderbook.util.event_adapter import get_event_adapter
+from crosskimp.ob_collector.eventbus.types import EventTypes
+from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus
 from crosskimp.system_manager.metric_manager import get_metric_manager, MetricKeys
 from crosskimp.system_manager.notification_manager import get_notification_manager, NotificationType
 
@@ -170,7 +170,7 @@ class EventHandler(LoggingMixin):
         self.exchange_name_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, f"[{self.exchange_code}]")
         
         # 이벤트 버스 가져오기
-        self.event_bus = get_event_adapter()
+        self.event_bus = get_orderbook_event_bus()
         
         # 연결 상태 저장소 (운영 로직용)
         self.connection_status = "disconnected"
@@ -397,7 +397,7 @@ class EventHandler(LoggingMixin):
             "timestamp": timestamp,
             "message": status_msg
         }
-        await self.event_bus.publish(OrderbookEventTypes.CONNECTION_STATUS, event_data)
+        await self.event_bus.publish(EventTypes.CONNECTION_STATUS, event_data)
 
     async def handle_subscription_status(self, status: str, symbols: list, **kwargs) -> None:
         """
@@ -448,7 +448,7 @@ class EventHandler(LoggingMixin):
             "count": len(symbols),
             "timestamp": timestamp
         }
-        await self.event_bus.publish(OrderbookEventTypes.SUBSCRIPTION_STATUS, event_data)
+        await self.event_bus.publish(EventTypes.SUBSCRIPTION_STATUS, event_data)
     
     async def handle_message_received(self, message_type: str, size: int = 0, **kwargs) -> None:
         """
@@ -585,17 +585,17 @@ class EventHandler(LoggingMixin):
                 # 이벤트 타입 매핑
                 bus_event_type = event_type
                 
-                # 문자열 기반 이벤트 타입을 적절한 OrderbookEventTypes 상수로 매핑
+                # 문자열 기반 이벤트 타입을 적절한 EventTypes 상수로 매핑
                 if event_type == "SYSTEM_STARTUP" or event_type.lower() == "system_startup":
-                    bus_event_type = OrderbookEventTypes.CONNECTION_STATUS
+                    bus_event_type = EventTypes.SYSTEM_STARTUP
                 elif event_type == "SYSTEM_SHUTDOWN" or event_type.lower() == "system_shutdown":
-                    bus_event_type = OrderbookEventTypes.CONNECTION_CLOSED
+                    bus_event_type = EventTypes.SYSTEM_SHUTDOWN
                 elif event_type == "CONNECTION_STATUS" or event_type.lower() == "connection_status":
-                    bus_event_type = OrderbookEventTypes.CONNECTION_STATUS
+                    bus_event_type = EventTypes.CONNECTION_STATUS
                 elif event_type == "SUBSCRIPTION_STATUS" or event_type.lower() == "subscription_status":
-                    bus_event_type = OrderbookEventTypes.SUBSCRIPTION_STATUS
+                    bus_event_type = EventTypes.SUBSCRIPTION_STATUS
                 elif event_type == "ERROR_EVENT" or event_type.lower() == "error_event":
-                    bus_event_type = OrderbookEventTypes.ERROR_EVENT
+                    bus_event_type = EventTypes.ERROR_EVENT
                     
                 # 이벤트 발행
                 await self.event_bus.publish(bus_event_type, event_data)
