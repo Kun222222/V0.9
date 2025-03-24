@@ -283,4 +283,66 @@ def get_scheduled_tasks() -> List[Dict[str, Any]]:
             
         result.append(task_info)
         
-    return result 
+    return result
+
+class Scheduler:
+    """스케줄러 클래스"""
+    
+    def __init__(self):
+        """스케줄러 초기화"""
+        self.initialized = False
+        self.running = False
+        self.tasks = {}
+        self._logger = logger
+        
+    async def initialize(self):
+        """스케줄러 초기화"""
+        if self.initialized:
+            return
+            
+        self.initialized = True
+        self._logger.info("스케줄러가 초기화되었습니다.")
+        
+    async def start(self):
+        """스케줄러 시작"""
+        if not self.initialized:
+            await self.initialize()
+            
+        if self.running:
+            self._logger.warning("스케줄러가 이미 실행 중입니다.")
+            return
+            
+        self.running = True
+        
+        # 기본 작업 등록
+        self._register_default_tasks()
+        
+        self._logger.info("스케줄러가 시작되었습니다.")
+        
+    async def stop(self):
+        """스케줄러 중지"""
+        if not self.running:
+            return
+            
+        # 모든 작업 취소
+        for task_id in list(_scheduled_tasks.keys()):
+            cancel_task(task_id)
+            
+        self.running = False
+        self._logger.info("스케줄러가 중지되었습니다.")
+        
+    def _register_default_tasks(self):
+        """기본 작업 등록"""
+        # 오더북 재시작 작업
+        schedule_task("restart_orderbook", self._noop_task, interval=3600)  # 예시: 1시간마다
+        schedule_task("restart_telegram", self._noop_task, interval=3600 * 12)  # 예시: 12시간마다
+        schedule_task("restart_monitoring", self._noop_task, interval=3600 * 24)  # 예시: 24시간마다
+        schedule_task("restart_data_collector", self._noop_task, interval=3600 * 6)  # 예시: 6시간마다
+        schedule_task("restart_trade_executor", self._noop_task, interval=3600 * 8)  # 예시: 8시간마다
+        
+        for task_id in _scheduled_tasks:
+            self._logger.info(f"작업이 추가되었습니다: {task_id}")
+    
+    async def _noop_task(self):
+        """아무 작업도 수행하지 않는 작업 (임시)"""
+        pass 

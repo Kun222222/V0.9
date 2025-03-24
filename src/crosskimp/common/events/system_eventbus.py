@@ -26,6 +26,7 @@ class EventType(Enum):
     PROCESS_START = auto()
     PROCESS_STOP = auto()
     PROCESS_STATUS = auto()
+    PROCESS_CONTROL = auto()  # 프로세스 제어 (시작/종료/재시작)
     
     # 명령 이벤트
     COMMAND = auto()
@@ -36,7 +37,7 @@ class EventType(Enum):
     # 오류 이벤트
     ERROR = auto()
 
-class SimpleEventBus:
+class SystemEventBus:
     """
     시스템 이벤트 버스 구현
     
@@ -89,11 +90,13 @@ class SimpleEventBus:
     async def start(self):
         """이벤트 버스 시작"""
         if self._running:
+            self._logger.info("시스템 이벤트 버스가 이미 실행 중입니다.")
             return
             
         self._running = True
         self._processor_task = asyncio.create_task(self._process_events())
-        self._logger.info("시스템 이벤트 버스가 시작되었습니다.")
+        self._logger.info("✅ 시스템 이벤트 버스가 시작되었습니다. (ID: %s)", id(self))
+        self._logger.debug(f"[오더북 핸들러] start() 메서드 호출됨")
     
     async def stop(self):
         """이벤트 버스 종료"""
@@ -111,6 +114,11 @@ class SimpleEventBus:
                 
         self._logger.info("시스템 이벤트 버스가 종료되었습니다.")
     
+    @property
+    def is_running(self) -> bool:
+        """이벤트 버스 실행 상태 확인"""
+        return self._running
+    
     def register_handler(self, event_type: EventType, handler: Callable):
         """
         이벤트 핸들러 등록 (subscribe 대신 사용)
@@ -124,7 +132,10 @@ class SimpleEventBus:
             
         if handler not in self._handlers[event_type]:
             self._handlers[event_type].append(handler)
-            self._logger.debug(f"이벤트 핸들러가 등록되었습니다: {event_type.name}")
+            # 핸들러 함수의 소속 정보 추출
+            handler_module = handler.__module__.split('.')[-1]
+            handler_name = handler.__qualname__
+            self._logger.debug(f"이벤트 핸들러가 등록되었습니다: {event_type.name} → {handler_module}.{handler_name}")
     
     def unregister_handler(self, event_type: EventType, handler: Callable):
         """
@@ -143,19 +154,21 @@ class SimpleEventBus:
         이벤트 발행
         
         Args:
-            event_type: 이벤트 유형
-            data: 이벤트 데이터
+            event_type: 이벤트 유형 (이벤트 버스 채널)
+            data: 이벤트 데이터 (여기에 실제 이벤트 타입 정보가 포함되어야 함)
         """
         if not self._running:
             self._logger.warning("이벤트 버스가 실행 중이 아닙니다.")
             return
-            
-        # 공통 필드 추가
-        event_data = {
-            **data,
-            "timestamp": time.time(),
-            "event_type": event_type.name
-        }
+        
+        # 타임스탬프만 추가하고 다른 필드는 수정하지 않음
+        if "timestamp" not in data:
+            event_data = {**data, "timestamp": time.time()}
+        else:
+            event_data = data
+        
+        # 디버그 로그 추가
+        self._logger.debug(f"이벤트 발행: {event_type.name}, 데이터: {event_data}")
         
         # 이벤트 큐에 추가
         try:

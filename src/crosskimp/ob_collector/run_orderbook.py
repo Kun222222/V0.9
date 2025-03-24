@@ -13,29 +13,29 @@ import shutil
 from typing import Dict, List, Any, Optional, Set
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
-from crosskimp.common.config.app_config import AppConfig
-from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
+from crosskimp.common.config.common_constants import SystemComponent, COMPONENT_NAMES_KR, Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.config.app_config import AppConfig, get_config
+from crosskimp.common.events.system_eventbus import SystemEventBus, EventType
 
-from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus, EventHandler, get_event_handler, LoggingMixin
-from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority
+from crosskimp.ob_collector.eventbus._disable_handler import get_orderbook_event_bus, EventHandler, get_event_handler, LoggingMixin
+from crosskimp.ob_collector.eventbus._disable_types import EventTypes, EventPriority
 from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.ob_collector.orderbook.order_manager import create_order_manager
+from crosskimp.ob_collector.order_manager import create_order_manager, OrderManager
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()
 
 # 환경에 따른 로깅 설정
 logger.setLevel(logging.DEBUG)
-logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 디버깅을 위해 로그 레벨을 DEBUG로 설정했습니다.")
+logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 디버깅을 위해 로그 레벨을 DEBUG로 설정했습니다.")
 
 if os.getenv("CROSSKIMP_ENV") == "production":
     # 프로덕션 환경 로그
-    logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 배포 환경에서 실행 중입니다.")
+    logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 배포 환경에서 실행 중입니다.")
 else:
     # 개발 환경 로그
-    logger.warning(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
+    logger.warning(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
 
 # 이벤트 버스 인스턴스 가져오기
 event_bus = None
@@ -64,7 +64,7 @@ class OrderbookCollector:
         self.usdtkrw_monitor = None  # USDT/KRW 모니터링 객체
         
         # 중앙 메트릭 관리자 대신 시스템 이벤트 버스 사용
-        self.sys_event_bus = SimpleEventBus()
+        self.sys_event_bus = SystemEventBus()
         
         # 내부 이벤트 버스 초기화
         self.event_bus = get_orderbook_event_bus()
@@ -82,7 +82,7 @@ class OrderbookCollector:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 오더북 수집기 초기화 완료")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 초기화 완료")
     
     def _update_system_metric(self, metric_name, value):
         """시스템 메트릭을 이벤트 버스를 통해 업데이트"""
@@ -99,19 +99,19 @@ class OrderbookCollector:
     
     def _signal_handler(self, sig, frame):
         """시그널 핸들러"""
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 종료 시그널 수신: {sig}")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 종료 시그널 수신: {sig}")
         if not self.stop_event.is_set():
             self.stop_event.set()
             # 이벤트 루프에 종료 태스크 스케줄링
             asyncio.create_task(self._handle_shutdown())
         else:
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 강제 종료")
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 강제 종료")
             sys.exit(1)
     
     async def _handle_shutdown(self):
         """종료 처리 핸들러"""
         try:
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 프로그램 종료 처리 시작")
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 프로그램 종료 처리 시작")
             
             # OrderManager 종료
             await self._stop_order_managers()
@@ -119,7 +119,7 @@ class OrderbookCollector:
             # USDT/KRW 모니터 종료
             if self.usdtkrw_monitor:
                 await self.usdtkrw_monitor.stop()
-                logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} USDT/KRW 가격 모니터링 종료")
+                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} USDT/KRW 가격 모니터링 종료")
                 
             # 시스템 종료 메트릭 업데이트
             self._update_system_metric("collector_status", "stopped")
@@ -137,10 +137,10 @@ class OrderbookCollector:
                     "timestamp": time.time()
                 })
             
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 프로그램 종료 처리 완료")
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 프로그램 종료 처리 완료")
             
         except Exception as e:
-            logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 종료 처리 중 오류 발생: {str(e)}")
+            logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 종료 처리 중 오류 발생: {str(e)}")
             
         finally:
             # 로거 종료
@@ -152,7 +152,7 @@ class OrderbookCollector:
             # 시스템 이벤트 버스 시작
             if self.sys_event_bus and hasattr(self.sys_event_bus, 'start'):
                 await self.sys_event_bus.start()
-                logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 시스템 이벤트 버스 시작됨")
+                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 시작됨")
             
             # 기본 시스템 메트릭 초기화
             self._update_system_metric("startup_time", time.time())
@@ -170,23 +170,35 @@ class OrderbookCollector:
             # USDT/KRW 모니터 시작
             self.usdtkrw_monitor = WsUsdtKrwMonitor()
             usdtkrw_task = asyncio.create_task(self.usdtkrw_monitor.start())
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} USDT/KRW 가격 모니터링 시작")
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} USDT/KRW 가격 모니터링 시작")
             
             # Aggregator 초기화 및 심볼 필터링
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} Aggregator 초기화 및 심볼 필터링 시작")
-            self.aggregator = Aggregator(self.settings)
-            config = get_config()
-            filters = config.get_symbol_filters()
-            filtered_data = await self.aggregator.run_filtering()
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} Aggregator 초기화 및 심볼 필터링 시작")
+            
+            # 캐시가 없는 경우에만 Aggregator 실행
+            filtered_data = None
+            if not OrderManager._filtered_symbols_cache:
+                self.aggregator = Aggregator(self.settings)
+                config = get_config()
+                filters = config.get_symbol_filters()
+                filtered_data = await self.aggregator.run_filtering()
+                
+                # 필터링 결과를 OrderManager 캐시에 저장
+                if filtered_data:
+                    OrderManager._filtered_symbols_cache = filtered_data
+            else:
+                # 이미 캐시가 있는 경우 그대로 사용
+                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 기존 필터링된 심볼 캐시를 사용합니다.")
+                filtered_data = OrderManager._filtered_symbols_cache
             
             if not filtered_data:
-                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 필터링된 심볼이 없습니다.")
+                logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 필터링된 심볼이 없습니다.")
                 self._update_system_metric("collector_status", "error")
                 self._update_system_metric("error_reason", "no_filtered_symbols")
                 return
             
             # 필터링 결과 로그 출력
-            log_msg = f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 필터링된 심볼: "
+            log_msg = f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 필터링된 심볼: "
             for exchange_code, symbols in filtered_data.items():
                 log_msg += f"\n{EXCHANGE_NAMES_KR[exchange_code]} - {len(symbols)}개: {', '.join(symbols[:5])}"
                 if len(symbols) > 5:
@@ -200,12 +212,12 @@ class OrderbookCollector:
             self._update_system_metric("collector_status", "running")
             
             # 종료 이벤트 대기 - 독립 실행 모드에서만 직접 안내
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 프로그램을 종료하려면 Ctrl+C를 누르세요")
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 프로그램을 종료하려면 Ctrl+C를 누르세요")
             # 여기서 대기하지만, signal_handler에서 종료 처리를 병렬로 시작함
             await self.stop_event.wait()
             
         except Exception as e:
-            logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 실행 중 오류 발생: {str(e)}")
+            logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 실행 중 오류 발생: {str(e)}")
             # 오류 상태 기록
             self._update_system_metric("collector_status", "error")
             self._update_system_metric("error_reason", str(e))
@@ -268,7 +280,7 @@ class OrderbookCollector:
             elif isinstance(result, Exception):
                 logger.error(f"OrderManager 시작 중 예외 발생: {str(result)}")
         
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 오더북 수집기 시작 완료")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 시작 완료")
     
     async def _stop_order_managers(self):
         """OrderManager 종료"""
@@ -315,7 +327,7 @@ class OrderbookCollector:
         self._update_system_metric("collector_status", "stopped")
         self._update_system_metric("stop_time", time.time())
         
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 오더북 수집기 중지 완료")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 중지 완료")
 
 async def async_main():
     """비동기 메인 함수"""
@@ -323,11 +335,11 @@ async def async_main():
     
     try:
         # 설정 로드
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 설정 로드 시작")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 설정 로드 시작")
         start_time = time.time()
         settings = get_config()
         elapsed = time.time() - start_time
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 설정 로드 완료 (소요 시간: {elapsed:.3f}초)")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 설정 로드 완료 (소요 시간: {elapsed:.3f}초)")
         
         # 로그 폴더 확인 및 생성
         # 설정에서 로그 경로 가져오기
@@ -345,9 +357,9 @@ async def async_main():
             print(f"로그 폴더 초기화 중 오류 발생: {str(e)}")
         
         # 시스템 이벤트 버스 초기화 및 시작
-        sys_event_bus = SimpleEventBus()
+        sys_event_bus = SystemEventBus()
         await sys_event_bus.start()
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 시스템 이벤트 버스 초기화 및 시작 완료")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 초기화 및 시작 완료")
         
         # 이벤트 버스 초기화
         try:
@@ -358,19 +370,19 @@ async def async_main():
             if hasattr(event_bus, 'is_running') and not event_bus.is_running:
                 asyncio.create_task(event_bus.start())
             
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 이벤트 버스 초기화 완료")
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 초기화 완료")
         except Exception as e:
-            logger.warning(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 이벤트 버스 초기화 실패, 이벤트 발행 기능이 동작하지 않습니다: {str(e)}")
+            logger.warning(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 초기화 실패, 이벤트 발행 기능이 동작하지 않습니다: {str(e)}")
         
         # 오더북 수집기 생성 및 실행
         collector = OrderbookCollector(settings)
         await collector.run()
         
     except KeyboardInterrupt:
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 키보드 인터럽트 수신")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 키보드 인터럽트 수신")
         
     except Exception as e:
-        logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 메인 함수 오류: {str(e)}")
+        logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 메인 함수 오류: {str(e)}")
         
     finally:
         try:
@@ -378,19 +390,19 @@ async def async_main():
             if sys_event_bus:
                 try:
                     await sys_event_bus.stop()
-                    logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 시스템 이벤트 버스 종료 완료")
+                    logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 종료 완료")
                 except Exception as e:
-                    logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 시스템 이벤트 버스 종료 중 오류: {str(e)}")
+                    logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 종료 중 오류: {str(e)}")
             
             # 내부 이벤트 버스 종료
             if event_bus:
                 try:
                     await event_bus.stop()
-                    logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 이벤트 버스 종료 완료")
+                    logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 종료 완료")
                 except Exception as e:
-                    logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 이벤트 버스 종료 중 오류: {str(e)}")
+                    logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 종료 중 오류: {str(e)}")
         except Exception as e:
-            logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 메인 함수 종료 처리 중 오류: {str(e)}")
+            logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 메인 함수 종료 처리 중 오류: {str(e)}")
 
 def main():
     """동기 메인 함수 - 독립 실행 모드에서만 사용"""
@@ -406,13 +418,13 @@ def main():
         """)
         
         if not os.getenv("CROSSKIMP_ENV"):
-            logger.warning(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
+            logger.warning(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
             
         asyncio.run(async_main())
     except KeyboardInterrupt:
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 키보드 인터럽트 감지")
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 키보드 인터럽트 감지")
     except Exception as e:
-        logger.error(f"{EXCHANGE_NAMES_KR[Exchange.SYSTEM]} 예상치 못한 오류 발생: {e}", exc_info=True)
+        logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 예상치 못한 오류 발생: {e}", exc_info=True)
 
 if __name__ == "__main__":
     main()

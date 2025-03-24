@@ -14,9 +14,9 @@ from typing import Dict, List, Optional, Union, Any
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 
-from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 
 # 바이낸스 선물 웹소켓 및 REST API 설정
 WS_URL = "wss://fstream.binance.com/ws"  # 웹소켓 URL
@@ -41,15 +41,17 @@ class BinanceFutureSubscription(BaseSubscription):
     """
     
     # 1. 초기화 단계
-    def __init__(self, connection):
+    def __init__(self, connection, exchange_code: str = None, on_data_received=None):
         """
         초기화
         
         Args:
             connection: 웹소켓 연결 객체
+            exchange_code: 거래소 코드 (None이면 connection에서 가져옴)
+            on_data_received: 데이터 수신 시 호출될 콜백 함수
         """
-        # 부모 클래스 초기화 (exchange_code 전달)
-        super().__init__(connection, Exchange.BINANCE_FUTURE.value)
+        # 부모 클래스 초기화
+        super().__init__(connection, exchange_code, on_data_received)
         
         # 거래소 이름 설정
         self.exchange_name = Exchange.BINANCE_FUTURE.value
@@ -190,16 +192,10 @@ class BinanceFutureSubscription(BaseSubscription):
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
-            # 구독 이벤트 발행
-            try:
-                await self.event_handler.handle_subscription_status(status="subscribed", symbols=symbols)
-            except Exception as e:
-                self.log_warning(f"구독 상태 이벤트 발행 실패: {e}")
-            
             return True
             
         except Exception as e:
-            self.log_error(f"구독 실패: {str(e)}")
+            self.log_error(f"구독 중 오류 발생: {str(e)}")
             self._update_metrics("error_count", 1, op="increment")
             return False
 
@@ -326,12 +322,7 @@ class BinanceFutureSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"[{symbol}] 스냅샷 처리 중 오류: {str(e)}")
-            await self.event_handler.handle_error(
-                error_type="snapshot_error",
-                message=f"스냅샷 처리 실패: {str(e)}",
-                symbol=symbol
-            )
-    
+
     async def _process_buffered_messages(self, symbol: str) -> None:
         """
         버퍼된 메시지 처리
@@ -538,11 +529,6 @@ class BinanceFutureSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"[{symbol}] 델타 처리 중 오류: {str(e)}")
-            await self.event_handler.handle_error(
-                error_type="message_processing_error",
-                message=f"델타 처리 실패: {str(e)}",
-                symbol=symbol
-            )
 
     async def _on_message(self, message: str) -> None:
         """
@@ -573,12 +559,7 @@ class BinanceFutureSubscription(BaseSubscription):
                     await self._process_delta(symbol, processed_data)
                     
         except Exception as e:
-            # 메시지 처리 오류를 이벤트 핸들러에 보고
-            await self.event_handler.handle_error(
-                error_type="message_processing_error",
-                message=f"메시지 처리 실패: {str(e)}",
-                severity="error"
-            )
+            self.log_error(f"메시지 처리 중 오류: {str(e)}")
 
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:

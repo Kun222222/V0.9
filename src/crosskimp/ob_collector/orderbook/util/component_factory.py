@@ -6,12 +6,11 @@
 
 from typing import Optional, Dict, Any, Type
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
 
 # 기본 클래스 임포트
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
-from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 
 # 모든 거래소 컴포넌트 임포트
 # 연결 컴포넌트
@@ -31,7 +30,7 @@ from crosskimp.ob_collector.orderbook.subscription.binance_s_sub import BinanceS
 from crosskimp.ob_collector.orderbook.subscription.binance_f_sub import BinanceFutureSubscription
 
 # 로거 설정
-logger = get_unified_logger()
+logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
 
 # 컴포넌트 클래스 매핑
 EXCHANGE_CONNECTORS = {
@@ -52,13 +51,14 @@ EXCHANGE_SUBSCRIPTIONS = {
     Exchange.BINANCE_FUTURE.value: BinanceFutureSubscription
 }
 
-def create_connector(exchange_code: str, settings: Dict[str, Any]) -> Optional[BaseWebsocketConnector]:
+def create_connector(exchange_code: str, settings: Dict[str, Any], on_status_change=None) -> Optional[BaseWebsocketConnector]:
     """
     거래소별 웹소켓 연결 객체 생성
     
     Args:
         exchange_code: 거래소 코드
         settings: 설정 딕셔너리
+        on_status_change: 연결 상태 변경 시 호출될 콜백 함수
         
     Returns:
         BaseWebsocketConnector: 웹소켓 연결 객체 또는 None (실패 시)
@@ -72,8 +72,8 @@ def create_connector(exchange_code: str, settings: Dict[str, Any]) -> Optional[B
             logger.warning(f"{exchange_kr} 해당 거래소의 연결 클래스를 찾을 수 없습니다")
             return None
             
-        # 연결 객체 생성
-        connector = connector_class(settings)
+        # 연결 객체 생성 (콜백 전달)
+        connector = connector_class(settings, exchange_code, on_status_change)
         logger.debug(f"{exchange_kr} 연결 객체 생성됨")
         return connector
         
@@ -82,19 +82,20 @@ def create_connector(exchange_code: str, settings: Dict[str, Any]) -> Optional[B
         return None
 
 def create_subscription(
-    exchange_code: str, 
-    connector: BaseWebsocketConnector
+    connector: BaseWebsocketConnector,
+    on_data_received=None
 ) -> Optional[BaseSubscription]:
     """
     거래소별 구독 객체 생성
     
     Args:
-        exchange_code: 거래소 코드
         connector: 웹소켓 연결 객체
+        on_data_received: 데이터 수신 시 호출될 콜백 함수
         
     Returns:
         BaseSubscription: 구독 객체 또는 None (실패 시)
     """
+    exchange_code = connector.exchange_code
     exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
     
     try:
@@ -104,8 +105,8 @@ def create_subscription(
             logger.warning(f"{exchange_kr} 해당 거래소의 구독 클래스를 찾을 수 없습니다")
             return None
             
-        # 구독 객체 생성
-        subscription = subscription_class(connector)
+        # 구독 객체 생성 (콜백 전달)
+        subscription = subscription_class(connector, exchange_code, on_data_received)
         logger.debug(f"{exchange_kr} 구독 객체 생성됨")
         return subscription
         
@@ -113,27 +114,7 @@ def create_subscription(
         logger.error(f"{exchange_kr} 구독 객체 생성 실패: {str(e)}")
         return None
 
-def create_validator(exchange_code: str) -> Optional[BaseOrderBookValidator]:
-    """
-    오더북 검증기 객체 생성
-    
-    Args:
-        exchange_code: 거래소 코드
-        
-    Returns:
-        BaseOrderBookValidator: 검증기 객체 또는 None (실패 시)
-    """
-    exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
-    
-    try:
-        # 현재는 기본 검증기만 사용
-        validator_class = BaseOrderBookValidator
-            
-        # 검증기 객체 생성
-        validator = validator_class(exchange_code)
-        logger.debug(f"{exchange_kr} 검증기 객체 생성됨")
-        return validator
-        
-    except Exception as e:
-        logger.warning(f"{exchange_kr} 검증기 객체 생성 실패: {str(e)}")
-        return None 
+__all__ = [
+    'create_connector',
+    'create_subscription'
+] 

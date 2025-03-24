@@ -13,34 +13,37 @@ import websockets
 import datetime
 
 from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
-from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, normalize_exchange_code
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, normalize_exchange_code, SystemComponent
 from crosskimp.common.config.app_config import AppConfig, get_config
-from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
+from crosskimp.common.events.system_eventbus import SystemEventBus, EventType
 
-from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority
-from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus, EventHandler, LoggingMixin, get_event_handler
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 
 # 로거 설정
-logger = get_unified_logger()
+logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
 
-class BaseSubscription(ABC, LoggingMixin):
-    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None):
-        """기본 구독 클래스 초기화"""
+class BaseSubscription(ABC):
+    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None, on_data_received=None):
+        """
+        초기화
+        
+        Args:
+            connection: 웹소켓 연결 객체
+            exchange_code: 거래소 코드 (None이면 connection에서 가져옴)
+            on_data_received: 데이터 수신 시 호출될 콜백 함수
+        """
         self.connection = connection
         self.exchange_code = normalize_exchange_code(exchange_code or self.connection.exchangename)
-        self.setup_logger(self.exchange_code)
-        self.exchange_kr = self.exchange_name_kr  # 이전 코드와 호환성 유지
+        self.logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+        self.exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, self.exchange_code)  # 한글 거래소명 가져오기
         
         # 거래소별 하위 폴더 생성하지 않음
         
         # 웹소켓 및 이벤트 관련 초기화
         self.ws = None
-        self.event_handler = get_event_handler(self.exchange_code, connection.settings)
-        self.event_bus = get_orderbook_event_bus()
         
-        # 시스템 이벤트 버스 가져오기
+        # 시스템 이벤트 버스 가져오기 (메트릭 발행용으로 유지)
         self.sys_event_bus = self._get_sys_event_bus()
         
         # 구독 및 태스크 관리
@@ -74,6 +77,26 @@ class BaseSubscription(ABC, LoggingMixin):
         
         # 메시지 로깅 활성화 여부
         self.message_logging_enabled = os.environ.get('DEBUG_MESSAGE_LOGGING', '0') == '1'
+        
+        # 데이터 수신 콜백 함수
+        self.on_data_received = on_data_received
+
+    # 로깅 메서드
+    def log_debug(self, message: str) -> None:
+        """디버그 로그 출력"""
+        # self.logger.debug(f"{self.exchange_kr} {message}")
+
+    def log_info(self, message: str) -> None:
+        """정보 로그 출력"""
+        self.logger.info(f"{self.exchange_kr} {message}")
+
+    def log_warning(self, message: str) -> None:
+        """경고 로그 출력"""
+        self.logger.warning(f"{self.exchange_kr} {message}")
+
+    def log_error(self, message: str, exc_info: bool = False) -> None:
+        """오류 로그 출력"""
+        self.logger.error(f"{self.exchange_kr} {message}", exc_info=exc_info)
 
     def _setup_raw_logging(self):
         """Raw 데이터 로깅 설정"""
@@ -89,7 +112,7 @@ class BaseSubscription(ABC, LoggingMixin):
         """거래소 코드에 맞는 검증기 초기화"""
         try:
             self.validator = BaseOrderBookValidator(self.exchange_code)
-            self.log_debug(f"{self.exchange_kr} 검증기 초기화 완료")
+            self.log_debug(f"검증기 초기화 완료")
         except ImportError:
             self.log_error("BaseOrderBookValidator를 가져올 수 없습니다. 검증 기능이 비활성화됩니다.")
             self.validator = None
@@ -166,14 +189,6 @@ class BaseSubscription(ABC, LoggingMixin):
             # 웹소켓 연결 상태 확인 및 확보
             if not await self._ensure_websocket():
                 self.log_error("웹소켓 연결이 없어 메시지 전송 실패")
-                
-                # 이벤트 핸들러에 오류 보고
-                await self.event_handler.handle_error(
-                    error_type="message_error",
-                    message=f"{self.exchange_code} 웹소켓 연결이 없어 메시지 전송 실패",
-                    severity="error",
-                    exchange=self.exchange_code
-                )
                 return False
             
             # 메시지 전송 직전에 웹소켓 객체 재확인 (방어적 코딩)
@@ -183,7 +198,8 @@ class BaseSubscription(ABC, LoggingMixin):
                 
             # 메시지 전송
             await self.ws.send(message)
-            self.log_debug(f"메시지 전송 성공: {message[:100]}..." if len(message) > 100 else f"메시지 전송 성공: {message}")
+            msg_preview = message[:100] + "..." if len(message) > 100 else message
+            self.log_debug(f"메시지 전송 성공: {msg_preview}")
             return True
             
         except asyncio.CancelledError:
@@ -194,16 +210,6 @@ class BaseSubscription(ABC, LoggingMixin):
             
             # 웹소켓 객체 초기화 및 연결 상태 업데이트
             self.ws = None
-            
-            # 오류 이벤트 발행
-            await self.event_handler.handle_error(
-                error_type="message_error",
-                message=f"{self.exchange_code} 메시지 전송 실패",
-                severity="error", 
-                exchange=self.exchange_code,
-                details=str(e)
-            )
-            
             return False
     
     async def receive_message(self) -> Optional[str]:
@@ -227,14 +233,6 @@ class BaseSubscription(ABC, LoggingMixin):
             raise
         except Exception as e:
             self.log_error(f"메시지 수신 중 오류: {str(e)}")
-            
-            # 오류 이벤트 발행
-            asyncio.create_task(self.event_handler.handle_error(
-                error_type="message_error",
-                message=str(e),
-                severity="error"
-            ))
-            
             return None
     
     async def _preprocess_symbols(self, symbol: Union[str, List[str]]) -> List[str]:
@@ -263,14 +261,6 @@ class BaseSubscription(ABC, LoggingMixin):
             # 웹소켓 연결 확보 (최대 15초 대기)
             if not await self._ensure_websocket():
                 self.log_error("웹소켓 연결이 없어 구독 실패")
-                
-                # 이벤트 핸들러에 오류 보고
-                await self.event_handler.handle_error(
-                    error_type="subscription_error",
-                    message="웹소켓 연결이 없어 구독 실패",
-                    severity="error",
-                    exchange=self.exchange_code
-                )
                 return False
                 
             # 심볼 목록 전처리
@@ -298,27 +288,11 @@ class BaseSubscription(ABC, LoggingMixin):
                 self.subscribed_symbols[sym] = True
                 self.subscription_status[sym] = "subscribed"
                 
-            # 이벤트 핸들러에 구독 상태 알림
-            await self.event_handler.handle_subscription_status(
-                status="subscribed", 
-                symbols=symbols
-            )
-            
-            self.log_info(f"구독 성공: {symbols}")
+            self.log_info(f"심볼 구독 성공: {symbols}")
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            
-            # 오류 이벤트 발행
-            await self.event_handler.handle_error(
-                error_type="subscription_error",
-                message=f"{self.exchange_code} 구독 실패",
-                severity="error",
-                exchange=self.exchange_code,
-                details=str(e)
-            )
-            
             return False
     
     def log_raw_message(self, message: str) -> None:
@@ -409,13 +383,6 @@ class BaseSubscription(ABC, LoggingMixin):
                     break
                 except Exception as e:
                     self.log_error(f"메시지 처리 중 예외 발생: {str(e)}")
-                    
-                    asyncio.create_task(self.event_handler.handle_error(
-                        error_type="message_loop_error",
-                        message=str(e),
-                        severity="error"
-                    ))
-                    
                     await asyncio.sleep(0.1)
             
             self.log_info("메시지 수신 루프 종료")
@@ -423,23 +390,33 @@ class BaseSubscription(ABC, LoggingMixin):
         except Exception as e:
             self.log_error(f"메시지 루프 실행 중 오류: {str(e)}")
             
-            asyncio.create_task(self.event_handler.handle_error(
-                error_type="message_loop_fatal_error",
-                message=str(e),
-                severity="critical"
+            # 시스템 이벤트 발행으로 변경
+            asyncio.create_task(self.sys_event_bus.publish(
+                EventType.SYSTEM_EVENT,
+                {
+                    "exchange_code": self.exchange_code,
+                    "event_type": "message_loop_fatal_error",
+                    "message": str(e),
+                    "severity": "critical"
+                }
             ))
 
     def _handle_error(self, symbol: str, error: str) -> None:
         """오류 처리"""
-        self.log_error(f"{symbol} 오류: {error}")
+        self.log_error(f"심볼 {symbol} 오류: {error}")
         
         # 오류 카운트 메트릭 업데이트
         self._update_metrics("error_count", 1, op="increment", error_type="subscription_error", message=error)
             
-        asyncio.create_task(self.event_handler.handle_error(
-            error_type="subscription_error",
-            message=error,
-            severity="error"
+        # 시스템 이벤트 발행으로 변경
+        asyncio.create_task(self.sys_event_bus.publish(
+            EventType.SYSTEM_EVENT,
+            {
+                "exchange_code": self.exchange_code,
+                "event_type": "subscription_error",
+                "message": error,
+                "severity": "error"
+            }
         ))
     
     async def handle_metric_update(self, metric_name: str, value: float = 1.0, data: Dict = None) -> None:
@@ -555,37 +532,42 @@ class BaseSubscription(ABC, LoggingMixin):
             self.log_error(f"메시지 카운트 증가 중 오류: {str(e)}")
     
     def publish_event(self, symbol: str, data: Any, event_type: str) -> None:
-        """오더북 이벤트 발행"""
-        try:
-            if event_type == "snapshot":
-                bus_event_type = EventTypes.SNAPSHOT_RECEIVED
-            elif event_type == "delta":
-                bus_event_type = EventTypes.DELTA_RECEIVED
-            elif event_type == "error":
-                bus_event_type = EventTypes.ERROR_EVENT
-            else:
-                self.log_warning(f"알 수 없는 이벤트 타입: {event_type}")
-                return
-                
-            # 이벤트 버스에 이벤트 발행
-            self.event_bus.publish(
-                bus_event_type,
+        """
+        이벤트 발행
+        
+        Args:
+            symbol: 심볼명
+            data: 이벤트 데이터
+            event_type: 이벤트 타입
+        """
+        # 이벤트 발행 (event_bus 사용)
+        if hasattr(self, 'sys_event_bus') and self.sys_event_bus:
+            # 비동기 컨텍스트에서 호출되므로 create_task 사용
+            asyncio.create_task(self.sys_event_bus.publish(
+                event_type, 
                 {
                     "exchange_code": self.exchange_code,
                     "symbol": symbol,
-                    "data": data
+                    "data": data,
+                    "timestamp": time.time()
                 }
-            )
-        except Exception as e:
-            self.log_warning(f"이벤트({event_type}) 발행 실패: {str(e)}")
+            ))
+        
+        # 데이터 수신 콜백 호출 (추가)
+        if self.on_data_received:
+            asyncio.create_task(self.on_data_received(symbol, data, event_type))
     
     async def publish_error_event(self, error_message: str, error_type: str) -> None:
         """오류 이벤트 발행"""
         try:
-            await self.event_handler.handle_error(
-                error_type=error_type,
-                message=error_message,
-                severity="error"
+            await self.sys_event_bus.publish(
+                EventType.SYSTEM_EVENT,
+                {
+                    "exchange_code": self.exchange_code,
+                    "event_type": error_type,
+                    "message": error_message,
+                    "severity": "error"
+                }
             )
         except Exception as e:
             self.log_warning(f"오류 이벤트 발행 실패: {str(e)}")
@@ -607,7 +589,7 @@ class BaseSubscription(ABC, LoggingMixin):
     
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
         """구독 취소 메시지 생성"""
-        self.log_info(f"[{self.exchange_code}] 구독 취소 메시지 생성 (기본 구현)")
+        self.log_info(f"심볼 {symbol} 구독 취소 메시지 생성")
         return {}
     
     async def unsubscribe(self, symbol: Optional[str] = None) -> bool:
@@ -624,7 +606,7 @@ class BaseSubscription(ABC, LoggingMixin):
                     if self.ws:
                         await self.send_message(json.dumps(unsubscribe_message))
                 except Exception as e:
-                    self.log_warning(f"{sym} 구독 취소 메시지 전송 실패: {e}")
+                    self.log_warning(f"심볼 {sym} 구독 취소 메시지 전송 실패: {e}")
                 
                 self._cleanup_subscription(sym)
                 
@@ -654,20 +636,11 @@ class BaseSubscription(ABC, LoggingMixin):
             # 오류 메트릭 업데이트
             self._update_metrics("error_count", 1, op="increment", error_type="unsubscribe_error", error_message=str(e))
             
-            if hasattr(self, 'event_handler') and self.event_handler is not None:
-                try:
-                    asyncio.create_task(self.event_handler.handle_error(
-                        error_type="subscription_error",
-                        message=f"구독 취소 중 오류 발생: {e}",
-                        severity="error"
-                    ))
-                except Exception:
-                    pass
             return False
     
     def _cleanup_subscription(self, symbol: str) -> None:
         """구독 관련 상태 정보 정리"""
-        self.log_debug(f"{symbol}: 구독 상태 정보 정리")
+        self.log_debug(f"심볼 {symbol} 구독 상태 정보 정리")
         # 관련 상태 변수 초기화
         self.message_count.pop(symbol, None)
         self.last_sequence.pop(symbol, None)
@@ -685,9 +658,17 @@ class BaseSubscription(ABC, LoggingMixin):
             symbols: 심볼 목록
             status: 구독 상태 (subscribed/unsubscribed)
         """
-        # 이벤트 핸들러의 handle_subscription_status 메서드 호출
+        # 시스템 이벤트 발행으로 변경
         try:
-            await self.event_handler.handle_subscription_status(status, symbols)
+            await self.sys_event_bus.publish(
+                EventType.SYSTEM_EVENT,
+                {
+                    "exchange_code": self.exchange_code,
+                    "event_type": "subscription_status",
+                    "status": status,
+                    "symbols": symbols
+                }
+            )
         except Exception as e:
             self.log_warning(f"구독 상태 이벤트 발행 실패: {e}")
     
@@ -697,8 +678,15 @@ class BaseSubscription(ABC, LoggingMixin):
             if "exchange_code" not in data:
                 data["exchange_code"] = self.exchange_code
                 
-            # EventHandler의 publish_system_event 메서드 사용
-            await self.event_handler.publish_system_event(event_type, **data)
+            # 시스템 이벤트 발행으로 변경
+            await self.sys_event_bus.publish(
+                EventType.SYSTEM_EVENT,
+                {
+                    "exchange_code": self.exchange_code,
+                    "event_type": event_type,
+                    **data
+                }
+            )
         except Exception as e:
             self.log_warning(f"이벤트({event_type}) 발행 중 오류: {str(e)}")
 
@@ -760,7 +748,7 @@ class BaseSubscription(ABC, LoggingMixin):
             # 이벤트 루프가 실행 중이 아닌 경우
             self.log_debug("이벤트 루프가 실행 중이 아니므로 메트릭 업데이트 태스크를 시작할 수 없습니다.")
 
-    def _get_sys_event_bus(self) -> SimpleEventBus:
+    def _get_sys_event_bus(self) -> SystemEventBus:
         """
         시스템 이벤트 버스 인스턴스 반환
         
@@ -768,7 +756,7 @@ class BaseSubscription(ABC, LoggingMixin):
             크로스킴프 시스템 전체에서 사용하는 간소화된 이벤트 버스 반환
         
         Returns:
-            SimpleEventBus: 글로벌 이벤트 버스 인스턴스
+            SystemEventBus: 글로벌 이벤트 버스 인스턴스
         """
         from crosskimp.common.events import get_event_bus
         return get_event_bus()

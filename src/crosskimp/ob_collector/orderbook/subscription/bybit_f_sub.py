@@ -14,9 +14,9 @@ from typing import Dict, List, Optional, Union, Any, Set
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 
-from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 
 # 웹소켓 설정
 WS_URL = "wss://stream.bybit.com/v5/public/linear"  # 웹소켓 URL 
@@ -42,15 +42,17 @@ class BybitFutureSubscription(BaseSubscription):
     """
     
     # 1. 초기화 단계
-    def __init__(self, connection):
+    def __init__(self, connection, exchange_code: str = None, on_data_received=None):
         """
         초기화
         
         Args:
             connection: 웹소켓 연결 객체
+            exchange_code: 거래소 코드 (None이면 connection에서 가져옴)
+            on_data_received: 데이터 수신 시 호출될 콜백 함수
         """
         # 부모 클래스 초기화
-        super().__init__(connection, Exchange.BYBIT_FUTURE.value)
+        super().__init__(connection, exchange_code, on_data_received)
         
         # 구독 설정
         self.depth_level = DEFAULT_DEPTH
@@ -79,14 +81,7 @@ class BybitFutureSubscription(BaseSubscription):
             self.log_info("바이비트 선물 웹소켓 연결 확보 완료")
         else:
             self.log_error("바이비트 선물 웹소켓 연결 확보 실패")
-            
-            # 이벤트 발행 - 구독 실패 알림
-            await self.publish_system_event(
-                EventTypes.SUBSCRIPTION_FAILURE,
-                exchange_code=self.exchange_code,
-                reason="websocket_connection_failure"
-            )
-        
+                   
         return success
 
     # 3. 구독 처리 단계
@@ -177,12 +172,6 @@ class BybitFutureSubscription(BaseSubscription):
                 self.log_info("메시지 수신 루프 시작")
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
-            
-            # 구독 이벤트 발행
-            try:
-                await self.event_handler.handle_subscription_status(status="subscribed", symbols=symbols)
-            except Exception as e:
-                self.log_warning(f"구독 상태 이벤트 발행 실패: {e}")
             
             return True
             
@@ -479,18 +468,8 @@ class BybitFutureSubscription(BaseSubscription):
                                     self.log_warning(f"{symbol} 스냅샷 없이 델타 수신, 무시")
                     except Exception as e:
                         self.log_error(f"오더북 처리 중 오류: {str(e)}")
-                        asyncio.create_task(self.event_handler.handle_error(
-                            error_type="processing_error",
-                            message=str(e),
-                            severity="error"
-                        ))
         except Exception as e:
             self.log_error(f"메시지 처리 중 오류: {str(e)}")
-            asyncio.create_task(self.event_handler.handle_error(
-                error_type="message_error",
-                message=str(e),
-                severity="error"
-            ))
     
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
         """
@@ -521,13 +500,6 @@ class BybitFutureSubscription(BaseSubscription):
     async def _on_disconnection(self, msg: str) -> None:
         """웹소켓 연결 해제 콜백"""
         try:
-            # 웹소켓 연결 에러 이벤트 발행
-            asyncio.create_task(self.event_handler.handle_error(
-                error_type="websocket_error",
-                message=f"웹소켓 연결 해제: {msg}",
-                severity="warning"
-            ))
-
             await self.reconnect()
         except Exception as e:
             self.log_error(f"연결 해제 처리 중 오류: {str(e)}") 

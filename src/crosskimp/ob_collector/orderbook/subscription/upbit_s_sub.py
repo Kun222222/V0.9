@@ -14,9 +14,9 @@ from typing import Dict, List, Union, Optional, Any, Set, Tuple
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 
-from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 
 # 웹소켓 설정
 WS_URL = "wss://api.upbit.com/websocket/v1"  # 웹소켓 URL
@@ -40,15 +40,17 @@ class UpbitSubscription(BaseSubscription):
     """
     
     # 1. 초기화 단계
-    def __init__(self, connection):
+    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None, on_data_received=None):
         """
         초기화
         
         Args:
             connection: 웹소켓 연결 객체
+            exchange_code: 거래소 코드 (None이면 connection에서 가져옴)
+            on_data_received: 데이터 수신 시 호출될 콜백 함수
         """
-        # 부모 클래스 초기화 (exchange_code 전달)
-        super().__init__(connection, Exchange.UPBIT.value)
+        # 부모 클래스 초기화
+        super().__init__(connection, exchange_code, on_data_received)
         
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION
@@ -187,12 +189,6 @@ class UpbitSubscription(BaseSubscription):
                         await asyncio.sleep(0.5)
                     else:
                         raise
-            
-            # 구독 이벤트 발행
-            try:
-                await self.event_handler.handle_subscription_status(status="subscribed", symbols=symbols)
-            except Exception as e:
-                self.log_warning(f"구독 상태 이벤트 발행 실패: {e}")
             
             return True
             
@@ -426,36 +422,9 @@ class UpbitSubscription(BaseSubscription):
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:
                 self.log_error(f"{symbol} 오더북 검증 중 오류: {str(e)}")
-                asyncio.create_task(self.event_handler.handle_error(
-                    error_type="snapshot_error",
-                    message=f"{symbol} 오더북 검증 중 오류: {str(e)}",
-                    severity="error",
-                    data={"message": message}
-                ))
-                
-                # 오류 이벤트 발행
-                await self.publish_error_event(str(e), "snapshot_error")
                 
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            asyncio.create_task(self.event_handler.handle_error(
-                error_type="snapshot_error",
-                message=f"메시지 처리 실패: {str(e)}",
-                severity="error",
-                data={"message": message}
-            ))
-            
-            # 오류 이벤트 발행
-            await self.publish_error_event(str(e), "snapshot_error")
-        
-        # 스냅샷 처리 완료 이벤트 발행
-        asyncio.create_task(self.event_handler.handle_data_event(
-            event_type=EventTypes.ORDERBOOK_UPDATED,
-            symbol=symbol,
-            data={
-                "msg_type": parsed_data.get("type", "unknown")
-            }
-        ))
     
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:

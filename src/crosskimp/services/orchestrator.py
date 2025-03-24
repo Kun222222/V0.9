@@ -1,727 +1,683 @@
 """
-시스템 오케스트레이터 모듈
+오케스트레이터 모듈
 
-이 모듈은 시스템 프로세스의 라이프사이클을 관리합니다. 
-오더북 관리자 및 기타 프로세스의 시작, 중지, 모니터링을 담당합니다.
-매일 지정된 시간에 오더북 수집기를 자동으로 재시작하는 스케줄러를 포함합니다.
+시스템의 전체 생명주기를 관리하고 프로세스들을 조율합니다.
+프로세스 관리 및 명령 처리 기능을 포함합니다.
 """
 
 import asyncio
-import time
+import uuid
+from typing import Dict, Optional, Set, Any, Callable, List
 from datetime import datetime
-from typing import Dict, Any, List, Callable, Union
 import traceback
-import inspect
+import os
+import time
 
-from crosskimp.common.logger.logger import get_logger
+from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events.sys_event_bus import EventType
-from crosskimp.services.scheduler import schedule_orderbook_restart
-from crosskimp.services.command_handler import get_command_handler
+from crosskimp.common.events import get_event_bus
+from crosskimp.common.events.system_eventbus import EventType
+from crosskimp.common.events.domains.process_types import ProcessStatus, ProcessEvent, ProcessEventData
+from crosskimp.common.config.app_config import get_config
 
-# 로거 설정
-logger = get_logger(__name__, component=SystemComponent.MAIN_SYSTEM.value)
-
-# 싱글톤 인스턴스 
-_orchestrator_instance = None
-
-def get_orchestrator():
-    """글로벌 오케스트레이터 인스턴스를 반환합니다."""
-    global _orchestrator_instance
-    if _orchestrator_instance is None:
-        _orchestrator_instance = Orchestrator()
-    return _orchestrator_instance
+logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
 
 class Orchestrator:
-    """
-    시스템 오케스트레이터 클래스
-    
-    시스템의 다양한 프로세스들의 수명 주기를 관리합니다.
-    - 프로세스 시작/중지/재시작
-    - 프로세스 상태 모니터링
-    - 스케줄링된 작업 관리
-    """
+    """시스템 오케스트레이터 및 명령 처리기"""
     
     def __init__(self):
         """오케스트레이터 초기화"""
-        # 초기화 완료 여부
-        self.initialized = False
-        
-        # 시작 시간
-        self.start_time = time.time()
-        
-        # 이벤트 버스 참조
         self.event_bus = None
+        self.initialized = False
+        self.shutting_down = False
         
-        # 명령 핸들러 참조
-        self.command_handler = None
+        # 프로세스 의존성 정의
+        self.process_dependencies = {
+            "orderbook": set(),  # 오더북은 독립적
+            "telegram": set(),  # 텔레그램 커맨더는 독립적
+            "monitoring": {"orderbook"},  # 모니터링은 오더북에 의존
+            "data_collector": {"orderbook"},  # 데이터 수집기는 오더북에 의존
+            "trade_executor": {"orderbook", "data_collector"}  # 거래 실행기는 오더북과 데이터 수집기에 의존
+        }
         
-        # 프로세스 상태와 참조
-        self.processes = {}
+        # 프로세스 실행 상태 추적
+        self.running_processes = set()
         
-        # 스케줄러
-        self.scheduler = None
+        # 명령 핸들러 관련 속성
+        self._command_handlers = {}
+        self._pending_responses = {}
         
-        # 로거
-        self._logger = logger
-        
-        # 스케줄링된 작업 ID 저장
-        self._scheduled_jobs = {}
-    
     async def initialize(self):
         """오케스트레이터 초기화"""
-        if self.initialized:
-            return
+        try:
+            # 이벤트 버스 초기화
+            self.event_bus = get_event_bus()
             
-        # 이벤트 버스 참조
-        from crosskimp.common.events import get_event_bus
-        self.event_bus = get_event_bus()
+            # 이벤트 핸들러 등록
+            self.event_bus.register_handler(
+                EventType.COMMAND,
+                self._process_command
+            )
+            
+            # 프로세스 상태 이벤트 구독
+            self.event_bus.register_handler(
+                EventType.PROCESS_STATUS,
+                self._handle_process_status
+            )
+            
+            # 표준 명령 핸들러 등록
+            self._register_standard_handlers()
+            
+            # 프로세스 컴포넌트 초기화
+            await self._initialize_process_components()
+            
+            self.initialized = True
+            logger.info("오케스트레이터가 초기화되었습니다.")
+            
+        except Exception as e:
+            logger.error(f"오케스트레이터 초기화 중 오류 발생: {str(e)}")
+            raise
         
-        # 명령 핸들러 초기화
-        self.command_handler = get_command_handler()
-        if not self.command_handler.is_initialized():
-            await self.command_handler.initialize()
-        self.command_handler.set_orchestrator(self)
+    async def _initialize_process_components(self):
+        """프로세스 컴포넌트 초기화"""
+        try:
+            logger.info("프로세스 컴포넌트 초기화 중...")
+            
+            # 오더북 프로세스 핸들러 초기화
+            from crosskimp.common.events.handler import initialize_orderbook_process
+            await initialize_orderbook_process()
+            logger.info("오더북 프로세스 핸들러가 초기화되었습니다.")
+            
+            # 추가 프로세스 핸들러 초기화 (필요에 따라 추가)
+            # ...
+            
+            logger.info("프로세스 컴포넌트 초기화 완료")
+        except Exception as e:
+            logger.error(f"프로세스 컴포넌트 초기화 중 오류 발생: {str(e)}")
+            raise
         
-        # 프로세스 상태 변경 이벤트 핸들러 등록
-        if self.event_bus:
-            self.event_bus.register_handler(EventType.PROCESS_START, self._handle_process_event)
-            self.event_bus.register_handler(EventType.PROCESS_STOP, self._handle_process_event)
-            self.event_bus.register_handler(EventType.ERROR, self._handle_error_event)
-        
-        # 지정된 시간에 오더북 수집기 재시작 스케줄링 (스케줄러 사용)
-        schedule_orderbook_restart(self._restart_orderbook_job)
-        
-        self.initialized = True
-        self._logger.info("시스템 오케스트레이터가 초기화되었습니다.")
-        
-        # 초기화 완료 이벤트 발행
-        await self._publish_orchestrator_event("initialized")
-    
-    async def initialize_system_components(self):
-        """
-        시스템의 모든 컴포넌트 초기화 및 등록
-        
-        - 이벤트 버스 초기화
-        - 텔레그램 커맨더 초기화
-        - 오더북 매니저 초기화 및 등록
-        - 기타 필요한 컴포넌트 초기화
-        
-        Returns:
-            bool: 초기화 성공 여부
-        """
+    async def start(self):
+        """시스템 시작"""
         if not self.initialized:
             await self.initialize()
-        
+            
         try:
-            # 이벤트 버스 초기화 확인
-            from crosskimp.common.events import get_event_bus
-            event_bus = get_event_bus()
-            if not event_bus.is_initialized():
-                await event_bus.initialize()
-                self._logger.info("이벤트 버스가 초기화되었습니다.")
+            logger.info("시스템 시작 중...")
+            
+            # 텔레그램 커맨더 실행
+            try:
+                from crosskimp.services.telegram_commander import get_telegram_commander
                 
-            # 텔레그램 커맨더 초기화
-            from crosskimp.services.telegram_commander import get_telegram_commander
-            telegram_commander = get_telegram_commander()
-            if not telegram_commander.is_initialized():
-                await telegram_commander.initialize()
-                self._logger.info("텔레그램 커맨더가 초기화되었습니다.")
+                telegram = get_telegram_commander()
+                # 텔레그램 커맨더 시작
+                await telegram.start()
+                logger.info("텔레그램 커맨더 시작 요청 완료")
+            except Exception as e:
+                logger.error(f"텔레그램 커맨더 시작 중 오류 발생: {str(e)}")
+                logger.error(traceback.format_exc())
+                logger.warning("텔레그램 커맨더 없이 계속 진행합니다.")
             
-            # 오더북 매니저 초기화 및 등록
-            self._logger.info("오더북 매니저를 초기화합니다...")
+            # 프로세스 의존성을 고려하여 시작
+            for process_name in self._get_process_start_order():
+                # 텔레그램은 이미 시작했으므로 건너뜀
+                if process_name == "telegram":
+                    continue
+                    
+                # 시작 요청 이벤트 발행
+                await self.start_process(process_name)
             
-            # 새로운 방식 - 직접 OrderManager 모듈을 사용
-            from crosskimp.ob_collector.orderbook.order_manager import start_orderbook_collection, stop_orderbook_collection
-            
-            # 오케스트레이터에 프로세스 등록 - 시작 및 중지 함수 직접 전달
-            await self.register_process(
-                "ob_collector",          # 프로세스 이름
-                start_orderbook_collection,  # 시작 함수
-                stop_orderbook_collection,   # 중지 함수
-                description="오더북 수집기" # 설명
-            )
-            self._logger.info("오더북 수집기가 등록되었습니다.")
-            
-            # 시스템 시작 시 자동으로 시작할 프로세스 시작
-            await self.start_initial_processes()
-            
-            self._logger.info("모든 시스템 컴포넌트가 초기화되었습니다.")
-            return True
+            logger.info("시스템이 시작되었습니다.")
             
         except Exception as e:
-            self._logger.error(f"시스템 컴포넌트 초기화 중 오류 발생: {str(e)}")
-            self._logger.error(traceback.format_exc())
+            logger.error(f"시스템 시작 중 오류 발생: {str(e)}")
+            raise
             
-            # 오류 이벤트 발행
-            await self._publish_error_event(
-                f"시스템 컴포넌트 초기화 실패: {str(e)}",
-                source="orchestrator",
-                severity="critical"
-            )
-            return False
-
-    async def start_initial_processes(self):
-        """
-        시스템 시작 시 자동으로 시작할 프로세스들을 시작합니다.
-        """
-        self._logger.info("초기 프로세스들을 시작합니다...")
-        
-        # 오더북 수집기 시작
-        if "ob_collector" in self.processes:
-            await self.start_process("ob_collector", "시스템 시작 시 자동 시작")
-        
-        # 필요한 경우 다른 프로세스들도 여기서 시작
-        # 예: await self.start_process("other_process", "시스템 시작 시 자동 시작")
-        
-        self._logger.info("모든 초기 프로세스 시작이 완료되었습니다.")
-    
-    async def shutdown(self):
-        """오케스트레이터 종료"""
-        if not self.initialized:
+    async def shutdown_system(self):
+        """시스템 종료"""
+        if self.shutting_down:
             return
             
-        self._logger.info("시스템 오케스트레이터를 종료합니다...")
+        self.shutting_down = True
+        logger.info("시스템 종료를 시작합니다...")
         
-        # 등록된 모든 프로세스 중지
-        tasks = []
-        for process_name in list(self.processes.keys()):
-            tasks.append(self.stop_process(process_name))
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 스케줄러 종료
-        if self.scheduler and self.scheduler.running:
-            self.scheduler.shutdown()
-        
-        # 이벤트 핸들러 등록 해제
-        if self.event_bus:
-            self.event_bus.unregister_handler(EventType.PROCESS_START, self._handle_process_event)
-            self.event_bus.unregister_handler(EventType.PROCESS_STOP, self._handle_process_event)
-            self.event_bus.unregister_handler(EventType.ERROR, self._handle_error_event)
-        
-        # 명령 핸들러 종료
-        if self.command_handler and self.command_handler.is_initialized():
-            await self.command_handler.shutdown()
-        
-        self.initialized = False
-        self._logger.info("시스템 오케스트레이터가 종료되었습니다.")
-        
-        # 종료 이벤트 발행
-        await self._publish_orchestrator_event("shutdown")
-    
-    async def _restart_orderbook_job(self):
+        try:
+            # 의존성을 고려하여 프로세스 중지 (의존성 역순으로)
+            stop_order = list(reversed(self._get_process_start_order()))
+            
+            for process_name in stop_order:
+                if process_name in self.running_processes:
+                    await self.stop_process(process_name)
+                
+            logger.info("시스템이 종료되었습니다.")
+            
+        except Exception as e:
+            logger.error(f"시스템 종료 중 오류: {str(e)}")
+            
+        finally:
+            self.shutting_down = False
+            
+    async def _handle_process_status(self, data: Dict):
         """
-        오더북 수집기 재시작 작업
-        스케줄러에 의해 호출됩니다.
+        프로세스 상태 변경 이벤트 처리
+        
+        Args:
+            data: 이벤트 데이터
         """
         try:
-            self._logger.info("일일 정기 작업 - 오더북 수집기 재시작을 시작합니다...")
-            await self.restart_process("ob_collector", "일일 정기 재시작")
-            self._logger.info("오더북 수집기 정기 재시작이 완료되었습니다.")
+            process_name = data.get("process_name")
+            status = data.get("status")
+            
+            if not process_name or not status:
+                logger.warning(f"프로세스 상태 이벤트 데이터 불완전: {data}")
+                return
+            
+            # 상태에 따라 running_processes 집합 업데이트
+            if status == ProcessStatus.RUNNING.value:
+                self.running_processes.add(process_name)
+                logger.info(f"프로세스 '{process_name}'이(가) 실행 중 상태로 변경되었습니다.")
+            elif status == ProcessStatus.STOPPED.value:
+                self.running_processes.discard(process_name)
+                logger.info(f"프로세스 '{process_name}'이(가) 중지 상태로 변경되었습니다.")
+            elif status == ProcessStatus.ERROR.value:
+                self.running_processes.discard(process_name)
+                error_msg = data.get("error_message", "알 수 없는 오류")
+                logger.error(f"프로세스 '{process_name}' 오류 발생: {error_msg}")
+            
         except Exception as e:
-            self._logger.error(f"오더북 수집기 정기 재시작 중 오류: {str(e)}")
-            # 추적 정보 로깅
-            self._logger.error(traceback.format_exc())
-    
-    async def _status_update_job(self):
-        """
-        상태 업데이트 작업
-        텔레그램 명령어로 호출될 수 있습니다.
-        """
-        try:
-            # 시스템 상태 수집
-            status = self._collect_system_status()
+            logger.error(f"프로세스 상태 이벤트 처리 중 오류: {str(e)}")
+            logger.error(traceback.format_exc())
             
-            # 이벤트 버스에 상태 발행
-            if self.event_bus:
-                await self.event_bus.publish(EventType.STATUS_UPDATE, status)
-                
-            self._logger.debug("시스템 상태 업데이트 완료")
-            return status
-        except Exception as e:
-            self._logger.error(f"시스템 상태 업데이트 중 오류: {str(e)}")
-            # 추적 정보 로깅
-            self._logger.error(traceback.format_exc())
-            return {"error": str(e)}
-    
-    async def _publish_orchestrator_event(self, event_type: str, data: Dict = None):
-        """
-        오케스트레이터 이벤트 발행
-        
-        Args:
-            event_type: 이벤트 유형
-            data: 추가 데이터
-        """
-        if not self.event_bus:
-            return
-            
-        event_data = {
-            "source": "orchestrator",
-            "event_type": event_type,
-            "timestamp": datetime.now().isoformat(),
-            **(data or {})
-        }
-        
-        await self.event_bus.publish(EventType.STATUS_UPDATE, event_data)
-    
-    async def register_process(
-        self, 
-        process_name: str, 
-        start_func: Union[Callable, object], 
-        stop_func: Union[Callable, object] = None, 
-        description: str = None
-    ):
-        """
-        프로세스 등록 - 유연한 인터페이스 지원
-        
-        Args:
-            process_name: 프로세스 이름
-            start_func: 프로세스 시작 함수 또는 객체 (객체일 경우 run, start, initialize 메서드를 찾음)
-            stop_func: 프로세스 중지 함수 또는 객체 (객체일 경우 stop, shutdown, close 메서드를 찾음)
-                       None이면 start_func이 객체일 경우 해당 객체에서 중지 메서드를 찾습니다
-            description: 프로세스 설명
-        """
-        if process_name in self.processes:
-            self._logger.warning(f"프로세스 '{process_name}'가 이미 등록되어 있습니다.")
-            return
-            
-        # 유연한 시작 함수 처리
-        final_start_func = self._prepare_callable_function(
-            start_func, 
-            ['run', 'start', 'initialize', '__call__'], 
-            f"프로세스 '{process_name}'를 시작할 수 있는 메서드를 찾을 수 없습니다."
-        )
-        
-        # 유연한 중지 함수 처리
-        if stop_func is None and not isinstance(start_func, Callable):
-            # 시작 함수가 객체이고 중지 함수가 제공되지 않은 경우, 객체에서 중지 메서드를 찾습니다
-            stop_func = start_func
-        
-        final_stop_func = self._prepare_callable_function(
-            stop_func, 
-            ['stop', 'shutdown', 'close', 'terminate'],
-            f"프로세스 '{process_name}'를 중지할 수 있는 메서드를 찾을 수 없습니다."
-        )
-        
-        self.processes[process_name] = {
-            "name": process_name,
-            "description": description or process_name,
-            "start_func": final_start_func,
-            "stop_func": final_stop_func,
-            "running": False,
-            "start_time": None,
-            "restart_count": 0,
-            "last_error": None
-        }
-        
-        self._logger.info(f"프로세스 '{process_name}'가 등록되었습니다.")
-    
-    def _prepare_callable_function(self, obj: Union[Callable, object], method_names: List[str], error_msg: str) -> Callable:
-        """
-        호출 가능한 함수를 준비합니다.
-        객체인 경우 주어진 이름의 메서드를 찾고, 호출 가능한 함수로 변환합니다.
-        
-        Args:
-            obj: 함수 또는 객체
-            method_names: 객체에서 찾을 메서드 이름 목록 (우선순위 순)
-            error_msg: 메서드를 찾지 못했을 때 출력할 오류 메시지
-            
-        Returns:
-            호출 가능한 함수
-        """
-        if obj is None:
-            # 기본 더미 함수 반환
-            async def dummy_func():
-                pass
-            return dummy_func
-            
-        if callable(obj):
-            # 이미 호출 가능한 경우 그대로 반환
-            return obj
-            
-        # 객체에서 메서드 찾기
-        for method_name in method_names:
-            if hasattr(obj, method_name) and callable(getattr(obj, method_name)):
-                method = getattr(obj, method_name)
-                
-                # 메서드가 코루틴 함수인지 확인
-                is_coroutine = inspect.iscoroutinefunction(method)
-                
-                if is_coroutine:
-                    # 이미 코루틴 함수면 그대로 반환
-                    return method
-                else:
-                    # 일반 함수면 코루틴으로 래핑
-                    async def wrapper_func(*args, **kwargs):
-                        return method(*args, **kwargs)
-                    return wrapper_func
-        
-        # 메서드를 찾지 못한 경우 오류 로깅 및 더미 함수 반환
-        self._logger.warning(error_msg)
-        
-        async def dummy_func():
-            self._logger.warning(f"더미 함수가 호출되었습니다. {error_msg}")
-            pass
-            
-        return dummy_func
-    
-    async def start_process(self, process_name: str, reason: str = None):
+    async def start_process(self, process_name: str):
         """
         프로세스 시작
         
+        이벤트 버스를 통해 프로세스 시작 요청을 발행합니다.
+        
         Args:
             process_name: 프로세스 이름
-            reason: 시작 이유
-        
+            
         Returns:
-            bool: 시작 성공 여부
+            bool: 요청 성공 여부 (실제 시작 성공 여부가 아님)
         """
-        if not self.initialized:
-            self._logger.error("오케스트레이터가 초기화되지 않았습니다.")
+        # 프로세스가 등록되어 있는지 확인
+        if process_name not in self.process_dependencies:
+            logger.error(f"프로세스 '{process_name}'이(가) 등록되지 않았습니다.")
             return False
             
-        if process_name not in self.processes:
-            self._logger.error(f"프로세스 '{process_name}'가 등록되지 않았습니다.")
-            return False
-            
-        process = self.processes[process_name]
-        
-        if process["running"]:
-            self._logger.info(f"프로세스 '{process_name}'가 이미 실행 중입니다.")
+        # 이미 실행 중인지 확인
+        if process_name in self.running_processes:
+            logger.warning(f"프로세스 '{process_name}'이(가) 이미 실행 중입니다.")
             return True
             
         try:
-            self._logger.info(f"프로세스 '{process_name}'를 시작합니다...")
-            await process["start_func"]()
+            # 이벤트 데이터 생성
+            logger.debug(f"프로세스 '{process_name}' 시작 요청 이벤트 데이터 생성")
+            event_data = ProcessEventData(
+                process_name=process_name,
+                event_type=ProcessEvent.START_REQUESTED,
+                status=ProcessStatus.STARTING
+            ).to_dict()
             
-            # 프로세스 상태 업데이트
-            process["running"] = True
-            process["start_time"] = time.time()
+            # 디버그 로그로 이벤트 데이터 확인
+            logger.debug(f"이벤트 데이터: {event_data}")
             
-            # 프로세스 시작 이벤트 발행
-            await self._publish_process_event(
-                EventType.PROCESS_START,
-                process_name,
-                process["description"],
-                reason=reason
-            )
+            # 프로세스 시작 요청 이벤트 발행
+            logger.info(f"프로세스 '{process_name}' 시작 요청을 발행합니다.")
+            await self.event_bus.publish(EventType.PROCESS_CONTROL, event_data)
             
-            self._logger.info(f"프로세스 '{process_name}'가 시작되었습니다.")
+            # 요청 성공으로 간주 (실제 시작은 비동기적으로 처리)
             return True
             
         except Exception as e:
-            process["last_error"] = str(e)
-            self._logger.error(f"프로세스 '{process_name}' 시작 중 오류: {str(e)}")
-            
-            # 스택 트레이스 로깅
-            self._logger.error(traceback.format_exc())
-            
-            # 오류 이벤트 발행
-            await self._publish_error_event(
-                f"프로세스 '{process_name}' 시작 실패: {str(e)}",
-                source=process_name,
-                severity="error"
-            )
-            
+            logger.error(f"프로세스 '{process_name}' 시작 요청 중 오류 발생: {str(e)}")
+            logger.error(traceback.format_exc())
             return False
-    
-    async def stop_process(self, process_name: str, reason: str = None, was_error: bool = False):
+        
+    async def stop_process(self, process_name: str):
         """
         프로세스 중지
         
+        이벤트 버스를 통해 프로세스 중지 요청을 발행합니다.
+        
         Args:
             process_name: 프로세스 이름
-            reason: 중지 이유
-            was_error: 오류로 인한 중지 여부
-        
+            
         Returns:
-            bool: 중지 성공 여부
+            bool: 요청 성공 여부 (실제 중지 성공 여부가 아님)
         """
-        if not self.initialized:
-            self._logger.error("오케스트레이터가 초기화되지 않았습니다.")
+        # 프로세스가 등록되어 있는지 확인
+        if process_name not in self.process_dependencies:
+            logger.error(f"프로세스 '{process_name}'이(가) 등록되지 않았습니다.")
             return False
             
-        if process_name not in self.processes:
-            self._logger.error(f"프로세스 '{process_name}'가 등록되지 않았습니다.")
-            return False
-            
-        process = self.processes[process_name]
-        
-        if not process["running"]:
-            self._logger.info(f"프로세스 '{process_name}'가 이미 중지되었습니다.")
+        # 실행 중이 아니면 무시
+        if process_name not in self.running_processes:
+            logger.warning(f"프로세스 '{process_name}'이(가) 실행 중이 아닙니다.")
             return True
             
         try:
-            self._logger.info(f"프로세스 '{process_name}'를 중지합니다...")
-            await process["stop_func"]()
+            # 이벤트 데이터 생성
+            logger.debug(f"프로세스 '{process_name}' 중지 요청 이벤트 데이터 생성")
+            event_data = ProcessEventData(
+                process_name=process_name,
+                event_type=ProcessEvent.STOP_REQUESTED,
+                status=ProcessStatus.STOPPING
+            ).to_dict()
             
-            # 프로세스 상태 업데이트
-            process["running"] = False
-            process["start_time"] = None
+            # 디버그 로그로 이벤트 데이터 확인
+            logger.debug(f"이벤트 데이터: {event_data}")
             
-            # 프로세스 중지 이벤트 발행
-            await self._publish_process_event(
-                EventType.PROCESS_STOP,
-                process_name,
-                process["description"],
-                reason=reason,
-                was_error=was_error
-            )
+            # 프로세스 중지 요청 이벤트 발행
+            logger.info(f"프로세스 '{process_name}' 중지 요청을 발행합니다.")
+            await self.event_bus.publish(EventType.PROCESS_CONTROL, event_data)
             
-            self._logger.info(f"프로세스 '{process_name}'가 중지되었습니다.")
+            # 요청 성공으로 간주 (실제 중지는 비동기적으로 처리)
             return True
             
         except Exception as e:
-            process["last_error"] = str(e)
-            self._logger.error(f"프로세스 '{process_name}' 중지 중 오류: {str(e)}")
-            
-            # 스택 트레이스 로깅
-            self._logger.error(traceback.format_exc())
-            
-            # 프로세스 상태는 강제로 중지됨으로 설정
-            process["running"] = False
-            process["start_time"] = None
-            
-            # 오류 이벤트 발행
-            await self._publish_error_event(
-                f"프로세스 '{process_name}' 중지 실패: {str(e)}",
-                source=process_name,
-                severity="error"
-            )
-            
-            # 프로세스 중지 이벤트 발행 (오류 상태)
-            await self._publish_process_event(
-                EventType.PROCESS_STOP,
-                process_name,
-                process["description"],
-                reason=f"중지 오류: {str(e)}",
-                was_error=True
-            )
-            
+            logger.error(f"프로세스 '{process_name}' 중지 요청 중 오류 발생: {str(e)}")
+            logger.error(traceback.format_exc())
             return False
-    
-    async def restart_process(self, process_name: str, reason: str = None):
+        
+    def is_process_running(self, process_name: str) -> bool:
         """
-        프로세스 재시작
+        프로세스가 실행 중인지 확인
         
         Args:
             process_name: 프로세스 이름
-            reason: 재시작 이유
             
         Returns:
-            bool: 재시작 성공 여부
+            bool: 실행 중이면 True, 아니면 False
         """
-        if not self.initialized:
-            self._logger.error("오케스트레이터가 초기화되지 않았습니다.")
-            return False
-            
-        if process_name not in self.processes:
-            self._logger.error(f"프로세스 '{process_name}'가 등록되지 않았습니다.")
-            return False
-            
-        process = self.processes[process_name]
-        restart_reason = reason or "수동 재시작"
+        return process_name in self.running_processes
         
-        self._logger.info(f"프로세스 '{process_name}'를 재시작합니다... 사유: {restart_reason}")
-        
-        # 프로세스가 실행 중이면 중지
-        if process["running"]:
-            stop_result = await self.stop_process(process_name, reason=f"재시작: {restart_reason}")
-            if not stop_result:
-                self._logger.warning(f"프로세스 '{process_name}' 중지 실패, 강제로 재시작을 시도합니다.")
-        
-        # 약간의 지연 후 재시작
-        await asyncio.sleep(1)
-        
-        # 프로세스 재시작 카운트 증가
-        process["restart_count"] += 1
-        
-        # 프로세스 시작
-        start_result = await self.start_process(process_name, reason=f"재시작: {restart_reason}")
-        
-        if start_result:
-            self._logger.info(f"프로세스 '{process_name}' 재시작 완료")
-        else:
-            self._logger.error(f"프로세스 '{process_name}' 재시작 실패")
-            
-        return start_result
-    
-    async def _publish_process_event(
-        self, 
-        event_type: EventType, 
-        process_name: str, 
-        description: str, 
-        reason: str = None,
-        was_error: bool = False
-    ):
+    def is_process_registered(self, process_name: str) -> bool:
         """
-        프로세스 이벤트 발행
+        프로세스가 등록되어 있는지 확인
         
         Args:
-            event_type: 이벤트 유형
             process_name: 프로세스 이름
-            description: 프로세스 설명
-            reason: 이벤트 이유
-            was_error: 오류로 인한 이벤트 여부
+            
+        Returns:
+            bool: 프로세스가 등록되어 있으면 True, 아니면 False
         """
-        if not self.event_bus:
+        return process_name in self.process_dependencies
+            
+    #
+    # 명령 처리 관련 메서드
+    #
+    
+    def _register_standard_handlers(self):
+        """기본 명령 핸들러 등록"""
+        self.register_command_handler("start_process", self._handle_start_process)
+        self.register_command_handler("stop_process", self._handle_stop_process)
+        self.register_command_handler("restart_process", self._handle_restart_process)
+        logger.debug("기본 명령 핸들러가 등록되었습니다.")
+    
+    def register_command_handler(self, command: str, handler: Callable):
+        """
+        명령 핸들러 등록
+        
+        Args:
+            command: 명령 이름
+            handler: 핸들러 함수 (coroutine)
+        """
+        self._command_handlers[command] = handler
+        logger.debug(f"명령 핸들러 등록: {command}")
+    
+    async def _process_command(self, data: Dict):
+        """
+        명령 이벤트 처리
+        
+        Args:
+            data: 명령 이벤트 데이터
+        """
+        if not isinstance(data, dict):
             return
             
-        event_data = {
-            "event_type": event_type.name,
-            "process_name": process_name,
-            "description": description,
-            "timestamp": datetime.now().isoformat(),
-            "was_error": was_error
+        # 응답 메시지인 경우 처리
+        if data.get("is_response", False):
+            await self._handle_command_response(data)
+            return
+            
+        command = data.get("command")
+        args = data.get("args", {})
+        source = data.get("source", "unknown")
+        request_id = data.get("request_id")
+        
+        if not command:
+            return
+            
+        logger.info(f"명령 수신: {command} (소스: {source})")
+        
+        # 명령 핸들러 실행
+        handler = self._command_handlers.get(command)
+        if handler:
+            try:
+                result = await handler(args)
+                
+                # 요청 ID가 있으면 응답 전송
+                if request_id:
+                    await self._send_command_response(command, result, request_id)
+                    
+            except Exception as e:
+                logger.error(f"명령 '{command}' 처리 중 오류: {str(e)}")
+                logger.error(traceback.format_exc())
+                
+                # 오류 응답 전송
+                if request_id:
+                    await self._send_command_response(
+                        command, 
+                        {"success": False, "error": str(e)}, 
+                        request_id
+                    )
+        else:
+            logger.warning(f"알 수 없는 명령: {command}")
+            
+            # 알 수 없는 명령 응답
+            if request_id:
+                await self._send_command_response(
+                    command, 
+                    {"success": False, "error": f"알 수 없는 명령: {command}"}, 
+                    request_id
+                )
+    
+    async def _handle_command_response(self, data: Dict):
+        """
+        명령 응답 처리
+        
+        Args:
+            data: 응답 데이터
+        """
+        request_id = data.get("request_id")
+        if not request_id:
+            return
+            
+        # 대기 중인 응답이 있는지 확인
+        if request_id in self._pending_responses:
+            future = self._pending_responses.pop(request_id)
+            if not future.done():
+                # Future에 결과 설정
+                future.set_result(data.get("data", {}))
+    
+    async def send_command(self, command: str, args: Dict = None, source: str = "system", wait_response: bool = False, timeout: float = 5.0) -> Optional[Dict]:
+        """
+        명령 전송 메서드
+        
+        Args:
+            command: 명령 이름
+            args: 명령 인자
+            source: 명령 소스
+            wait_response: 응답 대기 여부
+            timeout: 응답 대기 시간 (초)
+            
+        Returns:
+            Dict or None: 응답 데이터 (wait_response=True인 경우)
+        """
+        if not self.event_bus:
+            logger.error("이벤트 버스가 초기화되지 않았습니다.")
+            return None
+            
+        request_id = None
+        
+        if wait_response:
+            # 고유 요청 ID 생성
+            request_id = str(uuid.uuid4())
+            
+            # 응답 대기 Future 생성
+            response_future = asyncio.Future()
+            self._pending_responses[request_id] = response_future
+        
+        # 명령 이벤트 발행
+        command_data = {
+            "command": command,
+            "args": args or {},
+            "source": source,
         }
         
-        if reason:
-            event_data["reason"] = reason
+        if request_id:
+            command_data["request_id"] = request_id
             
-        await self.event_bus.publish(event_type, event_data)
+        await self.event_bus.publish(EventType.COMMAND, command_data)
+        
+        # 응답 대기
+        if wait_response:
+            try:
+                return await asyncio.wait_for(response_future, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(f"명령 응답 시간 초과: {command}")
+                if request_id in self._pending_responses:
+                    del self._pending_responses[request_id]
+                return {"success": False, "error": "응답 시간 초과"}
+            except Exception as e:
+                logger.error(f"명령 응답 대기 중 오류: {str(e)}")
+                if request_id in self._pending_responses:
+                    del self._pending_responses[request_id]
+                return {"success": False, "error": str(e)}
+        
+        return None
     
-    async def _publish_error_event(self, message: str, source: str, severity: str = "error"):
+    async def _send_command_response(self, command: str, data: Dict, request_id):
         """
-        오류 이벤트 발행
+        명령 응답 전송
         
         Args:
-            message: 오류 메시지
-            source: 오류 소스
-            severity: 오류 심각도 (error, warning, critical)
+            command: 명령어
+            data: 응답 데이터
+            request_id: 요청 ID
         """
         if not self.event_bus:
             return
             
-        await self.event_bus.publish(EventType.ERROR, {
-            "message": message,
-            "source": source,
-            "severity": severity,
+        await self.event_bus.publish(EventType.COMMAND, {
+            "command": command,
+            "is_response": True,
+            "data": data,
+            "request_id": request_id,
             "timestamp": datetime.now().isoformat()
         })
     
-    def _collect_system_status(self) -> Dict:
+    # 프로세스 관련 명령 핸들러
+    async def _handle_start_process(self, args: Dict) -> Dict:
         """
-        시스템 상태 수집
+        프로세스 시작 명령 처리
+        
+        Args:
+            args: 명령 인자 (process_name 포함)
         
         Returns:
-            Dict: 시스템 상태 정보
+            Dict: 처리 결과
         """
-        # 현재 시간
-        current_time = time.time()
-        
-        # 프로세스 상태 수집
-        processes_status = {}
-        for name, process in self.processes.items():
-            uptime = None
-            if process["running"] and process["start_time"]:
-                uptime = current_time - process["start_time"]
+        process_name = args.get("process_name")
+        if not process_name:
+            return {"success": False, "error": "프로세스 이름이 필요합니다."}
+            
+        if not self.is_process_registered(process_name):
+            return {"success": False, "error": f"프로세스 '{process_name}'이(가) 등록되지 않았습니다."}
+            
+        # 의존성이 있는 프로세스들 확인
+        dependencies = self.process_dependencies.get(process_name, set())
+        for dep in dependencies:
+            if not self.is_process_running(dep):
+                # 의존성 프로세스 먼저 시작
+                await self.start_process(dep)
                 
-            processes_status[name] = {
-                "running": process["running"],
-                "uptime": uptime,
-                "restart_count": process["restart_count"],
-                "last_error": process["last_error"],
-                "description": process["description"]
-            }
-        
-        # 이벤트 버스 통계
-        event_bus_stats = {}
-        if self.event_bus:
-            event_bus_stats = {
-                "published_events": self.event_bus.get_published_count(),
-                "processed_events": self.event_bus.get_processed_count(),
-                "errors": self.event_bus.get_error_count()
-            }
-        
-        # 시스템 상태 구성
-        status = {
-            "system_running": self.initialized,
-            "processes": processes_status,
-            "stats": {
-                "uptime": current_time - self.start_time,
-                "process_count": len(self.processes),
-                "running_process_count": sum(1 for p in self.processes.values() if p["running"])
-            },
-            "event_bus_stats": event_bus_stats,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return status
+        # 요청된 프로세스 시작
+        result = await self.start_process(process_name)
+        return {"success": result, "process_name": process_name}
     
-    def is_initialized(self) -> bool:
+    async def _handle_stop_process(self, args: Dict) -> Dict:
         """
-        초기화 완료 여부 확인
+        프로세스 중지 명령 처리
+        
+        Args:
+            args: 명령 인자 (process_name 포함)
         
         Returns:
-            bool: 초기화 완료 여부
+            Dict: 처리 결과
         """
-        return self.initialized
+        process_name = args.get("process_name")
+        if not process_name:
+            return {"success": False, "error": "프로세스 이름이 필요합니다."}
+            
+        if not self.is_process_registered(process_name):
+            return {"success": False, "error": f"프로세스 '{process_name}'이(가) 등록되지 않았습니다."}
+            
+        # 이 프로세스에 의존하는 다른 프로세스들 먼저 중지
+        dependent_processes = self._get_dependent_processes(process_name)
+        for dep_proc in dependent_processes:
+            if self.is_process_running(dep_proc):
+                await self.stop_process(dep_proc)
+                
+        # 요청된 프로세스 중지
+        result = await self.stop_process(process_name)
+        return {"success": result, "process_name": process_name}
     
-    def is_process_running(self, process_name: str) -> bool:
+    async def _handle_restart_process(self, args: Dict) -> Dict:
         """
-        프로세스 실행 여부 확인
+        프로세스 재시작 명령 처리
+        
+        Args:
+            args: 명령 인자 (process_name 포함)
+        
+        Returns:
+            Dict: 처리 결과
+        """
+        process_name = args.get("process_name")
+        if not process_name:
+            return {"success": False, "error": "프로세스 이름이 필요합니다."}
+            
+        await self.restart_process(process_name)
+        return {"success": True, "process_name": process_name}
+    
+    async def restart_process(self, process_name: str):
+        """
+        프로세스 재시작 처리
+        
+        의존성을 고려하여 프로세스와 관련 프로세스를 재시작합니다.
+        
+        Args:
+            process_name: 재시작할 프로세스 이름
+        """
+        if self.shutting_down:
+            logger.warning("시스템 종료 중에는 프로세스 재시작이 불가능합니다.")
+            return
+            
+        try:
+            # 독립 프로세스는 단독 재시작
+            if not self.process_dependencies.get(process_name) and not self._get_dependent_processes(process_name):
+                await self._restart_process(process_name)
+                return
+                
+            # 의존하는 프로세스들도 함께 재시작
+            dependent_processes = self._get_dependent_processes(process_name)
+            
+            # 1. 의존 프로세스들 중지 (역순)
+            for dep_process in reversed(list(dependent_processes)):
+                if self.is_process_running(dep_process):
+                    await self.stop_process(dep_process)
+            
+            # 2. 대상 프로세스 중지
+            if self.is_process_running(process_name):
+                await self.stop_process(process_name)
+            
+            # 잠시 대기
+            await asyncio.sleep(1)
+            
+            # 3. 대상 프로세스 시작
+            await self.start_process(process_name)
+            
+            # 4. 의존 프로세스들 시작
+            for dep_process in dependent_processes:
+                await self.start_process(dep_process)
+            
+            logger.info(f"프로세스 '{process_name}' 및 의존 프로세스 재시작 완료")
+            
+        except Exception as e:
+            logger.error(f"프로세스 '{process_name}' 재시작 중 오류: {str(e)}")
+            logger.error(traceback.format_exc())
+            
+    async def _restart_process(self, process_name: str):
+        """
+        단일 프로세스 재시작
+        
+        Args:
+            process_name: 재시작할 프로세스 이름
+        """
+        try:
+            # 이벤트 데이터 생성
+            logger.debug(f"프로세스 '{process_name}' 재시작 요청 이벤트 데이터 생성")
+            event_data = ProcessEventData(
+                process_name=process_name,
+                event_type=ProcessEvent.RESTART_REQUESTED,
+                status=ProcessStatus.STOPPING
+            ).to_dict()
+            
+            # 디버그 로그로 이벤트 데이터 확인
+            logger.debug(f"이벤트 데이터: {event_data}")
+            
+            # 프로세스 재시작 요청 이벤트 발행
+            logger.info(f"프로세스 '{process_name}' 재시작 요청을 발행합니다.")
+            await self.event_bus.publish(EventType.PROCESS_CONTROL, event_data)
+            
+        except Exception as e:
+            logger.error(f"프로세스 '{process_name}' 재시작 실패: {str(e)}")
+            raise
+            
+    def _get_dependent_processes(self, process_name: str) -> Set[str]:
+        """
+        프로세스에 의존하는 다른 프로세스들 찾기
         
         Args:
             process_name: 프로세스 이름
             
         Returns:
-            bool: 프로세스 실행 여부
+            Set[str]: 의존하는 프로세스 이름 집합
         """
-        if process_name not in self.processes:
-            return False
+        dependent_processes = set()
+        for proc_name, deps in self.process_dependencies.items():
+            if process_name in deps:
+                dependent_processes.add(proc_name)
+                # 재귀적으로 의존성 검색 (의존하는 프로세스에 의존하는 프로세스)
+                for dep_of_dep in self._get_dependent_processes(proc_name):
+                    dependent_processes.add(dep_of_dep)
+        return dependent_processes
             
-        return self.processes[process_name]["running"]
-
-    async def _handle_process_event(self, event_data: Dict):
-        """
-        프로세스 이벤트 핸들러 - 상태 변경 감지
+    def is_initialized(self) -> bool:
+        """초기화 완료 여부 확인"""
+        return self.initialized
         
-        Args:
-            event_data: 이벤트 데이터
+    def is_shutting_down(self) -> bool:
+        """종료 중인지 확인"""
+        return self.shutting_down
+        
+    def _get_process_start_order(self) -> List[str]:
         """
-        try:
-            process_name = event_data.get("process_name")
-            if not process_name:
+        프로세스 시작 순서 결정
+        
+        의존성 그래프를 기반으로 프로세스 시작 순서를 결정합니다.
+        의존성이 있는 프로세스는 의존하는 프로세스 이후에 시작됩니다.
+        
+        Returns:
+            List[str]: 시작 순서로 정렬된 프로세스 이름 목록
+        """
+        # 시작 순서를 저장할 리스트
+        result = []
+        # 방문한 프로세스를 추적하는 집합
+        visited = set()
+        
+        def visit(process):
+            if process in visited:
                 return
-                
-            event_type = event_data.get("event_type")
-            was_error = event_data.get("was_error", False)
-            
-            self._logger.debug(f"프로세스 이벤트 감지: {process_name}, 유형: {event_type}, 오류: {was_error}")
-            
-            # 상태 변경 감지 - 필요에 따라 여기서 추가 처리
-            if was_error and process_name in self.processes:
-                self._logger.warning(f"프로세스 {process_name}에서 오류가 감지되었습니다.")
-                # 오류 상태를 저장하거나 필요한 추가 조치
-                
-            # 상태 업데이트 발행 - 상태가 변경되었을 때만 발행
-            await self._status_update_job()
-                
-        except Exception as e:
-            self._logger.error(f"프로세스 이벤트 처리 중 오류: {str(e)}")
-            self._logger.error(traceback.format_exc())
-
-    async def _handle_error_event(self, event_data: Dict):
-        """
-        오류 이벤트 핸들러
+            visited.add(process)
+            # 먼저 의존하는 프로세스 방문
+            for dep in self.process_dependencies.get(process, set()):
+                visit(dep)
+            # 모든 의존성을 방문한 후 현재 프로세스 추가
+            result.append(process)
         
-        Args:
-            event_data: 이벤트 데이터
-        """
-        try:
-            message = event_data.get("message", "알 수 없는 오류")
-            source = event_data.get("source", "unknown")
-            severity = event_data.get("severity", "error")
+        # 모든 프로세스 방문
+        for process in self.process_dependencies:
+            visit(process)
             
-            self._logger.warning(f"오류 이벤트 감지: {message} (소스: {source}, 심각도: {severity})")
-            
-            # 심각한 오류인 경우 추가 처리
-            if severity == "critical" and source in self.processes:
-                self._logger.error(f"심각한 오류 감지: {source} - {message}")
-                # 필요한 복구 조치
-                
-        except Exception as e:
-            self._logger.error(f"오류 이벤트 처리 중 오류: {str(e)}")
-            self._logger.error(traceback.format_exc())
+        return result

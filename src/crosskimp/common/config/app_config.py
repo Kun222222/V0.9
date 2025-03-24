@@ -15,8 +15,14 @@ from datetime import datetime
 from crosskimp.common.config.env_loader import EnvLoader
 from crosskimp.common.config.common_constants import SystemComponent
 
-# 기본 로거 설정
-logger = logging.getLogger(__name__)
+# 기본 로거 설정 - 순환 참조 방지를 위해 기본 Python logging 사용
+logger = logging.getLogger("app_config")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('[시스템] %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 class AppConfig:
     """애플리케이션 통합 설정 관리 클래스"""
@@ -660,17 +666,12 @@ class AppConfig:
 # 모듈 레벨 편의 함수
 def get_config() -> 'AppConfig':
     """
-    설정 관리자 인스턴스 반환 (편의 함수)
+    설정 관리자 싱글톤 인스턴스 가져오기
     
     Returns:
         AppConfig: 설정 관리자 인스턴스
     """
     try:
-        # 로거에 시스템 컴포넌트 정보 설정
-        from crosskimp.common.logger.logger import get_logger
-        global logger
-        logger = get_logger(__name__, component=SystemComponent.SYSTEM.value)
-        
         return AppConfig.get_instance()
     except Exception as e:
         logger.error(f"설정 관리자 인스턴스 가져오기 실패: {str(e)}")

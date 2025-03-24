@@ -25,8 +25,6 @@ from typing import Dict, Optional, List, Union, Any
 from crosskimp.common.config.common_constants import (
     SystemComponent, COMPONENT_NAMES_KR
 )
-# AppConfig 모듈 가져오기
-from crosskimp.common.config.app_config import get_config
 
 # 로그 디렉토리 및 파일 경로 설정 - 기본값으로 설정 (실제 경로는 나중에 초기화됨)
 LOGS_DIR = "src/logs"
@@ -50,6 +48,9 @@ _unified_logger = None  # 통합 로거 인스턴스
 _initialized = False  # 로깅 시스템 초기화 여부
 _lock = threading.RLock()  # 스레드 안전한 재진입 락
 _internal_logger = None  # 내부 로깅용 로거
+
+# 컴포넌트별 로거 인스턴스를 저장할 딕셔너리
+_component_loggers = {}  # 컴포넌트별 로거 캐시
 
 # ============================
 # 필터 클래스 정의 (내부 로거보다 먼저 정의)
@@ -98,6 +99,8 @@ class ComponentFilter(logging.Filter):
 def _get_logging_setting(key, default_value):
     """시스템 설정에서 로깅 관련 설정 가져오기"""
     try:
+        # 늦은 임포트 (lazy import) 사용 - 순환 참조 방지
+        from crosskimp.common.config.app_config import get_config
         config = get_config()
         return config.get_system(f"logging.{key}", default_value)
     except:
@@ -518,8 +521,10 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
 # ============================
 def initialize_logging() -> None:
     """로깅 시스템 초기화"""
-    global _initialized
+    # 내부 로거 가져오기
     internal_logger = _get_internal_logger()
+    
+    global _initialized
     
     with _lock:
         if _initialized:
@@ -528,6 +533,8 @@ def initialize_logging() -> None:
         try:
             # AppConfig 에서 경로 정보 가져오기
             try:
+                # 늦은 임포트 (lazy import) 사용 - 순환 참조 방지
+                from crosskimp.common.config.app_config import get_config
                 config = get_config()
                 global LOGS_DIR, LOG_SUBDIRS
                 LOGS_DIR = config.get_path("logs_dir")
@@ -558,11 +565,24 @@ def initialize_logging() -> None:
             internal_logger.error(f"로깅 시스템 초기화 실패: {str(e)}")
             raise
 
-def get_unified_logger() -> logging.Logger:
-    """통합 로거 싱글톤 인스턴스 반환"""
-    global _unified_logger
+def get_unified_logger(component: str = SystemComponent.SYSTEM.value) -> logging.Logger:
+    """
+    컴포넌트별 통합 로거 인스턴스 반환
+    각 컴포넌트마다 별도의 로거 인스턴스를 생성하고 캐싱합니다.
+    
+    Args:
+        component: 시스템 컴포넌트 식별자 (기본값: SYSTEM)
+        
+    Returns:
+        logging.Logger: 컴포넌트 필터가 적용된 통합 로거 인스턴스
+    """
+    global _unified_logger, _component_loggers
+    
+    # 설정 초기화 먼저 수행
+    _initialize_config_settings()
     
     with _lock:
+        # 기본 통합 로거가 없으면 생성
         if _unified_logger is None:
             # 로그 디렉토리 생성 - 필요한 모든 디렉토리 확인
             os.makedirs(LOGS_DIR, exist_ok=True)
@@ -577,58 +597,30 @@ def get_unified_logger() -> logging.Logger:
                 format_str=_get_log_format(),
                 add_console=True,
                 add_error_file=True,
-                component=SystemComponent.MAIN_SYSTEM.value  # 메인 시스템 컴포넌트 지정
+                component=SystemComponent.SYSTEM.value
             )
             _unified_logger.info(f"통합 로거 초기화 완료")
-            
-        return _unified_logger
-
-def get_logger(name: str, log_dir: Optional[str] = None, add_console: bool = False, component: str = SystemComponent.SYSTEM.value) -> logging.Logger:
-    """
-    이름으로 로거 인스턴스 가져오기
-    - 이미 생성된 로거가 있으면 반환, 없으면 새로 생성
-    - 특별한 로거가 아니면 통합 로거를 반환 (불필요한 로그 파일 생성 방지)
-    
-    Args:
-        name: 로거 이름
-        log_dir: 로그 파일 저장 디렉토리 (기본값: LOGS_DIR)
-        add_console: 콘솔 출력 활성화 여부 (기본값: False)
-        component: 시스템 컴포넌트 식별자
         
-    Returns:
-        logging.Logger: 로거 인스턴스
-    """
-    # 설정 초기화 먼저 수행
-    _initialize_config_settings()
-    
-    # 특별한 로거가 아니면 통합 로거 반환 (불필요한 로그 파일 생성 방지)
-    special_loggers = ['unified_logger', 'metrics_logger']
-    if name not in special_loggers:
-        return get_unified_logger()
+        # 컴포넌트별 로거가 없으면 생성
+        if component not in _component_loggers:
+            # 기본 로거 복제
+            component_logger = logging.getLogger(f'unified_logger_{component}')
+            component_logger.handlers = _unified_logger.handlers
+            component_logger.level = _unified_logger.level
+            component_logger.propagate = False
+            
+            # 기존 컴포넌트 필터 제거
+            for f in component_logger.filters:
+                if isinstance(f, ComponentFilter):
+                    component_logger.filters.remove(f)
+            
+            # 새 컴포넌트 필터 추가
+            component_logger.addFilter(ComponentFilter(component))
+            
+            # 캐시에 저장
+            _component_loggers[component] = component_logger
         
-    with _lock:
-        if name not in _loggers or not _loggers[name].handlers:
-            # 로그 디렉토리 확인 및 생성
-            os.makedirs(LOGS_DIR, exist_ok=True)
-            for dir_name, dir_path in LOG_SUBDIRS.items():
-                os.makedirs(dir_path, exist_ok=True)
-            
-            # 로그 디렉토리 설정
-            if log_dir is None:
-                log_dir = LOGS_DIR
-            
-            _loggers[name] = create_logger(
-                name=name,
-                log_dir=log_dir,
-                level=DEFAULT_FILE_LEVEL,
-                console_level=DEFAULT_CONSOLE_LEVEL,
-                format_str=_get_log_format(),
-                add_console=add_console,
-                add_error_file=True,
-                component=component
-            )
-            
-        return _loggers[name]
+        return _component_loggers[component]
 
 def shutdown_logging() -> None:
     """로깅 시스템 종료"""
@@ -657,19 +649,8 @@ def shutdown_logging() -> None:
                     _unified_logger.removeHandler(handler)
                 except Exception as e:
                     internal_logger.error(f"통합 로거 핸들러 종료 실패: {str(e)}")
-        
-        internal_logger.info(f"로깅 시스템 종료 완료")
-        
-        # 내부 로거 종료
-        if _internal_logger:
-            for handler in _internal_logger.handlers[:]:
-                try:
-                    if hasattr(handler, 'flush'):
-                        handler.flush()
-                    handler.close()
-                    _internal_logger.removeHandler(handler)
-                except Exception:
-                    pass
+                    
+        internal_logger.info("로깅 시스템이 종료되었습니다.")
 
 # 모듈 초기화 시 내부 로거 초기화 및 루트 로거 설정
 # 루트 로거 설정 - 콘솔 출력 방지
@@ -683,7 +664,6 @@ _get_internal_logger().info(f"logger.py 모듈 초기화 완료")
 __all__ = [
     'initialize_logging',
     'get_unified_logger',
-    'get_logger',
     'shutdown_logging',
     'get_current_time_str',
     'create_raw_logger'

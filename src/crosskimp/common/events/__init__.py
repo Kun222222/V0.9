@@ -6,18 +6,18 @@
 
 from enum import Enum, auto
 from typing import Optional
-from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
+from crosskimp.common.events.system_eventbus import SystemEventBus, EventType
 
 # 글로벌 이벤트 버스 인스턴스
-_event_bus_instance: Optional[SimpleEventBus] = None
+_event_bus_instance: Optional[SystemEventBus] = None
 _component_event_buses = {}
 
-def get_event_bus() -> SimpleEventBus:
+def get_event_bus() -> SystemEventBus:
     """글로벌 이벤트 버스 인스턴스를 반환합니다."""
     global _event_bus_instance
     
     if _event_bus_instance is None:
-        _event_bus_instance = SimpleEventBus()
+        _event_bus_instance = SystemEventBus()
         
     return _event_bus_instance
 
@@ -69,7 +69,7 @@ class EventPriority(Enum):
     LOW = 2
     BACKGROUND = 3
 
-def get_component_event_bus(component: Component) -> SimpleEventBus:
+def get_component_event_bus(component: Component) -> SystemEventBus:
     """
     컴포넌트별 이벤트 버스 인스턴스를 반환합니다.
     실제로는 글로벌 이벤트 버스와 동일한 인스턴스이지만,
@@ -89,7 +89,7 @@ __all__ = [
     'EventType',
     'EventTypes',
     'EventPriority',
-    'SimpleEventBus',
+    'SystemEventBus',
     'Component',
     'StatusEventTypes',
     'TelegramEventTypes'

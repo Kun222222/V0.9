@@ -11,8 +11,6 @@ from crosskimp.common.logger.logger import get_unified_logger
 # constants_v3 대신 새로운 모듈에서 Exchange만 가져오기
 from crosskimp.common.config.common_constants import Exchange
 
-from crosskimp.ob_collector.eventbus.types import EventTypes
-from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy, WebSocketStats
 
 # 로거 인스턴스 가져오기
@@ -33,22 +31,19 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
     """
     바이낸스 선물 웹소켓 연결 관리 클래스
     
-    바이낸스 USDT-M 선물 거래소의 웹소켓 연결을 관리합니다.
-    
-    책임:
-    - 웹소켓 연결 관리 (연결, 재연결, 종료)
-    - 연결 상태 모니터링
+    바이낸스 선물 거래소의 웹소켓 연결을 관리하는 클래스입니다.
     """
-    def __init__(self, settings: dict):
+    def __init__(self, settings: dict, exchange_code: str = None, on_status_change=None):
         """
         바이낸스 선물 웹소켓 연결 관리자 초기화
         
         Args:
             settings: 설정 딕셔너리
+            exchange_code: 거래소 코드 (기본값: None, 자동으로 설정)
+            on_status_change: 연결 상태 변경 시 호출될 콜백 함수
         """
-        super().__init__(settings, Exchange.BINANCE_FUTURE.value)
-        
-        # 웹소켓 URL 설정
+        exchange_code = exchange_code or Exchange.BINANCE_FUTURE.value
+        super().__init__(settings, exchange_code, on_status_change)
         self.ws_url = WS_URL
         
         # 상태 및 설정값

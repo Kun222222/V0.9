@@ -161,7 +161,7 @@ class ComponentEventBus:
                     self._event_processor(priority)
                 )
                 
-        self._logger.info(f"[이벤트] '{self.component_name}' 오더북 메니저 이벤트 버스 시작됨")
+        self._logger.info(f"[이벤트] '{self.component_name}' 이벤트 버스 시작됨")
     
     async def stop(self):
         """이벤트 프로세서 중지"""

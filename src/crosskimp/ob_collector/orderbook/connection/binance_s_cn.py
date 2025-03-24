@@ -10,8 +10,6 @@ from websockets import connect
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange
 
-from crosskimp.ob_collector.eventbus.types import EventTypes
-from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, ReconnectStrategy, WebSocketStats
 
 # 로거 인스턴스 가져오기
@@ -39,14 +37,17 @@ class BinanceWebSocketConnector(BaseWebsocketConnector):
     - 연결 상태 모니터링
     - 핑-퐁 메시지 처리
     """
-    def __init__(self, settings: dict):
+    def __init__(self, settings: dict, exchange_code: str = None, on_status_change=None):
         """
         바이낸스 웹소켓 연결 관리자 초기화
         
         Args:
             settings: 설정 딕셔너리
+            exchange_code: 거래소 코드 (기본값: None, 자동으로 설정)
+            on_status_change: 연결 상태 변경 시 호출될 콜백 함수
         """
-        super().__init__(settings, Exchange.BINANCE.value)
+        exchange_code = exchange_code or Exchange.BINANCE.value
+        super().__init__(settings, exchange_code, on_status_change)
         
         # 웹소켓 URL 설정
         self.ws_url = WS_URL

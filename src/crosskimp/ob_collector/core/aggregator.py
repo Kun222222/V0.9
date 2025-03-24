@@ -13,12 +13,16 @@ import time
 import json
 from typing import Dict, List, Set, Optional, Any, Tuple
 
-from crosskimp.common.logger.logger import get_unified_logger, get_logger
+from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
 from crosskimp.common.config.app_config import get_config
 
 # 로거 인스턴스 가져오기
-logger = get_logger(__name__, component=SystemComponent.ORDERBOOK.value)
+logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+
+# 설정 객체 초기화 (한 번만 호출)
+config = get_config()
+logger.debug(f"설정 객체 초기화 완료: config_dir={config.config_dir}")
 
 # ============================
 # 유틸리티 함수
@@ -40,18 +44,14 @@ def get_value_from_settings(path: str, default=None):
     """
     try:
         logger.debug(f"설정 값 조회 시도: {path}, 기본값: {default}")
-        config = get_config()
-        # 설정 로드 디버깅을 위한 정보 출력
-        logger.debug(f"설정 객체 생성됨: config_dir={config.config_dir}")
         
         # 거래소 설정이 제대로 로드되었는지 확인
         if not hasattr(config, 'exchange_settings') or not config.exchange_settings:
             logger.error(f"거래소 설정이 로드되지 않았습니다. exchange_settings 객체: {config.exchange_settings}")
-        elif 'trading' in config.exchange_settings:
-            logger.debug(f"거래소 설정 trading 섹션: {config.exchange_settings['trading']}")
+            return default
             
         # 설정 값 가져오기
-        if path.startswith("trading."):
+        if path.startswith("trading.") and 'trading' in config.exchange_settings:
             result = config.get_exchange(path, default)
             logger.debug(f"거래소 설정 반환: {path} = {result}")
             return result
@@ -72,10 +72,9 @@ def get_symbol_filters():
         Dict[str, list]: 심볼 필터 설정
     """
     try:
-        config = get_config()
         return config.get_symbol_filters()
     except Exception as e:
-        logger.error(f"[오더북수집기] 심볼 필터 설정 획득 중 오류: {str(e)}")
+        logger.error(f"심볼 필터 설정 획득 중 오류: {str(e)}")
         # 기본 빈 필터 반환
         return {"excluded": [], "included": [], "excluded_patterns": []}
 
@@ -437,7 +436,7 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
             now = datetime.now(timezone.utc)
             
             # 상장 시간 로깅
-            logger.info(f"[오더북수집기] === 선물 거래소 상장 시간 ===")
+            logger.info(f"=== 선물 거래소 상장 시간 ===")
             for exchange, times in listing_times.items():
                 logger.info(f"{EXCHANGE_NAMES_KR[exchange]}")
                 for symbol, listing_time in sorted(times.items()):
@@ -492,14 +491,14 @@ def filter_recently_listed_symbols(
                 if hours_since_listing < min_hours_since_listing:
                     recently_listed.add(symbol)
                     logger.info(
-                        f"[오더북수집기] 최근 상장으로 제외합니다: {symbol} "
+                        f"최근 상장으로 제외합니다: {symbol} "
                         f"(상장 후 {hours_since_listing}시간, "
                         f"기준: {min_hours_since_listing}시간)"
                     )
         
         # 모든 거래소에서 최근 상장 심볼 제외
         if recently_listed:
-            logger.info(f"[오더북수집기] === 최근 상장으로 제외된 심볼 === {sorted(list(recently_listed))}")
+            logger.info(f"=== 최근 상장으로 제외된 심볼 === {sorted(list(recently_listed))}")
             
             for exchange in filtered_data:
                 before_symbols = filtered_data[exchange]
@@ -517,7 +516,7 @@ def filter_recently_listed_symbols(
         return filtered_data
         
     except Exception as e:
-        logger.error(f"[오더북수집기] 최근 상장 심볼 필터링에 실패했습니다: {str(e)}", exc_info=True)
+        logger.error(f"최근 상장 심볼 필터링에 실패했습니다: {str(e)}", exc_info=True)
         return filtered_data
 
 # ============================
@@ -551,7 +550,7 @@ async def get_paired_symbols(
         pair_upbit_bybit = set(upbit_symbols) & set(bybit_symbols)
         
         # 2. 결과 로깅
-        logger.info(f"[오더북수집기] === 거래소 간 동시 상장 현황 ===")
+        logger.info(f"=== 거래소 간 동시 상장 현황 ===")
         logger.info(f"빗썸↔바이낸스: {len(pair_bithumb_binance)}개 → {sorted(list(pair_bithumb_binance))}")
         logger.info(f"빗썸↔바이빗: {len(pair_bithumb_bybit)}개 → {sorted(list(pair_bithumb_bybit))}")
         logger.info(f"업비트↔바이낸스: {len(pair_upbit_binance)}개 → {sorted(list(pair_upbit_binance))}")
@@ -604,10 +603,10 @@ class Aggregator:
             # min_volume_krw가 없으면 min_daily_volume_krw 설정을 대신 사용
             min_volume = get_value_from_settings("trading.settings.min_daily_volume_krw")
             if min_volume is not None:
-                logger.info(f"[오더북수집기] min_daily_volume_krw 설정을 사용합니다: {min_volume:,} KRW")
+                logger.info(f"min_daily_volume_krw 설정을 사용합니다: {min_volume:,} KRW")
             else:
-                logger.error(f"[오더북수집기] 필수 설정 누락: trading.settings.min_volume_krw 또는 trading.settings.min_daily_volume_krw")
-                logger.error(f"[오더북수집기] exchange_settings.cfg 파일에서 최소 거래량 설정이 필요합니다.")
+                logger.error(f"필수 설정 누락: trading.settings.min_volume_krw 또는 trading.settings.min_daily_volume_krw")
+                logger.error(f"exchange_settings.cfg 파일에서 최소 거래량 설정이 필요합니다.")
                 import sys
                 sys.exit(1)  # 에러 코드와 함께 프로그램 종료
             
@@ -625,8 +624,8 @@ class Aggregator:
             Dict[str, List[str]]: 거래소별 필터링된 심볼 목록
         """
         try:
-            logger.info(f"[오더북수집기] === 심볼 필터링을 시작합니다 ===")
-            logger.info(f"[오더북수집기] 최소 거래량: {self.min_volume:,} KRW")
+            logger.info(f"=== 심볼 필터링을 시작합니다 ===")
+            logger.info(f"최소 거래량: {self.min_volume:,} KRW")
             
             # 1. 거래소별 필터링
             filtered_data: Dict[str, List[str]] = {}
@@ -667,7 +666,7 @@ class Aggregator:
             symbol_filters = get_symbol_filters()
             excluded_symbols = set(symbol_filters.get('excluded', []))
             
-            logger.info(f"[오더북수집기] === 제외할 심볼 목록 === {sorted(list(excluded_symbols))}")
+            logger.info(f"=== 제외할 심볼 목록 === {sorted(list(excluded_symbols))}")
             
             for exchange in filtered_data:
                 before_symbols = filtered_data[exchange]
@@ -694,7 +693,7 @@ class Aggregator:
                 listing_times
             )
             
-            logger.info(f"[오더북수집기] === 거래소별 최종 구독 심볼 ===")
+            logger.info(f"=== 거래소별 최종 구독 심볼 ===")
             for exchange, symbols in filtered_data.items():
                 name = EXCHANGE_NAMES_KR.get(exchange, exchange)
                 logger.info(f"{name} 구독 심볼: {len(symbols)}개 → {sorted(symbols)}")
@@ -702,6 +701,6 @@ class Aggregator:
             return filtered_data
 
         except Exception as e:
-            logger.error(f"[오더북수집기] 심볼 필터링에 실패했습니다: {e}")
+            logger.error(f"심볼 필터링에 실패했습니다: {e}")
             return {}
 

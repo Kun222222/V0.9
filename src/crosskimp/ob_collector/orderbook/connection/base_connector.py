@@ -7,19 +7,17 @@ from asyncio import Event
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import datetime
-from threading import Event
 import logging
 import websockets
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import EXCHANGE_NAMES_KR, normalize_exchange_code
-
-from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority
-from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus, EventHandler, LoggingMixin, get_event_handler
-from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
+from crosskimp.common.config.common_constants import SystemComponent
+from crosskimp.common.events.system_eventbus import EventType
+from crosskimp.common.events import get_event_bus  # 글로벌 이벤트 버스 가져오기 위한 임포트
 
 # 전역 로거 설정
-logger = get_unified_logger()
+logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
 
 @dataclass
 class WebSocketStats:
@@ -70,17 +68,28 @@ class ReconnectStrategy:
         self.attempts = 0
         self.current_delay = self.initial_delay
 
-class BaseWebsocketConnector(ABC, LoggingMixin):
+class BaseWebsocketConnector(ABC):
     """웹소켓 연결 관리 기본 클래스"""
-    def __init__(self, settings: dict, exchangename: str):
-        """초기화"""
+    def __init__(self, settings: dict, exchangename: str, on_status_change=None):
+        """
+        초기화
+        
+        Args:
+            settings: 설정 정보
+            exchangename: 거래소 이름
+            on_status_change: 연결 상태 변경 시 호출될 콜백 함수
+        """
         # 기본 정보
         self.exchangename = normalize_exchange_code(exchangename)  # 소문자로 정규화
         self.exchange_code = self.exchangename  # 필드명 일관성을 위한 별칭
+        self.exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, self.exchange_code)  # 한글 거래소명
         self.settings = settings
         
-        # 로거 설정 (LoggingMixin 메서드 사용)
-        self.setup_logger(self.exchange_code)
+        # 콜백 함수 설정
+        self.on_status_change = on_status_change
+        
+        # 로거 설정
+        self.logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
         
         # 기본 상태 변수
         self.ws = None
@@ -96,20 +105,14 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
         # 웹소켓 통계
         self.stats = WebSocketStats()
         
-        # 이벤트 핸들러 초기화
-        self.event_handler = get_event_handler(self.exchange_code, self.settings)
-        
-        # 이벤트 버스 가져오기 (어댑터 사용)
-        self.event_bus = get_orderbook_event_bus()
-        
         # 자식 클래스에서 설정해야 하는 변수들
         self.reconnect_strategy = None  # 재연결 전략
         self.message_timeout = None     # 메시지 타임아웃 (초)
         self.ping_interval = None       # 핑 전송 간격 (초)
         self.ping_timeout = None        # 핑 응답 타임아웃 (초)
         
-        # 시스템 이벤트 버스 추가
-        self.sys_event_bus = SimpleEventBus()
+        # URL 속성 추가 (자식 클래스에서 설정)
+        self.ws_url = None
         
         # 초기 메트릭 설정
         self._update_connection_metric("status", "initialized")
@@ -117,6 +120,23 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
         self._update_connection_metric("last_error", "")
         self._update_connection_metric("last_error_time", 0)
         self._update_connection_metric("uptime", 0)
+
+    # 로깅 메서드
+    def log_debug(self, message: str) -> None:
+        """디버그 로그 출력"""
+        # self.logger.debug(f"{self.exchange_kr} {message}")
+
+    def log_info(self, message: str) -> None:
+        """정보 로그 출력"""
+        self.logger.info(f"{self.exchange_kr} {message}")
+
+    def log_warning(self, message: str) -> None:
+        """경고 로그 출력"""
+        self.logger.warning(f"{self.exchange_kr} {message}")
+
+    def log_error(self, message: str, exc_info: bool = False) -> None:
+        """오류 로그 출력"""
+        self.logger.error(f"{self.exchange_kr} {message}", exc_info=exc_info)
 
     # 속성 관리
     @property
@@ -136,48 +156,27 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
             if value:
                 self.stats.connection_start_time = time.time()
             
-            # 1. 이벤트 핸들러를 통한 연결 상태 변경 처리
-            if hasattr(self, 'event_handler') and self.event_handler:
-                # 초기 연결 여부 확인 (disconnected -> connected 상태 변화일 때)
-                initial_connection = prev_status is False and value is True
-                
-                # 비동기 호출이지만 create_task로 백그라운드에서 실행
-                asyncio.create_task(self.event_handler.handle_connection_status(
-                    status="connected" if value else "disconnected",
-                    exchange=self.exchange_code,
-                    timestamp=time.time(),
-                    initial_connection=initial_connection  # 초기 연결 여부 전달
-                ))
-            
-            # 2. 이벤트 버스를 통한 연결 상태 변경 이벤트 발행
-            if hasattr(self, 'event_bus') and self.event_bus:
+            # 콜백 함수 호출
+            if self.on_status_change:
                 status = "connected" if value else "disconnected"
-                event_type = EventTypes.CONNECTION_SUCCESS if value else "connection_lost"
-                
-                # 이벤트 데이터 준비
-                event_data = {
+                callback_data = {
                     "exchange_code": self.exchange_code,
                     "status": status,
                     "timestamp": time.time(),
                     "initial_connection": prev_status is False and value is True
                 }
-                
-                # 이벤트 발행 (비동기 태스크로 실행)
-                asyncio.create_task(self.event_bus.publish(
-                    event_type, 
-                    event_data,
-                    EventPriority.HIGH  # 높은 우선순위로 처리
-                ))
+                # 비동기 태스크로 콜백 실행
+                asyncio.create_task(self.on_status_change(status, **callback_data))
             
             # 연결 상태 메트릭 업데이트
-            self._update_connection_metric("status", status if "status" in locals() else ("connected" if value else "disconnected"))
+            self._update_connection_metric("status", "connected" if value else "disconnected")
                 
             # 연결 상태 메시지 로깅
             if value:
-                self.log_info(f"웹소켓 연결 성공 ({self.ws_url})")
+                self.log_info(f"웹소켓 연결 성공! URL: {self.ws_url}")
             else:
                 # 연결 해제 메시지는 오류가 아닐 수 있음
-                self.log_info(f"웹소켓 연결 해제됨")
+                self.log_info("웹소켓 연결 해제됨")
 
     # 웹소켓 연결 관리
     @abstractmethod
@@ -209,31 +208,10 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
         """웹소켓 재연결"""
         try:
             self.stats.reconnect_count += 1
-            reconnect_msg = f"웹소켓 재연결 시도"
-            self.log_info(reconnect_msg)
+            self.log_info("웹소켓 재연결 시도")
             
             # 재연결 카운트 메트릭 업데이트
             self._update_connection_metric("reconnect_count", self.stats.reconnect_count)
-            
-            # 재연결 이벤트 처리 (이벤트 핸들러 사용)
-            await self.event_handler.handle_connection_status(
-                status="reconnecting",
-                message=reconnect_msg
-            )
-            
-            # 재연결 시도 이벤트 발행
-            if hasattr(self, 'event_bus') and self.event_bus:
-                # 재연결 시도 카운트 초기화 (새로운 시도 세션 시작)
-                self._connection_attempt_count = 0
-                
-                event_data = {
-                    "exchange_code": self.exchange_code,
-                    "attempt": self._connection_attempt_count,
-                    "timestamp": time.time(),
-                    "type": "reconnect"
-                }
-                # 비동기 컨텍스트에서 호출되므로 create_task 사용
-                asyncio.create_task(self.event_bus.publish("reconnect_attempt", event_data))
             
             await self.disconnect()
             
@@ -335,12 +313,8 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
             # 내부 통계 업데이트
             self.stats.message_count += 1
             
-            # 이벤트 핸들러를 통해 메시지 수신 이벤트 처리 (로깅 및 이벤트 발행용)
-            await self.event_handler.handle_message_received(
-                message_type=message_type,
-                size=size,
-                **kwargs
-            )
+            # 로깅
+            self.log_debug(f"메시지 수신: 유형={message_type}, 크기={size}바이트")
             
         except Exception as e:
             self.log_error(f"메시지 처리 중 예외 발생: {str(e)}")
@@ -361,45 +335,24 @@ class BaseWebsocketConnector(ABC, LoggingMixin):
             self.stats.last_error_time = time.time()
             self.stats.last_error_message = message
             
-            # 메트릭 업데이트 이벤트 발행
-            if self.sys_event_bus:
-                # 오류 카운트 업데이트
-                asyncio.create_task(self.sys_event_bus.publish(
-                    EventType.STATUS_UPDATE, 
-                    {
-                        "component": "orderbook",
-                        "exchange": self.exchange_code,
-                        "metric": f"{self.exchange_code}.connection.error_count",
-                        "value": self.stats.error_count,
-                        "timestamp": time.time()
-                    }
-                ))
-            
             # 마지막 오류 메트릭 업데이트
             self._update_connection_metric("last_error", message)
             self._update_connection_metric("last_error_time", time.time())
             
-            # EventHandler를 통해 오류 이벤트 처리 (로깅 및 알림용)
-            await self.event_handler.handle_error(
-                error_type=error_type,
-                message=message,
-                severity=severity,
-                **kwargs
-            )
+            # 오류 심각도에 따른 로깅
+            if severity == "critical":
+                self.log_error(f"심각한 오류 발생: [{error_type}] {message}", exc_info=True)
+            elif severity == "error":
+                self.log_error(f"오류 발생: [{error_type}] {message}")
+            elif severity == "warning":
+                self.log_warning(f"경고: [{error_type}] {message}")
+            else:
+                self.log_info(f"알림: [{error_type}] {message}")
             
         except Exception as e:
             self.log_error(f"오류 처리 중 예외 발생: {str(e)}")
 
     def _update_connection_metric(self, metric_name, value):
-        """연결 관련 메트릭을 이벤트 버스로 전송"""
-        if self.sys_event_bus:
-            asyncio.create_task(self.sys_event_bus.publish(
-                EventType.STATUS_UPDATE, 
-                {
-                    "component": "orderbook",
-                    "exchange": self.exchange_code,
-                    "metric": f"{self.exchange_code}.connection.{metric_name}",
-                    "value": value,
-                    "timestamp": time.time()
-                }
-            ))
+        """연결 관련 메트릭 업데이트 함수"""
+        # 직접 호출 방식으로 변경되어 이 함수는 임시로 로깅만 수행
+        self.log_debug(f"메트릭 업데이트: {metric_name}={value}")

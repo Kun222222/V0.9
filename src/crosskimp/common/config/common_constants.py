@@ -16,8 +16,7 @@ class SystemComponent(Enum):
     RADAR = "radar"            # 레이더 (시장 감시기)
     TRADER = "trader"          # 트레이더 (자동 거래 시스템)
     TELEGRAM = "telegram"      # 텔레그램 서비스
-    SYSTEM = "system"          # 시스템 코어
-    MAIN_SYSTEM = "main"       # 메인 시스템 (통합 프로그램)
+    SYSTEM = "system"          # 시스템 (통합 프로그램)
     WEB = "web"                # 웹 서비스
 
 # ============================
@@ -29,7 +28,6 @@ COMPONENT_NAMES_KR = {
     SystemComponent.TRADER.value: "[트레이더]",
     SystemComponent.TELEGRAM.value: "[텔레그램]",
     SystemComponent.SYSTEM.value: "[시스템]",
-    SystemComponent.MAIN_SYSTEM.value: "[메인시스템]",
     SystemComponent.WEB.value: "[웹서비스]",
 }
 

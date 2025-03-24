@@ -14,7 +14,7 @@ from threading import Lock
 
 from crosskimp.common.logger.logger import get_unified_logger
 # constants_v3 대신 새로운 모듈에서 가져오기
-from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
 
 # 웹소켓 URL 정의
 WEBSOCKET_URLS = {
@@ -35,7 +35,7 @@ WEBSOCKET_CONFIG = {
 }
 
 # 로거 인스턴스 가져오기
-logger = get_unified_logger()
+logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
 
 class WsUsdtKrwMonitor:
     """

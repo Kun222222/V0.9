@@ -10,8 +10,6 @@ from typing import Dict, Optional, Any
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange
 
-from crosskimp.ob_collector.eventbus.types import EventTypes
-from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector, WebSocketError, ReconnectStrategy
 
 # 로거 인스턴스 가져오기
@@ -29,19 +27,22 @@ CONNECTION_TIMEOUT = 0.5  # 연결 타임아웃 (초)
 
 class BybitWebSocketConnector(BaseWebsocketConnector):
     """
-    바이빗 현물 웹소켓 연결 관리 클래스
+    바이빗 웹소켓 연결 관리 클래스
     
-    책임:
-    - 웹소켓 연결 관리 (연결, 재연결, 종료)
-    - 연결 상태 모니터링
+    바이빗 현물 거래소의 웹소켓 연결을 관리하는 클래스입니다.
     """
-    
-    def __init__(self, settings: dict):
-        """초기화"""
-        super().__init__(settings, Exchange.BYBIT.value)
+    def __init__(self, settings: dict, exchange_code: str = None, on_status_change=None):
+        """
+        바이빗 웹소켓 연결 관리자 초기화
         
-        # 웹소켓 URL 및 기본 설정
-        self.ws_url = WS_URL if not settings.get("testnet") else "wss://stream-testnet.bybit.com/v5/public/spot"
+        Args:
+            settings: 설정 딕셔너리
+            exchange_code: 거래소 코드 (기본값: None, 자동으로 설정)
+            on_status_change: 연결 상태 변경 시 호출될 콜백 함수
+        """
+        exchange_code = exchange_code or Exchange.BYBIT.value
+        super().__init__(settings, exchange_code, on_status_change)
+        self.ws_url = WS_URL
         
         # 상태 및 설정값
         self.is_connected = False
