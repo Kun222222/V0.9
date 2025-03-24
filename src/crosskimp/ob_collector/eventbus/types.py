@@ -5,13 +5,8 @@
 모든 컴포넌트가 동일한 이벤트 타입을 참조하도록 합니다.
 """
 from enum import Enum
-
-# 이벤트 우선순위 정의
-class EventPriority(Enum):
-    HIGH = 0      # 높은 우선순위 (즉시 처리가 필요한 중요 이벤트)
-    NORMAL = 1    # 일반 우선순위 (대부분의 이벤트)
-    LOW = 2       # 낮은 우선순위 (지연 처리 가능한 이벤트)
-    BACKGROUND = 3 # 백그라운드 처리 (로깅 등 시스템 리소스가 여유있을 때 처리)
+# 필요한 경우 새로운 config 모듈에서 필요한 상수를 가져옵니다.
+from crosskimp.common.config.common_constants import EventPriority
 
 # 이벤트 타입 정의
 class EventTypes:

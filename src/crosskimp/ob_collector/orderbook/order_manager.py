@@ -8,12 +8,14 @@
 """
 
 import asyncio
+import logging
 import time
 from typing import Dict, List, Any, Optional
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
 from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
+from crosskimp.common.config.app_config import get_config
 
 from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus, EventHandler, LoggingMixin, get_event_handler
@@ -152,17 +154,45 @@ class OrderManager(LoggingMixin):
             self.log_error(f"{self.exchange_name_kr} 초기화 실패: {str(e)}")
             return False
     
-    async def start(self, symbols: List[str]) -> bool:
+    async def get_symbols(self) -> List[str]:
+        """
+        구독할 심볼 목록을 Aggregator를 통해 가져옵니다.
+        
+        Returns:
+            List[str]: 구독할 심볼 목록
+        """
+        try:
+            # Aggregator를 통해 심볼 획득
+            from crosskimp.ob_collector.core.aggregator import Aggregator
+            self.log_info(f"{self.exchange_name_kr} Aggregator를 통해 심볼을 획득합니다")
+            
+            aggregator = Aggregator(self.settings)
+            filtered_data = await aggregator.run_filtering()
+            
+            if filtered_data and self.exchange_code in filtered_data:
+                symbols = filtered_data[self.exchange_code]
+                self.log_info(f"{self.exchange_name_kr} {len(symbols)}개 심볼을 획득했습니다")
+                return symbols
+            else:
+                self.log_warning(f"{self.exchange_name_kr} Aggregator에서 심볼을 찾을 수 없습니다")
+                return []
+                
+        except Exception as e:
+            self.log_error(f"{self.exchange_name_kr} 심볼 획득 중 오류: {str(e)}")
+            # 기본값으로 빈 리스트 반환
+            return []
+        
+    async def start(self) -> bool:
         """
         오더북 수집 시작
         
-        Args:
-            symbols: 수집할 심볼 목록
-            
         Returns:
             bool: 시작 성공 여부
         """
         try:
+            # Aggregator로부터 심볼 획득
+            symbols = await self.get_symbols()
+                
             if not symbols:
                 self.log_warning(f"{self.exchange_name_kr} 심볼이 없어 오더북 수집을 시작하지 않습니다")
                 return False
@@ -645,7 +675,7 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
                 continue
             
             # 시작 수행 - OrderManager의 시작 메서드 사용
-            start_success = await manager.start(symbols)
+            start_success = await manager.start()
             if not start_success:
                 logger.error(f"{EXCHANGE_NAMES_KR[exchange]} 시작 실패, 해당 거래소는 건너뜁니다.")
                 continue
@@ -660,3 +690,159 @@ async def integrate_with_websocket_manager(ws_manager, settings, filtered_data):
     except Exception as e:
         logger.error(f"OrderManager 통합 중 오류 발생: {str(e)}")
         return False
+
+# 오케스트레이터와 통합을 위한 함수들
+
+async def initialize_orderbook_collection(settings=None):
+    """
+    오더북 수집 시스템 초기화 - 오케스트레이터에서 호출하는 진입점
+    
+    Args:
+        settings: 설정 딕셔너리, None인 경우 설정 파일에서 로드
+        
+    Returns:
+        Dict: 초기화된 OrderManager들의 딕셔너리 (거래소 코드 -> OrderManager)
+    """
+    logger = get_unified_logger()
+    logger.info(f"[오더북수집기] 오더북 수집 시스템 초기화")
+    
+    # 설정 로드
+    if settings is None:
+        try:
+            settings = get_config()
+        except Exception as e:
+            logger.error(f"[오더북수집기] 설정을 불러오는 중 오류 발생: {str(e)}")
+            return {}
+    
+    # Aggregator로 심볼 필터링
+    try:
+        from crosskimp.ob_collector.core.aggregator import Aggregator
+        aggregator = Aggregator(settings)
+        filtered_data = await aggregator.run_filtering()
+        
+        if not filtered_data:
+            logger.error(f"[오더북수집기] 필터링된 심볼이 없습니다.")
+            return {}
+            
+        # 필터링 결과 로그 출력
+        log_msg = f"[오더북수집기] 필터링된 심볼: "
+        for exchange_code, symbols in filtered_data.items():
+            log_msg += f"\n{EXCHANGE_NAMES_KR[exchange_code]} - {len(symbols)}개: {', '.join(symbols[:5])}"
+            if len(symbols) > 5:
+                log_msg += f" 외 {len(symbols)-5}개"
+        logger.info(log_msg)
+        
+    except Exception as e:
+        logger.error(f"[오더북수집기] 심볼 필터링 중 오류 발생: {str(e)}")
+        return {}
+    
+    # OrderManager 초기화
+    order_managers = {}
+    
+    # 각 거래소별 처리
+    for exchange, symbols in filtered_data.items():
+        if not symbols:
+            logger.info(f"{EXCHANGE_NAMES_KR[exchange]} 심볼이 없어 OrderManager를 초기화하지 않습니다.")
+            continue
+            
+        # OrderManager 생성
+        manager = create_order_manager(exchange, settings)
+        if not manager:
+            logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패")
+            continue
+        
+        # 초기화 수행
+        init_success = await manager.initialize()
+        if not init_success:
+            logger.error(f"{EXCHANGE_NAMES_KR[exchange]} 초기화 실패, 해당 거래소는 건너뜁니다.")
+            continue
+        
+        # 시작 수행
+        start_success = await manager.start()
+        if not start_success:
+            logger.error(f"{EXCHANGE_NAMES_KR[exchange]} 시작 실패, 해당 거래소는 건너뜁니다.")
+            continue
+        
+        # 성공적으로 초기화된 OrderManager 저장
+        order_managers[exchange] = manager
+        logger.info(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 시작 완료")
+    
+    logger.info(f"[오더북수집기] 오더북 수집 시스템 초기화 완료")
+    return order_managers
+
+async def shutdown_orderbook_collection(order_managers):
+    """
+    오더북 수집 시스템 종료 - 오케스트레이터에서 호출
+    
+    Args:
+        order_managers: OrderManager 인스턴스들의 딕셔너리
+    """
+    logger = get_unified_logger()
+    logger.info(f"[오더북수집기] 오더북 수집 시스템 종료 시작")
+    
+    # 이벤트 핸들러 종료 상태 설정
+    for exchange_code in list(EventHandler._instances.keys()):
+        try:
+            event_handler = get_event_handler(exchange_code)
+            if event_handler:
+                try:
+                    # 종료 상태 설정
+                    event_handler.set_shutting_down()
+                except AttributeError:
+                    logger.warning(f"{EXCHANGE_NAMES_KR[exchange_code]} set_shutting_down 메서드 없음")
+                except Exception as e:
+                    logger.error(f"{EXCHANGE_NAMES_KR[exchange_code]} 종료 상태 설정 중 오류: {str(e)}")
+                
+                try:
+                    # 메트릭 요약 로그 태스크 중지
+                    if hasattr(event_handler, 'stop_summary_log_task'):
+                        await event_handler.stop_summary_log_task()
+                except AttributeError:
+                    logger.warning(f"{EXCHANGE_NAMES_KR[exchange_code]} stop_summary_log_task 메서드 없음")
+                except Exception as e:
+                    logger.error(f"{EXCHANGE_NAMES_KR[exchange_code]} 요약 로그 태스크 중지 중 오류: {str(e)}")
+                
+                logger.info(f"{EXCHANGE_NAMES_KR[exchange_code]} 메트릭 수집 중지 완료")
+        except Exception as e:
+            logger.error(f"이벤트 핸들러 정리 중 오류: {str(e)}")
+    
+    # OrderManager 종료
+    for exchange, manager in order_managers.items():
+        try:
+            await manager.stop()
+            logger.info(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 중지 완료")
+        except Exception as e:
+            logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 중지 중 오류: {str(e)}")
+    
+    # 이벤트 버스 정리
+    try:
+        event_bus = get_orderbook_event_bus()
+        await event_bus.stop()
+        logger.info(f"[오더북수집기] 오더북 이벤트 버스 종료 완료")
+    except Exception as e:
+        logger.error(f"[오더북수집기] 이벤트 버스 종료 중 오류: {str(e)}")
+    
+    logger.info(f"[오더북수집기] 오더북 수집 시스템 종료 완료")
+
+# 오더북 수집 관리자 객체
+_order_managers = {}
+
+# 모듈 레벨 함수 - 오케스트레이터에서 호출
+async def start_orderbook_collection(settings=None):
+    """오더북 수집 시작 - 오케스트레이터에서 호출"""
+    global _order_managers
+    _order_managers = await initialize_orderbook_collection(settings)
+    return bool(_order_managers)
+
+async def stop_orderbook_collection():
+    """오더북 수집 종료 - 오케스트레이터에서 호출"""
+    global _order_managers
+    if _order_managers:
+        await shutdown_orderbook_collection(_order_managers)
+        _order_managers = {}
+    return True
+
+def get_orderbook_managers():
+    """현재 활성화된 OrderManager 인스턴스들 반환"""
+    global _order_managers
+    return _order_managers

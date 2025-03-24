@@ -16,7 +16,7 @@ from pathlib import Path
 import flatbuffers
 from crosskimp.ob_collector._disable_cpp.flatbuffers.OrderBookData import OrderBook, PriceLevel
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import LOGS_DIR
+from crosskimp.common.config.legacy.constants_v3 import LOGS_DIR
 
 # 로거 인스턴스 가져오기
 logger = get_unified_logger()

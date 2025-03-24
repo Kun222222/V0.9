@@ -8,8 +8,10 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, time
 from typing import Dict, Callable, Any, Optional, List, Tuple, Union
+import traceback
 
 from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.app_config import get_config
 
 # 로거 설정
 logger = get_unified_logger()
@@ -102,6 +104,7 @@ async def _run_scheduled_task(task_id: str, func: Callable, args: Any = None,
         raise
     except Exception as e:
         logger.error(f"스케줄된 작업 실행 중 오류: {task_id}, {str(e)}")
+        logger.error(traceback.format_exc())
     finally:
         # 작업 완료 시 딕셔너리에서 제거
         if task_id in _scheduled_tasks:
@@ -166,38 +169,95 @@ def cancel_task(task_id: str) -> bool:
         logger.warning(f"취소할 작업을 찾을 수 없음: {task_id}")
         return False
 
-def schedule_daily_restart(process_name: str, target_time: time) -> str:
+def schedule_daily_time_task(task_id: str, callback: Callable, hour: int = 0, minute: int = 0, second: int = 0) -> str:
     """
-    프로세스의 일일 재시작을 스케줄링합니다.
+    매일 특정 시간에 실행되는 작업을 스케줄링합니다.
     
     Args:
-        process_name: 재시작할 프로세스 이름
-        target_time: 재시작 시간 (시, 분, 초)
+        task_id: 작업 ID
+        callback: 실행할 콜백 함수
+        hour: 시간 (0-23)
+        minute: 분 (0-59)
+        second: 초 (0-59)
         
     Returns:
         str: 스케줄링된 작업 ID
     """
-    from crosskimp.system_manager.process_manager import restart_process
+    # 목표 시간 객체 생성
+    target_time = time(hour=hour, minute=minute, second=second)
     
     # 다음 실행 시간 계산
     next_run = calculate_next_time(target_time)
     delay = (next_run - datetime.now()).total_seconds()
     
-    # 24시간마다 실행되는 작업 스케줄링
-    task_id = f"daily_restart_{process_name}"
+    logger.info(f"일일 작업 스케줄링: {task_id}, 다음 실행 시간: {next_run.strftime('%Y-%m-%d %H:%M:%S')} (남은 시간: {format_remaining_time(next_run)})")
     
-    async def daily_restart():
-        # 프로세스 재시작
-        logger.info(f"{process_name} 일일 재시작 실행")
-        await restart_process(process_name, reason="일일 정기 재시작")
+    async def daily_task():
+        try:
+            # 콜백 함수 실행
+            logger.info(f"일일 예약 작업 실행: {task_id}")
+            await callback()
+        except Exception as e:
+            logger.error(f"일일 작업 실행 중 오류 발생: {task_id}, {str(e)}")
+            logger.error(traceback.format_exc())
+        finally:
+            # 다음 날 같은 시간에 재실행하도록 재스케줄링
+            next_day = datetime.now().date() + timedelta(days=1)
+            next_target = datetime.combine(next_day, target_time)
+            new_delay = (next_target - datetime.now()).total_seconds()
+            
+            if new_delay <= 0:
+                # 시간 계산에 문제가 있는 경우, 1분 후 재시도
+                new_delay = 60
+                logger.warning(f"일일 작업 재스케줄링 시간 계산 오류, 1분 후 재시도: {task_id}")
+                
+            logger.info(f"일일 작업 재스케줄링: {task_id}, 다음 실행 시간: {next_target.strftime('%Y-%m-%d %H:%M:%S')} (남은 시간: {format_remaining_time(next_target)})")
+            schedule_task(task_id, daily_task, delay=new_delay)
+    
+    # 최초 스케줄링
+    return schedule_task(task_id, daily_task, delay=delay)
+
+def schedule_interval_task(task_id: str, callback: Callable, interval_seconds: int) -> str:
+    """
+    일정 간격으로 실행되는 작업을 스케줄링합니다.
+    
+    Args:
+        task_id: 작업 ID
+        callback: 실행할 콜백 함수
+        interval_seconds: 실행 간격 (초)
         
-        # 다음 날 같은 시간에 재시작하도록 재스케줄링
-        next_day = datetime.now().date() + timedelta(days=1)
-        next_restart = datetime.combine(next_day, target_time)
-        new_delay = (next_restart - datetime.now()).total_seconds()
-        schedule_task(task_id, daily_restart, delay=new_delay)
+    Returns:
+        str: 스케줄링된 작업 ID
+    """
+    logger.info(f"주기적 작업 스케줄링: {task_id}, 간격: {interval_seconds}초")
+    return schedule_task(task_id, callback, interval=interval_seconds)
+
+def schedule_orderbook_restart(callback: Callable) -> str:
+    """
+    설정 파일의 시간에 따라 오더북 수집기 재시작을 스케줄링합니다.
     
-    return schedule_task(task_id, daily_restart, delay=delay)
+    Args:
+        callback: 재시작을 실행할 콜백 함수
+        
+    Returns:
+        str: 스케줄링된 작업 ID
+    """
+    config = get_config()
+    
+    # 설정에서 재시작 시간 가져오기
+    hour = config.get_system("scheduling.orderbook_restart_hour", 0)
+    minute = config.get_system("scheduling.orderbook_restart_minute", 0)
+    second = config.get_system("scheduling.orderbook_restart_second", 0)
+    
+    # 유효성 검사
+    hour = max(0, min(23, int(hour)))
+    minute = max(0, min(59, int(minute)))
+    second = max(0, min(59, int(second)))
+    
+    task_id = "orderbook_daily_restart"
+    logger.info(f"오더북 수집기 재시작 스케줄링: 매일 {hour:02d}:{minute:02d}:{second:02d}")
+    
+    return schedule_daily_time_task(task_id, callback, hour, minute, second)
 
 def get_scheduled_tasks() -> List[Dict[str, Any]]:
     """
@@ -215,11 +275,9 @@ def get_scheduled_tasks() -> List[Dict[str, Any]]:
             "is_cancelled": task.cancelled() if hasattr(task, 'cancelled') else False,
         }
         
-        if "daily_restart" in task_id:
-            # 일일 재시작 작업의 경우 추가 정보
-            process_name = task_id.replace("daily_restart_", "")
+        if task_id == "orderbook_daily_restart":
             task_info["type"] = "daily_restart"
-            task_info["process"] = process_name
+            task_info["process"] = "ob_collector"
         else:
             task_info["type"] = "general"
             

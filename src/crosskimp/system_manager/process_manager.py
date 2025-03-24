@@ -15,7 +15,7 @@ import time
 from typing import Dict, Optional, List, Tuple, Any
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import LOG_SYSTEM
+from crosskimp.common.config.legacy.constants_v3 import LOG_SYSTEM
 from crosskimp.common.events import (
     get_component_event_bus,
     Component,

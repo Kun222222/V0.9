@@ -1,15 +1,20 @@
 """
-오더북 검증 모듈
+오더북 유효성 검증 모듈
 
-이 모듈은 거래소별 오더북 데이터의 유효성을 검증하는 클래스를 제공합니다.
+이 모듈은 오더북 데이터의 유효성을 검증하는 클래스와 함수를 제공합니다.
 """
 
-from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
-from enum import Enum
 import time
+from typing import Dict, List, Optional, Any, Tuple
+from enum import Enum
+from dataclasses import dataclass, field
 
 from crosskimp.common.logger.logger import get_unified_logger
+# constants_v3 대신 새로운 모듈에서 Exchange를 가져오기
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
+
+# 로거 설정
+logger = get_unified_logger()
 
 class ValidationError(Enum):
     """검증 오류 유형"""

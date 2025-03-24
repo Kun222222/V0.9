@@ -11,8 +11,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import LOG_TELEGRAM
-from crosskimp.system_manager.sys_scheduler import get_scheduled_tasks, schedule_daily_restart, cancel_task
+from crosskimp.common.config.legacy.constants_v3 import LOG_TELEGRAM
+from crosskimp.services.scheduler import get_scheduled_tasks, schedule_daily_restart, cancel_task
 
 # 로거 설정
 logger = get_unified_logger()

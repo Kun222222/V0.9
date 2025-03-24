@@ -8,7 +8,7 @@ import websockets
 from typing import Dict, Optional
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import Exchange
+from crosskimp.common.config.common_constants import Exchange
 
 from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus

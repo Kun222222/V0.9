@@ -1,11 +1,20 @@
+"""
+USDT/KRW 시세 수집 모듈
+
+이 모듈은 국내 거래소(업비트, 빗썸)의 USDT/KRW 시세를 실시간으로 수집하는 기능을 제공합니다.
+"""
+
 import asyncio
 import json
-import websockets
-from typing import Dict, Callable
 import time
+import uuid
+import websockets
+from typing import Dict, Callable, List, Any, Optional, Set
+from threading import Lock
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import Exchange, EXCHANGE_NAMES_KR
+# constants_v3 대신 새로운 모듈에서 가져오기
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 
 # 웹소켓 URL 정의
 WEBSOCKET_URLS = {

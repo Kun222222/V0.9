@@ -13,9 +13,54 @@ import logging
 import time
 from datetime import datetime
 import traceback
+import os
+from typing import Dict, Any, Optional
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 시스템 루트 설정 - 모든 모듈 임포트 이전에 수행
+# .env 파일 로드
+dotenv_path = os.path.join(os.getcwd(), '.env')
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path)
+    print(f".env 파일 로드 완료: {dotenv_path}")
+
+# PROJECT_ROOT 환경변수 확인 및 설정
+project_root = os.environ.get('PROJECT_ROOT')
+if not project_root:
+    # 환경변수가 없으면 자동 계산하여 설정
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.environ['PROJECT_ROOT'] = project_root
+    print(f"PROJECT_ROOT 환경변수가 없습니다. 자동 계산된 값으로 설정: {project_root}")
+else:
+    print(f"PROJECT_ROOT 환경변수 사용: {project_root}")
+
+# 시스템 경로에 추가
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    print(f"시스템 루트 경로를 sys.path에 추가: {project_root}")
+
+# 파이썬 경로 초기화 (이전 코드 대체)
+try:
+    # 이전 파이썬 모듈 경로 문제 해결 코드 대체
+    print(f"현재 작업 디렉토리: {os.getcwd()}")
+    print(f"Python 모듈 검색 경로:")
+    for p in sys.path:
+        print(f"  - {p}")
+except Exception as e:
+    print(f"경로 설정 중 오류 발생: {str(e)}")
 
 # 로거 설정
-from crosskimp.common.logger.logger import initialize_logging, get_unified_logger
+try:
+    from src.crosskimp.common.logger.logger import initialize_logging, get_unified_logger, shutdown_logging
+    print("로깅 모듈 임포트 성공")
+except ImportError as e:
+    print(f"로깅 모듈 임포트 실패: {str(e)}")
+    print("PYTHONPATH를 올바르게 설정했는지 확인하세요.")
+    print("예: export PYTHONPATH=/Users/kun/Desktop/CrossKimpArbitrage/v0.6")
+    print("    cd /Users/kun/Desktop/CrossKimpArbitrage/v0.6")
+    print("    python3 -m src.crosskimp.main")
+    sys.exit(1)
 
 # 인프라 레이어
 from crosskimp.common.events import get_event_bus
@@ -33,14 +78,15 @@ _logger = None
 _shutdown_event = None
 _is_shutting_down = False
 
+# constants_v3 대신 새로운 모듈에서 가져오기
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
+from crosskimp.common.config.app_config import AppConfig, get_config
+
 async def init_system():
     """
     시스템 초기화
     
-    - 이벤트 버스 초기화
-    - 오케스트레이터 초기화
-    - 텔레그램 커맨더 초기화
-    - 모든 구성 요소 연결
+    오케스트레이터를 통해 모든 시스템 컴포넌트를 초기화합니다.
     """
     global _shutdown_event
     
@@ -48,46 +94,24 @@ async def init_system():
     _shutdown_event = asyncio.Event()
     
     try:
-        # 이벤트 버스 초기화 (인프라 레이어)
-        event_bus = get_event_bus()
-        await event_bus.initialize()
-        _logger.info("이벤트 버스가 초기화되었습니다.")
-        
-        # 텔레그램 커맨더 초기화
-        telegram_commander = get_telegram_commander()
-        await telegram_commander.initialize()
-        _logger.info("텔레그램 커맨더가 초기화되었습니다.")
-        
-        # 오케스트레이터 초기화
+        # 오케스트레이터를 통한 시스템 전체 초기화
         orchestrator = get_orchestrator()
-        await orchestrator.initialize()
-        _logger.info("오케스트레이터가 초기화되었습니다.")
+        init_success = await orchestrator.initialize_system_components()
         
-        # 오더북 관리자 오케스트레이터에 등록 (객체만 전달)
-        orderbook_manager = get_orderbook_manager()
-        await orchestrator.register_process(
-            "ob_collector",           # 프로세스 이름
-            orderbook_manager,        # 객체만 전달 (start, run, initialize 등의 메서드를 자동 탐색)
-            description="오더북 수집기" # 설명
-        )
-        _logger.info("오더북 수집기가 등록되었습니다.")
-        
-        # 초기 시작이 필요한 프로세스 시작
-        await orchestrator.start_process("ob_collector", "시스템 시작 시 자동 시작")
-        
-        # 시스템 시작 로깅 (알림 제거)
-        _logger.info("🚀 크로스킴프 시스템이 시작되었습니다.")
-        
-        _logger.info("========== 시스템 초기화 완료 ==========")
-        return True
+        if init_success:
+            _logger.info("🚀 크로스킴프 시스템이 시작되었습니다.")
+            _logger.info("========== 시스템 초기화 완료 ==========")
+            return True
+        else:
+            _logger.error("시스템 컴포넌트 초기화에 실패했습니다.")
+            return False
         
     except Exception as e:
         _logger.error(f"시스템 초기화 중 오류 발생: {str(e)}")
         _logger.error(traceback.format_exc())
         
-        # 시작 실패 로깅 (알림 제거)
+        # 시작 실패 로깅
         _logger.error(f"🚨 크로스킴프 시스템 시작 실패! 오류: {str(e)}")
-            
         return False
 
 async def shutdown_system():
@@ -201,41 +225,43 @@ async def run_forever():
 async def main_async():
     """
     비동기 메인 함수
+    
+    시스템을 초기화하고 신호 핸들러를 설정한 후 무한 루프로 실행합니다.
     """
     global _logger
     
+    # 로깅 시스템 초기화
+    initialize_logging()
+    
+    # 로거 생성
+    from crosskimp.common.logger.logger import get_logger
+    _logger = get_logger(__name__, component=SystemComponent.MAIN_SYSTEM.value)
+    
     try:
-        # 로깅 설정 (여기서 먼저 초기화)
-        initialize_logging()
-        _logger = get_unified_logger()
-        _logger.info("========== 시스템 시작 ==========")
+        # 설정 로드
+        config = get_config()
+        _logger.info(f"설정 로드 완료. 버전: {config.get_system('global.version', '알 수 없음')}")
         
         # 신호 핸들러 설정
         setup_signal_handlers()
         
         # 시스템 초기화
-        init_success = await init_system()
-        if not init_success:
-            _logger.error("시스템 초기화 실패로 종료합니다.")
-            return 1
+        await init_system()
         
-        # 메인 루프 실행
+        # 무한 실행
         await run_forever()
-        
-        return 0
-        
+            
+    except KeyboardInterrupt:
+        _logger.info("Ctrl+C로 프로그램이 중단되었습니다.")
     except Exception as e:
-        if _logger:
-            _logger.critical(f"치명적인 오류 발생: {str(e)}")
-            _logger.critical(traceback.format_exc())
-        else:
-            print(f"치명적인 오류 발생: {str(e)}")
-            print(traceback.format_exc())
-        return 1
+        _logger.error(f"시스템 실행 중 오류: {str(e)}")
+        _logger.error(traceback.format_exc())
     finally:
-        # 안전장치: 종료가 호출되지 않았다면 호출
-        if not _is_shutting_down:
-            await shutdown_system()
+        # 시스템 종료
+        await shutdown_system()
+        
+        # 로깅 시스템 종료
+        shutdown_logging()
 
 def main():
     """

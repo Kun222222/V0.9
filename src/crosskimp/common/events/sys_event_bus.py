@@ -1,5 +1,5 @@
 """
-간소화된 이벤트 버스 시스템
+시스템 이벤트 버스 시스템
 
 이 모듈은 복잡한 기존 이벤트 버스를 대체하는 간단한 이벤트 버스를 제공합니다.
 subscribe 대신 register_handler를 사용하여 이벤트 핸들러를 등록합니다.
@@ -38,7 +38,7 @@ class EventType(Enum):
 
 class SimpleEventBus:
     """
-    간소화된 이벤트 버스 구현
+    시스템 이벤트 버스 구현
     
     복잡한 필터링 없이 기본적인 발행-구독 패턴만 구현합니다.
     """
@@ -93,7 +93,7 @@ class SimpleEventBus:
             
         self._running = True
         self._processor_task = asyncio.create_task(self._process_events())
-        self._logger.info("간소화된 이벤트 버스가 시작되었습니다.")
+        self._logger.info("시스템 이벤트 버스가 시작되었습니다.")
     
     async def stop(self):
         """이벤트 버스 종료"""
@@ -109,7 +109,7 @@ class SimpleEventBus:
             except asyncio.CancelledError:
                 pass
                 
-        self._logger.info("간소화된 이벤트 버스가 종료되었습니다.")
+        self._logger.info("시스템 이벤트 버스가 종료되었습니다.")
     
     def register_handler(self, event_type: EventType, handler: Callable):
         """

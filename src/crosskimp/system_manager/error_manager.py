@@ -14,7 +14,7 @@ from typing import Dict, List, Set, Optional, Any, Callable, Union, Tuple
 import traceback
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import LOG_SYSTEM
+from crosskimp.common.config.legacy.constants_v3 import LOG_SYSTEM
 from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes
 from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
 from crosskimp.telegrambot.notification_manager import get_notification_manager

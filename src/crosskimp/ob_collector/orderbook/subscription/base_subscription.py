@@ -13,7 +13,8 @@ import websockets
 import datetime
 
 from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
-from crosskimp.common.config.constants_v3 import EXCHANGE_NAMES_KR, LOG_SUBDIRS, normalize_exchange_code
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, normalize_exchange_code
+from crosskimp.common.config.app_config import AppConfig, get_config
 from crosskimp.common.events.sys_event_bus import SimpleEventBus, EventType
 
 from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority

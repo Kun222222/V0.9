@@ -10,7 +10,7 @@ import asyncio
 from typing import Dict, List, Any, Optional, Set, Tuple
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import EXCHANGE_NAMES_KR
+from crosskimp.common.config.common_constants import EXCHANGE_NAMES_KR
 
 from crosskimp.ob_collector.eventbus.bus import EventBus
 from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority

@@ -10,7 +10,7 @@ from crosskimp.system_manager.process_manager import (
     PROCESS_INFO
 )
 
-from crosskimp.system_manager.sys_scheduler import (
+from crosskimp.services.scheduler import (
     calculate_next_midnight,
     calculate_next_time,
     format_remaining_time,

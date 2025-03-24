@@ -13,7 +13,7 @@ from collections import defaultdict
 import logging
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import EXCHANGE_NAMES_KR, LOG_SYSTEM
+from crosskimp.common.config.legacy.constants_v3 import EXCHANGE_NAMES_KR, LOG_SYSTEM
 
 # 로거 설정
 logger = get_unified_logger()

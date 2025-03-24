@@ -12,7 +12,7 @@ import logging
 import websockets
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import EXCHANGE_NAMES_KR, normalize_exchange_code
+from crosskimp.common.config.common_constants import EXCHANGE_NAMES_KR, normalize_exchange_code
 
 from crosskimp.ob_collector.eventbus.types import EventTypes, EventPriority
 from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus, EventHandler, LoggingMixin, get_event_handler

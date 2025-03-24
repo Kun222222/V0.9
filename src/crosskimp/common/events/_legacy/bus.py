@@ -118,8 +118,7 @@ class ComponentEventBus:
         self._event_queues = {
             EventPriority.HIGH: asyncio.Queue(maxsize=1000),     # 크기 제한
             EventPriority.NORMAL: asyncio.Queue(maxsize=2000),   # 크기 제한
-            EventPriority.LOW: asyncio.Queue(maxsize=3000),      # 크기 제한
-            EventPriority.BACKGROUND: asyncio.Queue(maxsize=5000), # 크기 제한
+            EventPriority.LOW: asyncio.Queue(maxsize=5000),      # 크기 제한 (BACKGROUND 제거)
         }
         
         # 프로세서 태스크
@@ -127,7 +126,6 @@ class ComponentEventBus:
             EventPriority.HIGH: None,
             EventPriority.NORMAL: None,
             EventPriority.LOW: None,
-            EventPriority.BACKGROUND: None,
         }
         
         # 통계
@@ -163,7 +161,7 @@ class ComponentEventBus:
                     self._event_processor(priority)
                 )
                 
-        self._logger.info(f"[이벤트] '{self.component_name}' 이벤트 버스 시작됨")
+        self._logger.info(f"[이벤트] '{self.component_name}' 오더북 메니저 이벤트 버스 시작됨")
     
     async def stop(self):
         """이벤트 프로세서 중지"""

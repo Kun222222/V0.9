@@ -79,8 +79,7 @@ class EventBus:
         self._event_queues = {
             EventPriority.HIGH: asyncio.Queue(maxsize=500),
             EventPriority.NORMAL: asyncio.Queue(maxsize=1000),
-            EventPriority.LOW: asyncio.Queue(maxsize=1500),
-            EventPriority.BACKGROUND: asyncio.Queue(maxsize=2000),
+            EventPriority.LOW: asyncio.Queue(maxsize=2000),
         }
         
         # 프로세서 태스크
@@ -88,7 +87,6 @@ class EventBus:
             EventPriority.HIGH: None,
             EventPriority.NORMAL: None,
             EventPriority.LOW: None,
-            EventPriority.BACKGROUND: None,
         }
         
         # 통계

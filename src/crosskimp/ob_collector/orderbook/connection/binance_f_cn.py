@@ -8,7 +8,8 @@ import websockets
 from websockets import connect
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.constants_v3 import Exchange
+# constants_v3 대신 새로운 모듈에서 Exchange만 가져오기
+from crosskimp.common.config.common_constants import Exchange
 
 from crosskimp.ob_collector.eventbus.types import EventTypes
 from crosskimp.ob_collector.eventbus.handler import get_orderbook_event_bus

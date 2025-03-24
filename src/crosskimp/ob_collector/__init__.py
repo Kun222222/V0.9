@@ -1,23 +1,30 @@
 """
-오더북 수집기 패키지
+오더북 수집기 모듈
+
+거래소의 오더북 데이터를 실시간으로 수집하고 처리하는 기능을 제공합니다.
 """
 
-from typing import Optional
+# 외부에서 사용할 팩토리 함수 노출
+from crosskimp.ob_collector.orderbook.manager_factory import create_order_manager
 
-# 글로벌 인스턴스
-_orderbook_manager_instance = None
-
+# 하위 호환성을 위한 함수
 def get_orderbook_manager():
-    """오더북 매니저 싱글톤 인스턴스를 반환합니다."""
-    global _orderbook_manager_instance
+    """
+    오더북 관리자 모듈을 가져옵니다.
     
-    if _orderbook_manager_instance is None:
-        from crosskimp.ob_collector.run_orderbook import OrderbookCollector
-        
-        # 설정 가져오기
-        from crosskimp.common.config.constants_v3 import get_settings
-        settings = get_settings()
-        
-        _orderbook_manager_instance = OrderbookCollector(settings)
-        
-    return _orderbook_manager_instance
+    order_manager 모듈의 주요 기능에 접근하기 위한 편의 함수입니다.
+    
+    Returns:
+        object: 오더북 관리 기능이 있는 모듈
+    """
+    from crosskimp.ob_collector.orderbook.order_manager import (
+        start_orderbook_collection,
+        stop_orderbook_collection,
+        get_orderbook_managers
+    )
+    
+    return {
+        'start': start_orderbook_collection,
+        'stop': stop_orderbook_collection,
+        'get_managers': get_orderbook_managers
+    }

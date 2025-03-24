@@ -173,7 +173,7 @@ EVENT_PRIORITIES = {
     EventTypes.PERFORMANCE_METRIC: EventPriority.LOW,
     
     # 백그라운드 우선순위 이벤트
-    EventTypes.RESOURCE_USAGE: EventPriority.BACKGROUND,
+    EventTypes.RESOURCE_USAGE: EventPriority.LOW,
 }
 
 # 기본 우선순위 (명시적으로 지정되지 않은 이벤트용)
