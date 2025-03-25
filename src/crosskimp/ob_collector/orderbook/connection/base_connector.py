@@ -17,7 +17,7 @@ from crosskimp.common.events.system_eventbus import get_event_bus
 from crosskimp.common.config.common_constants import EventType
 
 # 전역 로거 설정
-logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
 
 @dataclass
 class WebSocketStats:
@@ -89,7 +89,7 @@ class BaseWebsocketConnector(ABC):
         self.on_status_change = on_status_change
         
         # 로거 설정
-        self.logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+        self.logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
         
         # 기본 상태 변수
         self.ws = None

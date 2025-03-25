@@ -1,30 +1,25 @@
 """
 오더북 수집 실행 모듈
 
-이 모듈은 여러 거래소에서 오더북 데이터를 수집하는 클래스를 제공합니다.
+이 모듈은 여러 거래소에서 오더북 데이터를 수집하는 독립 실행 스크립트입니다.
 """
 
 import os, asyncio, time
 import logging
-from datetime import datetime
 import signal
 import sys
-import shutil
-from typing import Dict, List, Any, Optional, Set
+from typing import Dict, List, Any, Optional
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.common_constants import SystemComponent, COMPONENT_NAMES_KR, Exchange, EXCHANGE_NAMES_KR
-from crosskimp.common.config.app_config import AppConfig, get_config
-from crosskimp.common.events.system_eventbus import SystemEventBus, EventType
+from crosskimp.common.config.common_constants import SystemComponent, COMPONENT_NAMES_KR, EXCHANGE_NAMES_KR
+from crosskimp.common.config.app_config import get_config
+from crosskimp.common.events.system_eventbus import get_event_bus, EventType
 
-from crosskimp.ob_collector.eventbus._disable_handler import get_orderbook_event_bus, EventHandler, get_event_handler, LoggingMixin
-from crosskimp.ob_collector.eventbus._disable_types import EventTypes, EventPriority
-from crosskimp.ob_collector.core.aggregator import Aggregator
-from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.ob_collector.order_manager import create_order_manager, OrderManager
+# 오더북 수집기 클래스 임포트
+from crosskimp.ob_collector.ob_collector import ObCollector
 
 # 로거 인스턴스 가져오기
-logger = get_unified_logger()
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
 
 # 환경에 따른 로깅 설정
 logger.setLevel(logging.DEBUG)
@@ -37,65 +32,24 @@ else:
     # 개발 환경 로그
     logger.warning(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 개발 환경에서 실행 중입니다. 배포 환경에서는 'CROSSKIMP_ENV=production' 환경 변수를 설정하세요.")
 
-# 이벤트 버스 인스턴스 가져오기
-event_bus = None
-# 시스템 이벤트 버스 인스턴스 추가
-sys_event_bus = None
-
-class OrderbookCollector:
+class ObCollectorRunner:
     """
-    오더북 수집기 클래스
+    오더북 수집기 실행 클래스
     
-    Aggregator에서 필터링된 심볼을 받아 OrderManager로 전달하는 
-    데이터 흐름을 관리합니다.
+    시스템 독립 실행 시 사용되는 래퍼 클래스입니다.
     """
     
-    def __init__(self, settings: dict):
-        """
-        초기화
-        
-        Args:
-            settings: 설정 딕셔너리
-        """
-        self.settings = settings
-        self.aggregator = None
-        self.order_managers = {}  # 거래소별 OrderManager 저장
+    def __init__(self):
+        """초기화"""
+        self.event_bus = get_event_bus()
+        self.collector = None
         self.stop_event = asyncio.Event()
-        self.usdtkrw_monitor = None  # USDT/KRW 모니터링 객체
-        
-        # 중앙 메트릭 관리자 대신 시스템 이벤트 버스 사용
-        self.sys_event_bus = SystemEventBus()
-        
-        # 내부 이벤트 버스 초기화
-        self.event_bus = get_orderbook_event_bus()
-        
-        # 초기 시스템 메트릭 이벤트 발행
-        self._update_system_metric("init_time", time.time())
-        self._update_system_metric("collector_status", "initializing")
-        
-        # 환경 정보 메트릭 설정
-        env = "production" if os.getenv("CROSSKIMP_ENV") == "production" else "development"
-        self._update_system_metric("environment", env)
-        self._update_system_metric("python_version", sys.version.split()[0])
         
         # 독립 실행 모드에서만 시그널 핸들러 설정
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 초기화 완료")
-    
-    def _update_system_metric(self, metric_name, value):
-        """시스템 메트릭을 이벤트 버스를 통해 업데이트"""
-        if self.sys_event_bus:
-            asyncio.create_task(self.sys_event_bus.publish(
-                EventType.STATUS_UPDATE, 
-                {
-                    "component": "orderbook",
-                    "metric": f"system.{metric_name}",
-                    "value": value,
-                    "timestamp": time.time()
-                }
-            ))
+        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 러너 초기화 완료")
     
     def _signal_handler(self, sig, frame):
         """시그널 핸들러"""
@@ -113,29 +67,15 @@ class OrderbookCollector:
         try:
             logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 프로그램 종료 처리 시작")
             
-            # OrderManager 종료
-            await self._stop_order_managers()
+            # 오더북 수집기 중지
+            if self.collector:
+                await self.collector.stop()
+                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 종료 완료")
             
-            # USDT/KRW 모니터 종료
-            if self.usdtkrw_monitor:
-                await self.usdtkrw_monitor.stop()
-                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} USDT/KRW 가격 모니터링 종료")
-                
-            # 시스템 종료 메트릭 업데이트
-            self._update_system_metric("collector_status", "stopped")
-            self._update_system_metric("stop_time", time.time())
-            
-            # 시스템 이벤트 버스 정리 (비동기 함수이므로 await 필요)
-            if self.sys_event_bus and hasattr(self.sys_event_bus, 'stop'):
-                await self.sys_event_bus.stop()
-            
-            # 프로그램 종료 이벤트 발행
-            if self.event_bus:
-                await self.event_bus.publish(EventTypes.SYSTEM_SHUTDOWN, {
-                    "type": "orderbook_shutdown",
-                    "message": "오더북 수집기가 종료되었습니다",
-                    "timestamp": time.time()
-                })
+            # 이벤트 버스 정리
+            if self.event_bus and hasattr(self.event_bus, 'stop'):
+                await self.event_bus.stop()
+                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 종료 완료")
             
             logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 프로그램 종료 처리 완료")
             
@@ -147,192 +87,56 @@ class OrderbookCollector:
             logging.shutdown()
     
     async def run(self):
-        """실행"""
+        """오더북 수집기 실행"""
         try:
-            # 시스템 이벤트 버스 시작
-            if self.sys_event_bus and hasattr(self.sys_event_bus, 'start'):
-                await self.sys_event_bus.start()
-                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 시작됨")
+            # 이벤트 버스 시작
+            if self.event_bus and hasattr(self.event_bus, 'start'):
+                await self.event_bus.start()
+                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 시작됨")
             
-            # 기본 시스템 메트릭 초기화
-            self._update_system_metric("startup_time", time.time())
-            self._update_system_metric("collector_status", "starting")
+            # 오더북 수집기 생성 및 초기화
+            self.collector = ObCollector()
             
-            # 프로그램 시작 이벤트 발행
-            if self.event_bus:
-                await self.event_bus.publish(EventTypes.SYSTEM_STARTUP, {
-                    "type": "orderbook_startup",
-                    "message": "오더북 수집기가 시작되었습니다",
-                    "timestamp": time.time(),
-                    "environment": "production" if os.getenv("CROSSKIMP_ENV") == "production" else "development"
-                })
+            # 셋업 및 초기화
+            await self.collector.setup()
+            init_success = await self.collector.initialize()
             
-            # USDT/KRW 모니터 시작
-            self.usdtkrw_monitor = WsUsdtKrwMonitor()
-            usdtkrw_task = asyncio.create_task(self.usdtkrw_monitor.start())
-            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} USDT/KRW 가격 모니터링 시작")
-            
-            # Aggregator 초기화 및 심볼 필터링
-            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} Aggregator 초기화 및 심볼 필터링 시작")
-            
-            # 캐시가 없는 경우에만 Aggregator 실행
-            filtered_data = None
-            if not OrderManager._filtered_symbols_cache:
-                self.aggregator = Aggregator(self.settings)
-                config = get_config()
-                filters = config.get_symbol_filters()
-                filtered_data = await self.aggregator.run_filtering()
-                
-                # 필터링 결과를 OrderManager 캐시에 저장
-                if filtered_data:
-                    OrderManager._filtered_symbols_cache = filtered_data
-            else:
-                # 이미 캐시가 있는 경우 그대로 사용
-                logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 기존 필터링된 심볼 캐시를 사용합니다.")
-                filtered_data = OrderManager._filtered_symbols_cache
-            
-            if not filtered_data:
-                logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 필터링된 심볼이 없습니다.")
-                self._update_system_metric("collector_status", "error")
-                self._update_system_metric("error_reason", "no_filtered_symbols")
+            if not init_success:
+                logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 초기화 실패")
                 return
+                
+            # 오더북 수집기 시작
+            start_success = await self.collector.start()
             
-            # 필터링 결과 로그 출력
-            log_msg = f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 필터링된 심볼: "
-            for exchange_code, symbols in filtered_data.items():
-                log_msg += f"\n{EXCHANGE_NAMES_KR[exchange_code]} - {len(symbols)}개: {', '.join(symbols[:5])}"
-                if len(symbols) > 5:
-                    log_msg += f" 외 {len(symbols)-5}개"
-            logger.info(log_msg)
-            
-            # OrderManager 초기화 및 시작
-            await self._start_order_managers(filtered_data)
-            
-            # 시스템 상태 업데이트 - 정상 실행 중
-            self._update_system_metric("collector_status", "running")
+            if not start_success:
+                logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 시작 실패")
+                return
+                
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 실행 중")
             
             # 종료 이벤트 대기 - 독립 실행 모드에서만 직접 안내
             logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 프로그램을 종료하려면 Ctrl+C를 누르세요")
-            # 여기서 대기하지만, signal_handler에서 종료 처리를 병렬로 시작함
             await self.stop_event.wait()
             
         except Exception as e:
             logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 실행 중 오류 발생: {str(e)}")
-            # 오류 상태 기록
-            self._update_system_metric("collector_status", "error")
-            self._update_system_metric("error_reason", str(e))
             
-            await self._stop_order_managers()
+            # 오류 발생 시 수집기 종료
+            if self.collector:
+                try:
+                    await self.collector.stop()
+                except Exception as stop_error:
+                    logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 종료 중 오류: {str(stop_error)}")
             
-            # USDT/KRW 모니터 종료
-            if self.usdtkrw_monitor:
-                await self.usdtkrw_monitor.stop()
-                
-            # 시스템 이벤트 버스 정리
-            if self.sys_event_bus and hasattr(self.sys_event_bus, 'stop'):
-                await self.sys_event_bus.stop()
-    
-    async def _start_order_managers(self, filtered_data):
-        """
-        OrderManager 초기화 및 시작
-        
-        Args:
-            filtered_data: 필터링된 심볼 데이터
-        """
-        # 결과 값을 체크하기 위한 리스트
-        order_manager_tasks = []
-        
-        async def init_and_start_manager(exchange, symbols):
-            """단일 거래소에 대한 OrderManager 초기화 및 시작 함수"""
-            try:
-                if not symbols:
-                    logger.info(f"{EXCHANGE_NAMES_KR[exchange]} 심볼이 없어 OrderManager를 초기화하지 않습니다.")
-                    return None
-                
-                # OrderManager 생성
-                manager = create_order_manager(exchange, self.settings)
-                if not manager:
-                    logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 생성 실패")
-                    return None
-                
-                # 초기화 및 시작
-                await manager.initialize()
-                await manager.start()
-                
-                logger.info(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 시작 완료")
-                return exchange, manager
-            except Exception as e:
-                logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 초기화/시작 중 오류: {str(e)}", exc_info=True)
-                return None
-                
-        # 모든 거래소 OrderManager 초기화 및 시작 태스크 생성
-        for exchange, symbols in filtered_data.items():
-            order_manager_tasks.append(init_and_start_manager(exchange, symbols))
-        
-        # 모든 태스크 동시 실행
-        results = await asyncio.gather(*order_manager_tasks, return_exceptions=True)
-        
-        # 결과 처리
-        for result in results:
-            if result and isinstance(result, tuple):
-                exchange, manager = result
-                self.order_managers[exchange] = manager
-            elif isinstance(result, Exception):
-                logger.error(f"OrderManager 시작 중 예외 발생: {str(result)}")
-        
-        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 시작 완료")
-    
-    async def _stop_order_managers(self):
-        """OrderManager 종료"""
-        # 시스템 상태 업데이트
-        self._update_system_metric("collector_status", "stopping")
-        
-        # 먼저 모든 이벤트 핸들러에 종료 상태 설정
-        for exchange_code in list(EventHandler._instances.keys()):
-            try:
-                event_handler = get_event_handler(exchange_code)
-                if event_handler:
-                    try:
-                        # 종료 상태 설정
-                        event_handler.set_shutting_down()
-                    except AttributeError:
-                        logger.warning(f"{EXCHANGE_NAMES_KR[exchange_code]} set_shutting_down 메서드 없음")
-                    except Exception as e:
-                        logger.error(f"{EXCHANGE_NAMES_KR[exchange_code]} 종료 상태 설정 중 오류: {str(e)}", exc_info=True)
-                    
-                    try:
-                        # 메트릭 요약 로그 태스크 중지
-                        if hasattr(event_handler, 'stop_summary_log_task'):
-                            await event_handler.stop_summary_log_task()
-                    except AttributeError:
-                        logger.warning(f"{EXCHANGE_NAMES_KR[exchange_code]} stop_summary_log_task 메서드 없음")
-                    except Exception as e:
-                        logger.error(f"{EXCHANGE_NAMES_KR[exchange_code]} 요약 로그 태스크 중지 중 오류: {str(e)}", exc_info=True)
-                    
-                    logger.info(f"{EXCHANGE_NAMES_KR[exchange_code]} 메트릭 수집 중지 완료")
-            except Exception as e:
-                logger.error(f"이벤트 핸들러 정리 중 오류: {str(e)}", exc_info=True)
-                
-        # 이제 OrderManager들 종료
-        for exchange, manager in self.order_managers.items():
-            try:
-                await manager.stop()
-                logger.info(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 중지 완료")
-            except Exception as e:
-                logger.error(f"{EXCHANGE_NAMES_KR[exchange]} OrderManager 중지 중 오류: {str(e)}", exc_info=True)
-        
-        self.order_managers.clear()
-        
-        # 시스템 상태 최종 업데이트
-        self._update_system_metric("collector_status", "stopped")
-        self._update_system_metric("stop_time", time.time())
-        
-        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 오더북 수집기 중지 완료")
+            # 이벤트 버스 정리
+            if self.event_bus and hasattr(self.event_bus, 'stop'):
+                try:
+                    await self.event_bus.stop()
+                except Exception as stop_error:
+                    logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 종료 중 오류: {str(stop_error)}")
 
 async def async_main():
     """비동기 메인 함수"""
-    global event_bus, sys_event_bus
-    
     try:
         # 설정 로드
         logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 설정 로드 시작")
@@ -342,7 +146,6 @@ async def async_main():
         logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 설정 로드 완료 (소요 시간: {elapsed:.3f}초)")
         
         # 로그 폴더 확인 및 생성
-        # 설정에서 로그 경로 가져오기
         log_path = settings.get_path("logs_dir")
         try:
             # 로그 폴더 생성 (이미 존재해도 오류 발생하지 않음)
@@ -352,57 +155,19 @@ async def async_main():
             os.makedirs(os.path.join(log_path, "raw_data"), exist_ok=True)
             os.makedirs(os.path.join(log_path, "orderbook_data"), exist_ok=True)
             
-            print(f"로그 폴더 확인 완료: {log_path}")
+            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 로그 폴더 확인 완료: {log_path}")
         except Exception as e:
-            print(f"로그 폴더 초기화 중 오류 발생: {str(e)}")
+            logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 로그 폴더 초기화 중 오류 발생: {str(e)}")
         
-        # 시스템 이벤트 버스 초기화 및 시작
-        sys_event_bus = SystemEventBus()
-        await sys_event_bus.start()
-        logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 초기화 및 시작 완료")
-        
-        # 이벤트 버스 초기화
-        try:
-            # 내부 이벤트 버스 사용으로 변경
-            event_bus = get_orderbook_event_bus()
-            
-            # 이벤트 버스가 실행 중이 아니면 시작
-            if hasattr(event_bus, 'is_running') and not event_bus.is_running:
-                asyncio.create_task(event_bus.start())
-            
-            logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 초기화 완료")
-        except Exception as e:
-            logger.warning(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 초기화 실패, 이벤트 발행 기능이 동작하지 않습니다: {str(e)}")
-        
-        # 오더북 수집기 생성 및 실행
-        collector = OrderbookCollector(settings)
-        await collector.run()
+        # 오더북 수집기 러너 생성 및 실행
+        runner = ObCollectorRunner()
+        await runner.run()
         
     except KeyboardInterrupt:
         logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 키보드 인터럽트 수신")
         
     except Exception as e:
         logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 메인 함수 오류: {str(e)}")
-        
-    finally:
-        try:
-            # 시스템 이벤트 버스 종료
-            if sys_event_bus:
-                try:
-                    await sys_event_bus.stop()
-                    logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 종료 완료")
-                except Exception as e:
-                    logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 시스템 이벤트 버스 종료 중 오류: {str(e)}")
-            
-            # 내부 이벤트 버스 종료
-            if event_bus:
-                try:
-                    await event_bus.stop()
-                    logger.info(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 종료 완료")
-                except Exception as e:
-                    logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 이벤트 버스 종료 중 오류: {str(e)}")
-        except Exception as e:
-            logger.error(f"{COMPONENT_NAMES_KR[SystemComponent.SYSTEM.value]} 메인 함수 종료 처리 중 오류: {str(e)}")
 
 def main():
     """동기 메인 함수 - 독립 실행 모드에서만 사용"""

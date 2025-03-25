@@ -1,5 +1,5 @@
 import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Type
 import logging
 
 from crosskimp.common.logger.logger import get_unified_logger
@@ -8,15 +8,54 @@ from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
-from crosskimp.ob_collector.orderbook.util.component_factory import create_connector, create_subscription
 from crosskimp.common.config.app_config import get_config
-from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR, normalize_exchange_code
+from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR, normalize_exchange_code, Exchange
 
-logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+# 모든 거래소 컴포넌트 임포트
+# 연결 컴포넌트
+from crosskimp.ob_collector.orderbook.connection.upbit_s_cn import UpbitWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.bybit_s_cn import BybitWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.bybit_f_cn import BybitFutureWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.bithumb_s_cn import BithumbWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_s_cn import BinanceWebSocketConnector
+from crosskimp.ob_collector.orderbook.connection.binance_f_cn import BinanceFutureWebSocketConnector
 
-class OrderbookCollector(ProcessComponent):
+# 구독 컴포넌트
+from crosskimp.ob_collector.orderbook.subscription.upbit_s_sub import UpbitSubscription
+from crosskimp.ob_collector.orderbook.subscription.bybit_s_sub import BybitSubscription
+from crosskimp.ob_collector.orderbook.subscription.bybit_f_sub import BybitFutureSubscription
+from crosskimp.ob_collector.orderbook.subscription.bithumb_s_sub import BithumbSubscription
+from crosskimp.ob_collector.orderbook.subscription.binance_s_sub import BinanceSubscription
+from crosskimp.ob_collector.orderbook.subscription.binance_f_sub import BinanceFutureSubscription
+
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
+
+# 컴포넌트 클래스 매핑
+EXCHANGE_CONNECTORS = {
+    Exchange.UPBIT.value: UpbitWebSocketConnector,
+    Exchange.BYBIT.value: BybitWebSocketConnector,
+    Exchange.BYBIT_FUTURE.value: BybitFutureWebSocketConnector,
+    Exchange.BITHUMB.value: BithumbWebSocketConnector,
+    Exchange.BINANCE.value: BinanceWebSocketConnector,
+    Exchange.BINANCE_FUTURE.value: BinanceFutureWebSocketConnector
+}
+
+EXCHANGE_SUBSCRIPTIONS = {
+    Exchange.UPBIT.value: UpbitSubscription,
+    Exchange.BYBIT.value: BybitSubscription,
+    Exchange.BYBIT_FUTURE.value: BybitFutureSubscription,
+    Exchange.BITHUMB.value: BithumbSubscription,
+    Exchange.BINANCE.value: BinanceSubscription,
+    Exchange.BINANCE_FUTURE.value: BinanceFutureSubscription
+}
+
+class ObCollector(ProcessComponent):
+    """
+    오더북 수집기 클래스
+    """
     def __init__(self):
-        super().__init__(process_name="orderbook_collector")
+        """초기화"""
+        super().__init__(process_name="ob_collector")
         self.settings = get_config()
         self.connectors = {}  # 거래소별 커넥터
         self.subscriptions = {}  # 거래소별 구독 객체
@@ -28,22 +67,22 @@ class OrderbookCollector(ProcessComponent):
         ProcessComponent에서 상속받은 setup 메서드 재정의
         이벤트 버스 핸들러 등록 및 초기 설정 수행
         """
-        logger.info("오더북 수집기 설정 시작")
+        self.logger.info("오더북 수집기 설정 시작")
         await super().setup()  # 부모 클래스의 setup 메서드 호출
-        logger.info("오더북 수집기 설정 완료")
+        self.logger.info("오더북 수집기 설정 완료")
         return True
         
     async def initialize(self) -> bool:
         """시스템 초기화: 심볼 필터링 및 USDT/KRW 모니터 설정"""
         try:
-            logger.info("오더북 수집 시스템 초기화 시작")
+            self.logger.info("오더북 수집 시스템 초기화 시작")
             
             # 1. 심볼 필터링
             aggregator = Aggregator(self.settings)
             self.filtered_symbols = await aggregator.run_filtering()
             
             if not self.filtered_symbols:
-                logger.error("필터링된 심볼이 없습니다")
+                self.logger.error("필터링된 심볼이 없습니다")
                 return False
                 
             # 2. USDT/KRW 모니터 초기화
@@ -58,20 +97,20 @@ class OrderbookCollector(ProcessComponent):
                 exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
                     
                 # 커넥터 생성
-                connector = create_connector(exchange, self.settings)
+                connector = self._create_connector(exchange, self.settings)
                 self.connectors[exchange] = connector
                 
                 # 구독 객체 생성 및 커넥터 연결
-                subscription = create_subscription(connector)
+                subscription = self._create_subscription(connector)
                 self.subscriptions[exchange] = subscription
                 
-                logger.info(f"{exchange_kr} 컴포넌트 초기화 완료")
+                self.logger.info(f"{exchange_kr} 컴포넌트 초기화 완료")
             
-            logger.info("오더북 수집 시스템 초기화 완료")
+            self.logger.info("오더북 수집 시스템 초기화 완료")
             return True
             
         except Exception as e:
-            logger.error(f"초기화 중 오류 발생: {str(e)}", exc_info=True)
+            self.logger.error(f"초기화 중 오류 발생: {str(e)}", exc_info=True)
             return False
             
     async def start(self) -> bool:
@@ -80,13 +119,13 @@ class OrderbookCollector(ProcessComponent):
         이 메서드는 시스템 이벤트 버스의 PROCESS_CONTROL 이벤트에 의해 호출됨
         """
         try:
-            logger.info("오더북 수집 시작")
+            self.logger.info("오더북 수집 시작")
             
             # 1. 초기화가 안되어 있으면 초기화 먼저 실행
             if not self.connectors:
                 init_success = await self.initialize()
                 if not init_success:
-                    logger.error("오더북 수집 초기화 실패")
+                    self.logger.error("오더북 수집 초기화 실패")
                     return False
             
             # 2. USDT/KRW 모니터 시작 (비동기로 백그라운드에서 실행)
@@ -103,11 +142,11 @@ class OrderbookCollector(ProcessComponent):
             # 모든 연결 태스크 병렬 실행
             await asyncio.gather(*connect_tasks)
             
-            logger.info("모든 거래소 연결 및 구독 시작 완료")
+            self.logger.info("모든 거래소 연결 및 구독 시작 완료")
             return True
             
         except Exception as e:
-            logger.error(f"시스템 시작 중 오류 발생: {str(e)}", exc_info=True)
+            self.logger.error(f"시스템 시작 중 오류 발생: {str(e)}", exc_info=True)
             return False
             
     async def stop(self) -> bool:
@@ -116,7 +155,7 @@ class OrderbookCollector(ProcessComponent):
         이 메서드는 시스템 이벤트 버스의 PROCESS_CONTROL 이벤트에 의해 호출됨
         """
         try:
-            logger.info("오더북 수집 중지 중")
+            self.logger.info("오더북 수집 중지 중")
             
             # 1. USDT/KRW 모니터 중지
             if self.usdt_monitor:
@@ -130,25 +169,25 @@ class OrderbookCollector(ProcessComponent):
                     
                     # 구독 해제
                     await subscription.unsubscribe()
-                    logger.info(f"{exchange_kr} 구독 해제 완료")
+                    self.logger.info(f"{exchange_kr} 구독 해제 완료")
                     
                     # 연결 종료
                     connector = self.connectors.get(exchange)
                     if connector:
                         await connector.disconnect()
-                        logger.info(f"{exchange_kr} 연결 종료 완료")
+                        self.logger.info(f"{exchange_kr} 연결 종료 완료")
                 except Exception as e:
                     exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
-                    logger.error(f"{exchange_kr} 종료 중 오류: {str(e)}")
+                    self.logger.error(f"{exchange_kr} 종료 중 오류: {str(e)}")
             
             self.connectors = {}
             self.subscriptions = {}
             
-            logger.info("오더북 수집 중지 완료")
+            self.logger.info("오더북 수집 중지 완료")
             return True
             
         except Exception as e:
-            logger.error(f"시스템 중지 중 오류 발생: {str(e)}", exc_info=True)
+            self.logger.error(f"시스템 중지 중 오류 발생: {str(e)}", exc_info=True)
             return False
             
     async def _connect_and_subscribe(self, exchange: str) -> bool:
@@ -162,31 +201,95 @@ class OrderbookCollector(ProcessComponent):
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
             
             if not connector or not subscription or not symbols:
-                logger.warning(f"{exchange_kr} 컴포넌트 또는 심볼이 없음")
+                self.logger.warning(f"{exchange_kr} 컴포넌트 또는 심볼이 없음")
                 return False
                 
             # 1. 웹소켓 연결
-            logger.info(f"{exchange_kr} 웹소켓 연결 시도")
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 시도")
             connected = await connector.connect()
             
             if not connected:
-                logger.error(f"{exchange_kr} 웹소켓 연결 실패")
+                self.logger.error(f"{exchange_kr} 웹소켓 연결 실패")
                 return False
                 
-            logger.info(f"{exchange_kr} 웹소켓 연결 성공")
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 성공")
             
             # 2. 심볼 구독
-            logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
+            self.logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
             subscribe_result = await subscription.subscribe(symbols)
             
             if subscribe_result:
-                logger.info(f"{exchange_kr} 구독 성공")
+                self.logger.info(f"{exchange_kr} 구독 성공")
             else:
-                logger.warning(f"{exchange_kr} 구독 실패 또는 부분 성공")
+                self.logger.warning(f"{exchange_kr} 구독 실패 또는 부분 성공")
                 
             return True
             
         except Exception as e:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
-            logger.error(f"{exchange_kr} 연결 및 구독 중 오류 발생: {str(e)}", exc_info=True)
+            self.logger.error(f"{exchange_kr} 연결 및 구독 중 오류 발생: {str(e)}", exc_info=True)
             return False
+
+    def _create_connector(self, exchange_code: str, settings: Dict[str, Any], on_status_change=None) -> Optional[BaseWebsocketConnector]:
+        """
+        거래소별 웹소켓 연결 객체 생성
+        
+        Args:
+            exchange_code: 거래소 코드
+            settings: 설정 딕셔너리
+            on_status_change: 연결 상태 변경 시 호출될 콜백 함수
+            
+        Returns:
+            BaseWebsocketConnector: 웹소켓 연결 객체 또는 None (실패 시)
+        """
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
+        
+        try:
+            # 거래소 코드에 해당하는 클래스 찾기
+            connector_class = EXCHANGE_CONNECTORS.get(exchange_code)
+            if not connector_class:
+                self.logger.warning(f"{exchange_kr} 해당 거래소의 연결 클래스를 찾을 수 없습니다")
+                return None
+                
+            # 연결 객체 생성 (콜백 전달)
+            connector = connector_class(settings, exchange_code, on_status_change)
+            self.logger.debug(f"{exchange_kr} 연결 객체 생성됨")
+            return connector
+            
+        except Exception as e:
+            self.logger.error(f"{exchange_kr} 연결 객체 생성 실패: {str(e)}")
+            return None
+
+    def _create_subscription(
+        self,
+        connector: BaseWebsocketConnector,
+        on_data_received=None
+    ) -> Optional[BaseSubscription]:
+        """
+        거래소별 구독 객체 생성
+        
+        Args:
+            connector: 웹소켓 연결 객체
+            on_data_received: 데이터 수신 시 호출될 콜백 함수
+            
+        Returns:
+            BaseSubscription: 구독 객체 또는 None (실패 시)
+        """
+        exchange_code = connector.exchange_code
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
+        
+        try:
+            # 거래소 코드에 해당하는 클래스 찾기
+            subscription_class = EXCHANGE_SUBSCRIPTIONS.get(exchange_code)
+            if not subscription_class:
+                self.logger.warning(f"{exchange_kr} 해당 거래소의 구독 클래스를 찾을 수 없습니다")
+                return None
+                
+            # 구독 객체 생성 (콜백 전달)
+            subscription = subscription_class(connector, exchange_code, on_data_received)
+            self.logger.debug(f"{exchange_kr} 구독 객체 생성됨")
+            return subscription
+            
+        except Exception as e:
+            self.logger.error(f"{exchange_kr} 구독 객체 생성 실패: {str(e)}")
+            return None

@@ -63,6 +63,9 @@ STATUS_THRESHOLDS = {
     }
 }
 
+# 로거 설정
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
+
 @dataclass
 class ExchangeMetrics:
     """거래소별 메트릭 데이터 클래스"""
@@ -95,7 +98,7 @@ class SubscriptionMetricsManager:
     
     def __init__(self):
         """초기화"""
-        self.logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
+        self.logger = logger
         self.event_bus = get_event_bus()
         
         # 거래소별 메트릭 데이터

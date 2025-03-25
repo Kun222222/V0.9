@@ -19,7 +19,7 @@ class SystemComponent(Enum):
     각 컴포넌트는 시스템의 특정 부분을 담당합니다.
     로깅, 설정, 이벤트 등에서 컴포넌트 구분에 사용됩니다.
     """
-    ORDERBOOK = "orderbook"    # 오더북 수집기
+    OB_COLLECTOR = "ob_collector"    # 오더북 수집기
     RADAR = "radar"            # 레이더 (시장 감시기)
     TRADER = "trader"          # 트레이더 (자동 거래 시스템)
     TELEGRAM = "telegram"      # 텔레그램 서비스
@@ -28,13 +28,16 @@ class SystemComponent(Enum):
 
 # 컴포넌트 이름 한글 매핑
 COMPONENT_NAMES_KR = {
-    SystemComponent.ORDERBOOK.value: "[오더북수집기]",
+    SystemComponent.OB_COLLECTOR.value: "[오더북수집기]",
     SystemComponent.RADAR.value: "[레이더]",
     SystemComponent.TRADER.value: "[트레이더]",
     SystemComponent.TELEGRAM.value: "[텔레그램]",
     SystemComponent.SYSTEM.value: "[시스템]",
     SystemComponent.WEB.value: "[웹서비스]",
 }
+
+# 이전 버전과의 호환성을 위한 별칭
+ORDERBOOK = SystemComponent.OB_COLLECTOR.value
 
 #############################################################
 #                이벤트 관련 상수 정의                       #
@@ -52,30 +55,37 @@ class EventType(Enum):
     SYSTEM_STOP = auto()       # 시스템 종료
     
     # 프로세스 이벤트
-    PROCESS_START = auto()     # 프로세스 시작
-    PROCESS_STOP = auto()      # 프로세스 종료
-    PROCESS_STATUS = auto()    # 프로세스 상태 업데이트
-    PROCESS_CONTROL = auto()   # 프로세스 제어 (시작/종료/재시작)
+    PROCESS_START = "process_start"    # 프로세스 시작
+    PROCESS_STOP = "process_stop"      # 프로세스 종료
+    PROCESS_ERROR = "process_error"    # 프로세스 오류
+    PROCESS_STATUS = auto()            # 프로세스 상태 업데이트
+    PROCESS_CONTROL = auto()           # 프로세스 제어 (시작/종료/재시작)
     
     # 명령 이벤트
     COMMAND = auto()           # 일반 명령
     
     # 상태 이벤트
     STATUS_UPDATE = auto()     # 상태 업데이트
-    
+    SYSTEM_STATUS = "system_status"    # 시스템 상태
+
     # 오류 이벤트
-    ERROR = auto()             # 오류 발생
+    ERROR = "error"                # 오류 발생
+    WARNING = "warning"            # 경고
+    INFO = "info"                  # 정보
+    
+    # 주문 이벤트
+    ORDER_CREATED = "order_created"      # 주문 생성됨
+    ORDER_FILLED = "order_filled"        # 주문 체결됨
+    ORDER_CANCELED = "order_canceled"    # 주문 취소됨
+    TRADE_COMPLETED = "trade_completed"  # 거래 완료
 
-    # 이벤트 카테고리 (이전 EventCategory에서 통합)
-    SYSTEM_EVENT = "system"          # 시스템 이벤트
-    CONNECTION_EVENT = "connection"  # 연결 이벤트
-    ORDERBOOK_EVENT = "orderbook"    # 오더북 데이터 이벤트
-    TRADE_EVENT = "trade"            # 거래 이벤트
-    METRIC_EVENT = "metric"          # 메트릭 이벤트
+    # 이벤트 카테고리
+    SYSTEM_EVENT = "system"              # 시스템 이벤트
+    CONNECTION_EVENT = "connection"      # 연결 이벤트
+    OB_COLLECTOR_EVENT = "ob_collector"  # 오더북 데이터 이벤트
+    TRADE_EVENT = "trade"                # 거래 이벤트
+    METRIC_EVENT = "metric"              # 메트릭 이벤트
     NOTIFICATION_EVENT = "notification"  # 알림 이벤트
-
-# 호환성을 위한 별칭
-EventCategory = EventType
 
 class EventPriority(Enum):
     """
@@ -88,43 +98,17 @@ class EventPriority(Enum):
     HIGH = 2        # 높은 우선순위
     CRITICAL = 3    # 중요 우선순위
 
-# __init__.py에서 가져온 추가 이벤트 관련 클래스들
-class StatusEventTypes(Enum):
+class StatusEventType(Enum):
     """상태 관련 이벤트 타입"""
-    UPDATE = auto()
-    ALERT = auto()
-    HEARTBEAT = auto()
+    UPDATE = auto()     # 상태 업데이트
+    ALERT = auto()      # 상태 알림
+    HEARTBEAT = auto()  # 하트비트 (생존 신호)
 
-class TelegramEventTypes(Enum):
+class TelegramEventType(Enum):
     """텔레그램 관련 이벤트 타입"""
-    COMMAND = auto()
-    NOTIFICATION = auto()
-    USER_MESSAGE = auto()
-
-class EventTypes(Enum):
-    """일반 이벤트 타입"""
-    PROCESS_START = "process_start"
-    PROCESS_STOP = "process_stop"
-    PROCESS_ERROR = "process_error"
-    SYSTEM_STATUS = "system_status"
-    ORDER_CREATED = "order_created"
-    ORDER_FILLED = "order_filled"
-    ORDER_CANCELED = "order_canceled"
-    TRADE_COMPLETED = "trade_completed"
-    ERROR = "error"
-    WARNING = "warning"
-    INFO = "info"
-
-# 이벤트 시스템용 컴포넌트 정의 (기존 SystemComponent와 통합)
-class Component(Enum):
-    """시스템 컴포넌트 타입"""
-    SYSTEM = "system"
-    TELEGRAM = "telegram"
-    ORDERBOOK = "orderbook"
-    TRADER = "trader"
-    CALCULATOR = "calculator"
-    RADAR = "radar"
-    SERVER = "server"
+    COMMAND = auto()        # 텔레그램 명령
+    NOTIFICATION = auto()   # 텔레그램 알림
+    USER_MESSAGE = auto()   # 사용자 메시지
 
 #############################################################
 #               프로세스 관련 상수 정의                      #
@@ -343,4 +327,11 @@ def is_futures_exchange(exchange_code: str) -> bool:
     Returns:
         선물 거래소 여부
     """
-    return normalize_exchange_code(exchange_code) in EXCHANGE_GROUPS["futures"] 
+    return normalize_exchange_code(exchange_code) in EXCHANGE_GROUPS["futures"]
+
+# 이전 버전과의 호환성을 위한 별칭
+EventCategory = EventType
+StatusEventTypes = StatusEventType
+TelegramEventTypes = TelegramEventType
+EventTypes = EventType
+Component = SystemComponent 

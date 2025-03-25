@@ -6,10 +6,8 @@ subscribe 대신 register_handler를 사용하여 이벤트 핸들러를 등록�
 """
 
 import asyncio
-import logging
 import time
 from typing import Dict, List, Callable, Any, Optional
-from enum import Enum, auto
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import EventType, Component

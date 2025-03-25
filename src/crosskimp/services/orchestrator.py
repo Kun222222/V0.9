@@ -32,11 +32,11 @@ class Orchestrator:
         
         # 프로세스 의존성 정의
         self.process_dependencies = {
-            "orderbook": set(),  # 오더북은 독립적
+            "ob_collector": set(),  # 오더북은 독립적
             "telegram": set(),  # 텔레그램 커맨더는 독립적
-            "monitoring": {"orderbook"},  # 모니터링은 오더북에 의존
-            "data_collector": {"orderbook"},  # 데이터 수집기는 오더북에 의존
-            "trade_executor": {"orderbook", "data_collector"}  # 거래 실행기는 오더북과 데이터 수집기에 의존
+            "monitoring": {"ob_collector"},  # 모니터링은 오더북에 의존
+            "data_collector": {"ob_collector"},  # 데이터 수집기는 오더북에 의존
+            "trade_executor": {"ob_collector", "data_collector"}  # 거래 실행기는 오더북과 데이터 수집기에 의존
         }
         
         # 프로세스 실행 상태 추적

@@ -18,7 +18,7 @@ from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.common.config.app_config import get_config
 
 # 로거 인스턴스 가져오기
-logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
 
 # 설정 객체 초기화 (한 번만 호출)
 config = get_config()

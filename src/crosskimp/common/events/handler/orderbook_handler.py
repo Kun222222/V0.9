@@ -12,8 +12,8 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.events.domains.process_component import ProcessComponent
 from crosskimp.common.config.common_constants import SystemComponent
 
-# 기존 order_manager 대신 새로운 ob_collector 사용
-from crosskimp.ob_collector.ob_collector import OrderbookCollector
+# 오더북 수집기 임포트
+from crosskimp.ob_collector.ob_collector import ObCollector
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
@@ -25,22 +25,22 @@ class OrderbookProcess(ProcessComponent):
     오더북 데이터 수집 프로세스의 시작/종료를 관리합니다.
     """
     
-    def __init__(self, process_name: str = "orderbook"):
+    def __init__(self, process_name: str = "ob_collector"):
         """
-        오더북 프로세스 컴포넌트 초기화
+        오더북 프로세스 초기화
         
         Args:
-            process_name: 프로세스 이름 (기본값: "orderbook")
+            process_name: 프로세스 이름 (기본값: "ob_collector")
         """
         super().__init__(process_name)
         self.is_running = False
-        self.collector = OrderbookCollector()  # 새로운 OrderbookCollector 인스턴스 생성
+        self.collector = ObCollector()  # 오더북 수집기 인스턴스 생성
         
     async def start(self) -> bool:
         """
         오더북 프로세스 시작
         
-        새로운 OrderbookCollector의 start 메서드를 호출하여 오더북 수집을 시작합니다.
+        오더북 수집기의 start 메서드를 호출하여 오더북 수집을 시작합니다.
         
         Returns:
             bool: 시작 성공 여부
@@ -51,12 +51,12 @@ class OrderbookProcess(ProcessComponent):
             
         try:
             self.logger.info("오더북 프로세스 시작 중...")
-            self.logger.debug("OrderbookProcess.start() 메서드 호출됨 - OrderbookCollector.start() 호출 전")
+            self.logger.debug("OrderbookProcess.start() 메서드 호출됨 - ObCollector.start() 호출 전")
             
-            # OrderbookCollector를 사용하여 시작
+            # 오더북 수집기를 사용하여 시작
             success = await self.collector.start()
             
-            self.logger.debug(f"OrderbookCollector.start() 함수 호출 결과: {success}")
+            self.logger.debug(f"ObCollector.start() 함수 호출 결과: {success}")
             
             if success:
                 self.is_running = True
@@ -78,7 +78,7 @@ class OrderbookProcess(ProcessComponent):
         """
         오더북 프로세스 종료
         
-        OrderbookCollector의 stop 메서드를 호출하여 오더북 수집을 종료합니다.
+        오더북 수집기의 stop 메서드를 호출하여 오더북 수집을 종료합니다.
         
         Returns:
             bool: 종료 성공 여부
@@ -90,7 +90,7 @@ class OrderbookProcess(ProcessComponent):
         try:
             self.logger.info("오더북 프로세스 종료 중...")
             
-            # OrderbookCollector를 사용하여 종료
+            # 오더북 수집기를 사용하여 종료
             success = await self.collector.stop()
             
             # 상태 업데이트
@@ -133,5 +133,5 @@ async def initialize_orderbook_process():
     """
     process = get_orderbook_process()
     await process.setup()
-    await process.collector.setup()  # OrderbookCollector의 setup 메서드도 호출
-    return process 
+    await process.collector.setup()  # 오더북 수집기의 setup 메서드도 호출
+    return process

@@ -7,10 +7,8 @@ USDT/KRW 시세 수집 모듈
 import asyncio
 import json
 import time
-import uuid
 import websockets
-from typing import Dict, Callable, List, Any, Optional, Set
-from threading import Lock
+from typing import Dict, Callable, List, Any, Optional
 
 from crosskimp.common.logger.logger import get_unified_logger
 # constants_v3 대신 새로운 모듈에서 가져오기
@@ -35,7 +33,7 @@ WEBSOCKET_CONFIG = {
 }
 
 # 로거 인스턴스 가져오기
-logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
 
 class WsUsdtKrwMonitor:
     """

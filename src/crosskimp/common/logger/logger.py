@@ -510,7 +510,7 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
         format_str=_get_debug_log_format(),
         add_console=False,
         add_error_file=False,
-        component=SystemComponent.ORDERBOOK.value  # 오더북 컴포넌트 지정
+        component=SystemComponent.OB_COLLECTOR.value  # 오더북 컴포넌트 지정
     )
     
     logger.debug(f"raw 로거 초기화 완료")

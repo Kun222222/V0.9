@@ -21,7 +21,7 @@ from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebso
 from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
 
 # 로거 설정
-logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
 
 class BaseSubscription(ABC):
     def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None, on_data_received=None):
@@ -35,7 +35,7 @@ class BaseSubscription(ABC):
         """
         self.connection = connection
         self.exchange_code = normalize_exchange_code(exchange_code or self.connection.exchangename)
-        self.logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)
+        self.logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
         self.exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, self.exchange_code)  # 한글 거래소명 가져오기
         
         # 거래소별 하위 폴더 생성하지 않음
