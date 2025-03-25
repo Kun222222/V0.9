@@ -40,78 +40,7 @@ COMPONENT_NAMES_KR = {
 ORDERBOOK = SystemComponent.OB_COLLECTOR.value
 
 #############################################################
-#                이벤트 관련 상수 정의                       #
-#############################################################
-
-class EventType(Enum):
-    """
-    시스템 이벤트 유형
-    
-    이벤트 버스에서 사용되는 이벤트 유형을 정의합니다.
-    이벤트 발행-구독 시스템의 핵심 식별자입니다.
-    """
-    # 시스템 이벤트
-    SYSTEM_START = auto()      # 시스템 시작
-    SYSTEM_STOP = auto()       # 시스템 종료
-    
-    # 프로세스 이벤트
-    PROCESS_START = "process_start"    # 프로세스 시작
-    PROCESS_STOP = "process_stop"      # 프로세스 종료
-    PROCESS_ERROR = "process_error"    # 프로세스 오류
-    PROCESS_STATUS = auto()            # 프로세스 상태 업데이트
-    PROCESS_CONTROL = auto()           # 프로세스 제어 (시작/종료/재시작)
-    
-    # 명령 이벤트
-    COMMAND = auto()           # 일반 명령
-    
-    # 상태 이벤트
-    STATUS_UPDATE = auto()     # 상태 업데이트
-    SYSTEM_STATUS = "system_status"    # 시스템 상태
-
-    # 오류 이벤트
-    ERROR = "error"                # 오류 발생
-    WARNING = "warning"            # 경고
-    INFO = "info"                  # 정보
-    
-    # 주문 이벤트
-    ORDER_CREATED = "order_created"      # 주문 생성됨
-    ORDER_FILLED = "order_filled"        # 주문 체결됨
-    ORDER_CANCELED = "order_canceled"    # 주문 취소됨
-    TRADE_COMPLETED = "trade_completed"  # 거래 완료
-
-    # 이벤트 카테고리
-    SYSTEM_EVENT = "system"              # 시스템 이벤트
-    CONNECTION_EVENT = "connection"      # 연결 이벤트
-    OB_COLLECTOR_EVENT = "ob_collector"  # 오더북 데이터 이벤트
-    TRADE_EVENT = "trade"                # 거래 이벤트
-    METRIC_EVENT = "metric"              # 메트릭 이벤트
-    NOTIFICATION_EVENT = "notification"  # 알림 이벤트
-
-class EventPriority(Enum):
-    """
-    이벤트 우선순위
-    
-    이벤트 처리 우선순위를 정의합니다.
-    """
-    LOW = 0         # 낮은 우선순위
-    NORMAL = 1      # 일반 우선순위
-    HIGH = 2        # 높은 우선순위
-    CRITICAL = 3    # 중요 우선순위
-
-class StatusEventType(Enum):
-    """상태 관련 이벤트 타입"""
-    UPDATE = auto()     # 상태 업데이트
-    ALERT = auto()      # 상태 알림
-    HEARTBEAT = auto()  # 하트비트 (생존 신호)
-
-class TelegramEventType(Enum):
-    """텔레그램 관련 이벤트 타입"""
-    COMMAND = auto()        # 텔레그램 명령
-    NOTIFICATION = auto()   # 텔레그램 알림
-    USER_MESSAGE = auto()   # 사용자 메시지
-
-#############################################################
-#               프로세스 관련 상수 정의                      #
+#                프로세스 관련 상수 정의                      #
 #############################################################
 
 class ProcessStatus(Enum):
@@ -327,11 +256,4 @@ def is_futures_exchange(exchange_code: str) -> bool:
     Returns:
         선물 거래소 여부
     """
-    return normalize_exchange_code(exchange_code) in EXCHANGE_GROUPS["futures"]
-
-# 이전 버전과의 호환성을 위한 별칭
-EventCategory = EventType
-StatusEventTypes = StatusEventType
-TelegramEventTypes = TelegramEventType
-EventTypes = EventType
-Component = SystemComponent 
+    return normalize_exchange_code(exchange_code) in EXCHANGE_GROUPS["futures"] 

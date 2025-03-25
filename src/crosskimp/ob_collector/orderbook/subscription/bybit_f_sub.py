@@ -42,7 +42,7 @@ class BybitFutureSubscription(BaseSubscription):
     """
     
     # 1. 초기화 단계
-    def __init__(self, connection, exchange_code: str = None, on_data_received=None):
+    def __init__(self, connection, exchange_code: str = None, on_data_received=None, collector=None):
         """
         초기화
         
@@ -50,9 +50,10 @@ class BybitFutureSubscription(BaseSubscription):
             connection: 웹소켓 연결 객체
             exchange_code: 거래소 코드 (None이면 connection에서 가져옴)
             on_data_received: 데이터 수신 시 호출될 콜백 함수
+            collector: 데이터 수집기 객체 (ObCollector)
         """
         # 부모 클래스 초기화
-        super().__init__(connection, exchange_code, on_data_received)
+        super().__init__(connection, exchange_code, on_data_received, collector)
         
         # 구독 설정
         self.depth_level = DEFAULT_DEPTH
@@ -72,15 +73,15 @@ class BybitFutureSubscription(BaseSubscription):
         부모 클래스의 _ensure_websocket 메서드를 사용하여 연결을 확보합니다.
         연결 관리는 Connector 클래스에서 전담합니다.
         """
-        self.log_info("바이비트 선물 웹소켓 연결 확보 시도")
+        self.log_info("웹소켓 연결 확보 시도")
         
         # 부모 클래스의 _ensure_websocket 메서드 호출
         success = await super()._ensure_websocket()
         
         if success:
-            self.log_info("바이비트 선물 웹소켓 연결 확보 완료")
+            self.log_info("웹소켓 연결 확보 완료")
         else:
-            self.log_error("바이비트 선물 웹소켓 연결 확보 실패")
+            self.log_error("웹소켓 연결 확보 실패")
                    
         return success
 

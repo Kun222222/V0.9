@@ -16,7 +16,8 @@ from crosskimp.common.logger.logger import get_unified_logger
 # 순환 참조 해결을 위해 지연 임포트
 # from crosskimp.telegrambot import get_bot_manager
 from crosskimp.common.events.system_eventbus import get_component_event_bus
-from crosskimp.common.config.common_constants import Component, EventTypes
+from crosskimp.common.config.common_constants import SystemComponent
+from crosskimp.common.events.system_types import SystemEventType, NotificationEventType
 
 # NotificationType 정의 (문자열 리터럴 사용)
 class NotificationType:
@@ -119,7 +120,7 @@ class NotificationManager:
         
         # 이벤트 버스 초기화 및 이벤트 구독 설정
         try:
-            self.event_bus = get_component_event_bus(Component.SYSTEM)
+            self.event_bus = get_component_event_bus(SystemComponent.SYSTEM)
             # 시스템 이벤트 구독
             await self._subscribe_to_system_events()
             logger.info("이벤트 버스 구독 완료")
@@ -137,21 +138,21 @@ class NotificationManager:
             
         # 시스템 이벤트 구독
         subscription_id = await self.event_bus.subscribe(
-            EventTypes.SYSTEM_EVENT,
+            SystemEventType.STATUS,
             self._handle_system_event
         )
         self.event_subscriptions.append(subscription_id)
         
         # 프로세스 상태 이벤트 구독
         subscription_id = await self.event_bus.subscribe(
-            EventTypes.PROCESS_STATUS,
+            SystemEventType.PROCESS_CONTROL,
             self._handle_process_status
         )
         self.event_subscriptions.append(subscription_id)
         
         # 오류 이벤트 구독
         subscription_id = await self.event_bus.subscribe(
-            EventTypes.ERROR_EVENT,
+            SystemEventType.ERROR,
             self._handle_error_event
         )
         self.event_subscriptions.append(subscription_id)

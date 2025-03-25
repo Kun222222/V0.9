@@ -17,7 +17,7 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
 from crosskimp.common.config.app_config import get_config
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.config.common_constants import EventType
+from crosskimp.common.events.system_types import SystemEventType, TelegramEventType
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
@@ -263,7 +263,7 @@ class TelegramCommander:
             }
             
             # 명령 이벤트 발행
-            await self.event_bus.publish(EventType.COMMAND, command_data)
+            await self.event_bus.publish(TelegramEventType.COMMAND, command_data)
             
             # 성공 응답
             return {"success": True}

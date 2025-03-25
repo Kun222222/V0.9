@@ -12,7 +12,8 @@ from crosskimp.common.config.legacy.constants_v3 import LOG_TELEGRAM
 
 # 새 이벤트 시스템 임포트로 변경
 from crosskimp.common.events.system_eventbus import get_component_event_bus
-from crosskimp.common.config.common_constants import Component, StatusEventTypes, TelegramEventTypes
+from crosskimp.common.config.common_constants import SystemComponent
+from crosskimp.common.events.system_types import StatusEventType, TelegramEventType
 
 # 로거 설정
 logger = get_unified_logger()
@@ -39,23 +40,23 @@ class NotificationService:
     async def _setup_event_subscriptions(self) -> None:
         """이벤트 버스 구독을 설정합니다."""
         # 텔레그램 컴포넌트 이벤트 버스 가져오기
-        self.event_bus = get_component_event_bus(Component.TELEGRAM)
+        self.event_bus = get_component_event_bus(SystemComponent.TELEGRAM)
         
         # 프로세스 상태 변경 이벤트 구독
         await self.event_bus.subscribe(
-            StatusEventTypes.PROCESS_STATUS, 
+            StatusEventType.PROCESS_STATUS, 
             self._handle_process_status_event
         )
         
         # 오류 발생 이벤트 구독
         await self.event_bus.subscribe(
-            StatusEventTypes.ERROR_EVENT, 
+            StatusEventType.ERROR_EVENT, 
             self._handle_error_event
         )
         
         # 시스템 메트릭 이벤트 구독 (리소스 사용량 알림 등)
         await self.event_bus.subscribe(
-            StatusEventTypes.RESOURCE_USAGE,
+            StatusEventType.RESOURCE_USAGE,
             self._handle_system_metrics_event
         )
         

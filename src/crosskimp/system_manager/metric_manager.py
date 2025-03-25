@@ -15,7 +15,8 @@ import logging
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import EXCHANGE_NAMES_KR, LOG_SYSTEM
 from crosskimp.common.events.system_eventbus import get_component_event_bus
-from crosskimp.common.config.common_constants import Component, StatusEventTypes
+from crosskimp.common.config.common_constants import SystemComponent
+from crosskimp.common.events.system_types import StatusEventType
 
 # 로거 설정
 logger = get_unified_logger()
@@ -138,10 +139,10 @@ class MetricManager:
             logger.info(f"{LOG_SYSTEM} 메트릭 요약 태스크가 시작되었습니다.")
             
             # 새 이벤트 시스템 사용으로 변경
-            event_bus = get_component_event_bus(Component.SERVER)
+            event_bus = get_component_event_bus(SystemComponent.SERVER)
             
             # METRIC_UPDATE 이벤트 구독
-            asyncio.create_task(event_bus.subscribe(StatusEventTypes.METRIC_UPDATE, self._handle_metric_update))
+            asyncio.create_task(event_bus.subscribe(StatusEventType.METRIC_UPDATE, self._handle_metric_update))
     
     async def stop(self):
         """메트릭 관리자 중지 - 요약 태스크 중지"""
@@ -154,8 +155,8 @@ class MetricManager:
                 logger.debug(f"{LOG_SYSTEM} 메트릭 요약 태스크가 취소되었습니다.")
             
             # 이벤트 구독 해제 - 새 이벤트 시스템 사용
-            event_bus = get_component_event_bus(Component.SERVER)
-            asyncio.create_task(event_bus.unsubscribe(StatusEventTypes.METRIC_UPDATE, self._handle_metric_update))
+            event_bus = get_component_event_bus(SystemComponent.SERVER)
+            asyncio.create_task(event_bus.unsubscribe(StatusEventType.METRIC_UPDATE, self._handle_metric_update))
     
     def get_metric(self, exchange_code: str, metric_name: str, default=None):
         """
@@ -306,7 +307,7 @@ class MetricManager:
                 # 이벤트 버스가 임포트되지 않은 경우 (순환 참조 방지)
                 # 필요할 때만 임포트하여 이벤트 발행
                 try:
-                    event_bus = get_component_event_bus(Component.SERVER)
+                    event_bus = get_component_event_bus(SystemComponent.SERVER)
                     
                     # 이벤트 데이터 준비
                     event_data = {
@@ -323,7 +324,7 @@ class MetricManager:
                     
                     # 이벤트 발행 (비동기 처리)
                     asyncio.create_task(event_bus.publish(
-                        StatusEventTypes.METRIC_UPDATE,
+                        StatusEventType.METRIC_UPDATE,
                         event_data
                     ))
                 except ImportError:
@@ -392,22 +393,24 @@ class MetricManager:
     
     async def _send_alert(self, alert_type: str, message: str) -> None:
         """
-        알림 전송
+        메트릭 알림 이벤트 발행
         
         Args:
-            alert_type: 알림 유형 (warning, error, info 등)
+            alert_type: 알림 유형
             message: 알림 메시지
         """
         try:
-            # 텔레그램 알림 대신 로깅으로 대체
-            if alert_type == "warning":
-                logger.warning(f"[메트릭 알림] {message}")
-            elif alert_type == "error":
-                logger.error(f"[메트릭 알림] {message}")
-            else:
-                logger.info(f"[메트릭 알림] {message}")
+            event_bus = get_component_event_bus(SystemComponent.SERVER)
+            alert = {
+                "type": "metric_alert",
+                "alert_type": alert_type,
+                "message": message,
+                "timestamp": time.time()
+            }
+            await event_bus.publish(StatusEventType.METRIC_UPDATE, alert)
+            logger.info(f"{LOG_SYSTEM} 메트릭 알림 발행: {alert_type}")
         except Exception as e:
-            logger.error(f"메트릭 알림 전송 중 오류: {str(e)}")
+            logger.error(f"{LOG_SYSTEM} 메트릭 알림 발행 중 오류: {str(e)}")
     
     async def _summary_loop(self) -> None:
         """메트릭 요약 루프 - 주기적으로 요약 정보 출력"""

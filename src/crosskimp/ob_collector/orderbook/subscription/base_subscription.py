@@ -11,6 +11,7 @@ from typing import Dict, List, Any, Optional, Set, Tuple, Union
 from abc import ABC, abstractmethod
 import websockets
 import datetime
+from threading import Event
 
 from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, normalize_exchange_code, SystemComponent
@@ -23,45 +24,58 @@ from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookV
 logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
 
 class BaseSubscription(ABC):
-    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None, on_data_received=None):
+    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None, on_data_received=None, collector=None):
         """
-        초기화
+        기본 구독 클래스 초기화
         
         Args:
             connection: 웹소켓 연결 객체
-            exchange_code: 거래소 코드 (None이면 connection에서 가져옴)
+            exchange_code: 거래소 코드 (기본값: None)
             on_data_received: 데이터 수신 시 호출될 콜백 함수
+            collector: 데이터 수집기 객체 (ObCollector)
         """
-        self.connection = connection
-        self.exchange_code = normalize_exchange_code(exchange_code or self.connection.exchangename)
+        # 로거 설정
+        self.exchange_code = exchange_code or connection.exchange_code
+        self.exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, self.exchange_code)
         self.logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
-        self.exchange_kr = EXCHANGE_NAMES_KR.get(self.exchange_code, self.exchange_code)  # 한글 거래소명 가져오기
         
-        # 거래소별 하위 폴더 생성하지 않음
-        
-        # 웹소켓 및 이벤트 관련 초기화
+        # 웹소켓 관련 변수
+        self.connection = connection
         self.ws = None
+        self.stop_event = Event()
         
-        # 구독 및 태스크 관리
-        self.subscribed_symbols = {}
-        self.subscription_status = {}  # 구독 상태 저장용 딕셔너리 추가
-        self.tasks = {}
-        self.message_loop_task = None
-        self.stop_event = asyncio.Event()
+        # 구독 상태 및 관리
+        self.subscribed_symbols = {}  # 구독 중인 심볼 세트
+        self.subscription_status = {}  # 심볼별 구독 상태
+        self.message_logging_enabled = True
         
-        # 메시지 카운트 관련 변수
-        self._message_count = 0
-        self._last_count_update = time.time()
-        self._prev_message_count = 0
-        self._count_update_interval = 1.0
-        
-        # 메시지 로깅 및 검증 관련 설정
+        # 로깅 설정
         self.raw_logging_enabled = False
         self.orderbook_logging_enabled = False
         self.raw_logger = None
-        self.validator = None
         self._setup_raw_logging()
+        
+        # 콜백 함수 설정
+        self.on_data_received = on_data_received
+        
+        # 데이터 컬렉터 설정
+        self.collector = collector  # ObCollector 인스턴스 참조
+        
+        # 백그라운드 태스크 관리
+        self.tasks = {}  # 백그라운드 작업
+        self.message_loop_task = None
+        
+        # 초기 시작 시간
+        self._message_count = 0  # 수신된 메시지 수 카운트
+        
+        # 데이터 검증기 설정
+        self.validator = None
         self.initialize_validator()
+        
+        # 메시지 카운트 관련 변수
+        self._last_count_update = time.time()
+        self._prev_message_count = 0
+        self._count_update_interval = 1.0
         
         # 상태 추적 변수들
         self.message_count = {}
@@ -72,9 +86,6 @@ class BaseSubscription(ABC):
         
         # 메시지 로깅 활성화 여부
         self.message_logging_enabled = os.environ.get('DEBUG_MESSAGE_LOGGING', '0') == '1'
-        
-        # 데이터 수신 콜백 함수
-        self.on_data_received = on_data_received
 
     # 로깅 메서드
     def log_debug(self, message: str) -> None:
@@ -401,6 +412,11 @@ class BaseSubscription(ABC):
         """메시지 카운트 증가"""
         try:
             self._message_count += 1
+            
+            # ObCollector의 메시지 카운터도 업데이트
+            if self.collector:
+                self.collector.update_message_counter(self.exchange_code)
+                
         except Exception as e:
             self.log_error(f"메시지 카운트 증가 중 오류: {str(e)}")
     

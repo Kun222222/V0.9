@@ -40,7 +40,7 @@ class UpbitSubscription(BaseSubscription):
     """
     
     # 1. 초기화 단계
-    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None, on_data_received=None):
+    def __init__(self, connection: BaseWebsocketConnector, exchange_code: str = None, on_data_received=None, collector=None):
         """
         초기화
         
@@ -48,9 +48,10 @@ class UpbitSubscription(BaseSubscription):
             connection: 웹소켓 연결 객체
             exchange_code: 거래소 코드 (None이면 connection에서 가져옴)
             on_data_received: 데이터 수신 시 호출될 콜백 함수
+            collector: 데이터 수집기 객체 (ObCollector)
         """
         # 부모 클래스 초기화
-        super().__init__(connection, exchange_code, on_data_received)
+        super().__init__(connection, exchange_code, on_data_received, collector)
         
         # 구독 관련 설정
         self.max_symbols_per_subscription = MAX_SYMBOLS_PER_SUBSCRIPTION

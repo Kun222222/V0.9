@@ -16,8 +16,8 @@ import traceback
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import LOG_SYSTEM
 from crosskimp.common.events.system_eventbus import get_component_event_bus
-from crosskimp.common.config.common_constants import Component, StatusEventTypes
-from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
+from crosskimp.common.config.common_constants import SystemComponent
+from crosskimp.common.events.system_types import StatusEventType
 from crosskimp.telegrambot.notification_manager import get_notification_manager
 
 # 로거 설정
@@ -84,7 +84,7 @@ class ErrorManager:
             raise Exception("ErrorManager는 싱글톤입니다. get_instance()를 사용하세요.")
         
         # 이벤트 버스 가져오기
-        self.event_bus = get_component_event_bus(Component.SYSTEM)
+        self.event_bus = get_component_event_bus(SystemComponent.SYSTEM)
         
         # 오류 패턴 정의 - 정규식 패턴을 카테고리 및 심각도에 매핑
         self.error_patterns = {
@@ -466,37 +466,32 @@ class ErrorManager:
     
     async def _publish_error_event(self, error_info: Dict) -> None:
         """
-        이벤트 버스에 오류 이벤트 발행
+        오류 이벤트 발행
         
         Args:
             error_info: 오류 정보
         """
         try:
-            # 이벤트 데이터 준비
+            # 이벤트 데이터 구성
             event_data = {
-                "error_type": error_info["category"],
+                "type": "error",
                 "message": error_info["message"],
-                "severity": error_info["severity"],
                 "source": error_info["source"],
-                "timestamp": error_info["timestamp"]
+                "category": error_info["category"],
+                "severity": error_info["severity"],
+                "timestamp": error_info["timestamp"],
+                "error_id": error_info.get("error_id", ""),
+                "exchange_code": error_info.get("exchange_code", ""),
+                "tags": error_info.get("tags", []),
             }
             
-            # 거래소 코드가 있으면 추가
-            if error_info.get("exchange_code"):
-                event_data["exchange_code"] = error_info["exchange_code"]
+            # 추가 메타데이터가 있으면 포함
+            if "metadata" in error_info:
+                event_data.update(error_info["metadata"])
                 
-            # 태그가 있으면 추가
-            if error_info.get("tags"):
-                event_data["tags"] = error_info["tags"]
-                
-            # 메타데이터가 있으면 추가
-            if error_info.get("metadata"):
-                for key, value in error_info["metadata"].items():
-                    if key not in event_data:
-                        event_data[key] = value
-            
             # 이벤트 발행
-            await self.event_bus.publish(OrderbookEventTypes.ERROR_EVENT, event_data)
+            await self.event_bus.publish(StatusEventType.ERROR_EVENT, event_data)
+            logger.debug(f"{LOG_SYSTEM} 오류 이벤트 발행됨: {error_info['message'][:50]}...")
             
         except Exception as e:
             logger.error(f"{LOG_SYSTEM} 오류 이벤트 발행 실패: {str(e)}")

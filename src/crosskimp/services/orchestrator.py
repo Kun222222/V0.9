@@ -16,7 +16,8 @@ import time
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.config.common_constants import EventType, ProcessStatus, ProcessEvent, ProcessEventData
+from crosskimp.common.events.system_types import SystemEventType
+from crosskimp.common.config.common_constants import ProcessStatus, ProcessEvent, ProcessEventData
 from crosskimp.common.config.app_config import get_config
 
 logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
@@ -54,13 +55,13 @@ class Orchestrator:
             
             # 이벤트 핸들러 등록
             self.event_bus.register_handler(
-                EventType.COMMAND,
+                SystemEventType.COMMAND,
                 self._process_command
             )
             
             # 프로세스 상태 이벤트 구독
             self.event_bus.register_handler(
-                EventType.PROCESS_STATUS,
+                SystemEventType.PROCESS_CONTROL,
                 self._handle_process_status
             )
             
@@ -222,7 +223,7 @@ class Orchestrator:
             
             # 프로세스 시작 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 시작 요청을 발행합니다.")
-            await self.event_bus.publish(EventType.PROCESS_CONTROL, event_data)
+            await self.event_bus.publish(SystemEventType.PROCESS_CONTROL, event_data)
             
             # 요청 성공으로 간주 (실제 시작은 비동기적으로 처리)
             return True
@@ -268,7 +269,7 @@ class Orchestrator:
             
             # 프로세스 중지 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 중지 요청을 발행합니다.")
-            await self.event_bus.publish(EventType.PROCESS_CONTROL, event_data)
+            await self.event_bus.publish(SystemEventType.PROCESS_CONTROL, event_data)
             
             # 요청 성공으로 간주 (실제 중지는 비동기적으로 처리)
             return True
@@ -437,7 +438,7 @@ class Orchestrator:
         if request_id:
             command_data["request_id"] = request_id
             
-        await self.event_bus.publish(EventType.COMMAND, command_data)
+        await self.event_bus.publish(SystemEventType.COMMAND, command_data)
         
         # 응답 대기
         if wait_response:
@@ -468,7 +469,7 @@ class Orchestrator:
         if not self.event_bus:
             return
             
-        await self.event_bus.publish(EventType.COMMAND, {
+        await self.event_bus.publish(SystemEventType.COMMAND, {
             "command": command,
             "is_response": True,
             "data": data,
@@ -617,7 +618,7 @@ class Orchestrator:
             
             # 프로세스 재시작 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 재시작 요청을 발행합니다.")
-            await self.event_bus.publish(EventType.PROCESS_CONTROL, event_data)
+            await self.event_bus.publish(SystemEventType.PROCESS_CONTROL, event_data)
             
         except Exception as e:
             logger.error(f"프로세스 '{process_name}' 재시작 실패: {str(e)}")

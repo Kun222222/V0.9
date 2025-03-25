@@ -11,7 +11,8 @@ from abc import ABC, abstractmethod
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.config.common_constants import EventType, ProcessStatus, ProcessEvent, ProcessEventData
+from crosskimp.common.events.system_types import SystemEventType
+from crosskimp.common.config.common_constants import ProcessStatus, ProcessEvent, ProcessEventData
 
 # 로거 설정
 logger = get_unified_logger()
@@ -48,7 +49,7 @@ class ProcessComponent(ABC):
             
         # 이벤트 버스에 제어 이벤트 핸들러 등록
         self.event_bus.register_handler(
-            EventType.PROCESS_CONTROL,
+            SystemEventType.PROCESS_CONTROL,
             self._handle_process_control
         )
         
@@ -111,9 +112,9 @@ class ProcessComponent(ABC):
             await self._publish_status(ProcessStatus.STARTING)
             
             # 실제 시작 로직 실행
-            self.logger.debug(f"프로세스 '{self.process_name}' start() 메서드 호출")
-            success = await self.start()
-            self.logger.debug(f"프로세스 '{self.process_name}' start() 결과: {success}")
+            self.logger.debug(f"프로세스 \1 _do__do_start() 메서드 호출")
+            success = await self._do_start()
+            self.logger.debug(f"프로세스 '{self.process_name}' _do_start() 결과: {success}")
             
             if success:
                 # 시작 성공 이벤트 발행
@@ -152,7 +153,7 @@ class ProcessComponent(ABC):
             await self._publish_status(ProcessStatus.STOPPING)
             
             # 실제 중지 로직 실행
-            success = await self.stop()
+            success = await self._do_stop()
             
             if success:
                 # 중지 성공 이벤트 발행
@@ -227,14 +228,44 @@ class ProcessComponent(ABC):
         ).to_dict()
         
         # 상태 이벤트 발행
-        await self.event_bus.publish(EventType.PROCESS_STATUS, event_data)
+        await self.event_bus.publish(SystemEventType.STATUS, event_data)
         
-    @abstractmethod
     async def start(self) -> bool:
+        """
+        프로세스 시작 메서드
+        
+        이 메서드는 외부에서 호출하여 프로세스를 시작합니다.
+        상태 관리는 이 메서드에서 자동으로 처리되며, 
+        실제 작업은 _do_start 메서드에 위임됩니다.
+        
+        Returns:
+            bool: 시작 요청 처리 성공 여부
+        """
+        await self._start_process()
+        return self.status == ProcessStatus.RUNNING
+        
+    async def stop(self) -> bool:
+        """
+        프로세스 중지 메서드
+        
+        이 메서드는 외부에서 호출하여 프로세스를 중지합니다.
+        상태 관리는 이 메서드에서 자동으로 처리되며, 
+        실제 작업은 _do_stop 메서드에 위임됩니다.
+        
+        Returns:
+            bool: 중지 요청 처리 성공 여부
+        """
+        await self._stop_process()
+        return self.status == ProcessStatus.STOPPED
+    
+    @abstractmethod
+    async def _do_start(self) -> bool:
         """
         프로세스 시작 구현
         
         실제 프로세스 시작 로직을 구현합니다.
+        자식 클래스에서는 이 메서드를 구현하여 실제 시작 작업을 수행합니다.
+        상태 관리는 부모 클래스에서 자동으로 처리됩니다.
         
         Returns:
             bool: 시작 성공 여부
@@ -242,11 +273,13 @@ class ProcessComponent(ABC):
         pass
         
     @abstractmethod
-    async def stop(self) -> bool:
+    async def _do_stop(self) -> bool:
         """
         프로세스 중지 구현
         
         실제 프로세스 중지 로직을 구현합니다.
+        자식 클래스에서는 이 메서드를 구현하여 실제 중지 작업을 수행합니다.
+        상태 관리는 부모 클래스에서 자동으로 처리됩니다.
         
         Returns:
             bool: 중지 성공 여부

@@ -61,7 +61,11 @@ except ImportError as e:
 
 # 이벤트 버스 및 이벤트 타입
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.config.common_constants import EventType
+from crosskimp.common.events.system_types import (
+    EventCategory, SystemEventType, ObCollectorEventType, 
+    RadarEventType, TradeEventType, NotificationEventType, 
+    PerformanceEventType, TelegramEventType
+)
 
 # 서비스 레이어
 from crosskimp.services.orchestrator import Orchestrator

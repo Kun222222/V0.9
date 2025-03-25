@@ -16,8 +16,8 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import LOG_SYSTEM, EXCHANGE_NAMES_KR
 
 from crosskimp.common.events.system_eventbus import get_component_event_bus
-from crosskimp.common.config.common_constants import Component
-from crosskimp.common.events.domains.status import StatusEventTypes
+from crosskimp.common.config.common_constants import SystemComponent
+from crosskimp.common.events.system_types import StatusEventType
 
 from crosskimp.system_manager.metric_manager import get_metric_manager
 from crosskimp.system_manager.error_manager import get_error_manager, ErrorSeverity, ErrorCategory
@@ -74,7 +74,7 @@ class StatusManager:
             raise Exception("StatusManager는 싱글톤입니다. get_instance()를 사용하세요.")
         
         # 이벤트 버스 인스턴스 가져오기 (변경됨)
-        self.event_bus = get_component_event_bus(Component.SERVER)
+        self.event_bus = get_component_event_bus(SystemComponent.SERVER)
         
         # 중앙 메트릭 관리자 인스턴스 가져오기
         self.metric_manager = get_metric_manager()
@@ -157,21 +157,21 @@ class StatusManager:
             logger.info(f"{LOG_SYSTEM} 시스템 상태 업데이트 태스크가 시작되었습니다.")
             
             # 시스템 레벨 이벤트 구독 (변경됨)
-            await self.event_bus.subscribe(StatusEventTypes.SYSTEM_STARTUP, self._handle_system_event)
-            await self.event_bus.subscribe(StatusEventTypes.SYSTEM_SHUTDOWN, self._handle_system_event)
-            await self.event_bus.subscribe(StatusEventTypes.PROCESS_STATUS, self._handle_process_status)
-            await self.event_bus.subscribe(StatusEventTypes.RESOURCE_USAGE, self._handle_resource_usage)
-            await self.event_bus.subscribe(StatusEventTypes.SYSTEM_STATUS_CHANGE, self._handle_system_status_change)
+            await self.event_bus.subscribe(StatusEventType.SYSTEM_STARTUP, self._handle_system_event)
+            await self.event_bus.subscribe(StatusEventType.SYSTEM_SHUTDOWN, self._handle_system_event)
+            await self.event_bus.subscribe(StatusEventType.PROCESS_STATUS, self._handle_process_status)
+            await self.event_bus.subscribe(StatusEventType.RESOURCE_USAGE, self._handle_resource_usage)
+            await self.event_bus.subscribe(StatusEventType.SYSTEM_STATUS_CHANGE, self._handle_system_status_change)
             
             # 거래소 건강 상태 요약 이벤트 구독 (EventHandler로부터)
-            await self.event_bus.subscribe(StatusEventTypes.EXCHANGE_HEALTH_UPDATE, self._handle_exchange_health_update)
+            await self.event_bus.subscribe(StatusEventType.EXCHANGE_HEALTH_UPDATE, self._handle_exchange_health_update)
             
             # 오류 이벤트 구독
-            await self.event_bus.subscribe(StatusEventTypes.ERROR_EVENT, self._handle_error_event)
+            await self.event_bus.subscribe(StatusEventType.ERROR_EVENT, self._handle_error_event)
             
             # 기존 이벤트 구독 (호환성 유지)
-            await self.event_bus.subscribe(StatusEventTypes.CONNECTION_STATUS, self._handle_connection_status)
-            await self.event_bus.subscribe(StatusEventTypes.METRIC_UPDATE, self._handle_metric_update)
+            await self.event_bus.subscribe(StatusEventType.CONNECTION_STATUS, self._handle_connection_status)
+            await self.event_bus.subscribe(StatusEventType.METRIC_UPDATE, self._handle_metric_update)
     
     async def stop(self):
         """상태 관리자 중지 - 상태 업데이트 태스크 중지"""
@@ -184,15 +184,15 @@ class StatusManager:
                 logger.debug(f"{LOG_SYSTEM} 시스템 상태 업데이트 태스크가 취소되었습니다.")
             
             # 이벤트 버스 구독 해제 (변경됨)
-            await self.event_bus.unsubscribe(StatusEventTypes.CONNECTION_STATUS, self._handle_connection_status)
-            await self.event_bus.unsubscribe(StatusEventTypes.METRIC_UPDATE, self._handle_metric_update)
-            await self.event_bus.unsubscribe(StatusEventTypes.SYSTEM_STARTUP, self._handle_system_event)
-            await self.event_bus.unsubscribe(StatusEventTypes.SYSTEM_SHUTDOWN, self._handle_system_event)
-            await self.event_bus.unsubscribe(StatusEventTypes.PROCESS_STATUS, self._handle_process_status)
-            await self.event_bus.unsubscribe(StatusEventTypes.RESOURCE_USAGE, self._handle_resource_usage)
-            await self.event_bus.unsubscribe(StatusEventTypes.SYSTEM_STATUS_CHANGE, self._handle_system_status_change)
-            await self.event_bus.unsubscribe(StatusEventTypes.EXCHANGE_HEALTH_UPDATE, self._handle_exchange_health_update)
-            await self.event_bus.unsubscribe(StatusEventTypes.ERROR_EVENT, self._handle_error_event)
+            await self.event_bus.unsubscribe(StatusEventType.CONNECTION_STATUS, self._handle_connection_status)
+            await self.event_bus.unsubscribe(StatusEventType.METRIC_UPDATE, self._handle_metric_update)
+            await self.event_bus.unsubscribe(StatusEventType.SYSTEM_STARTUP, self._handle_system_event)
+            await self.event_bus.unsubscribe(StatusEventType.SYSTEM_SHUTDOWN, self._handle_system_event)
+            await self.event_bus.unsubscribe(StatusEventType.PROCESS_STATUS, self._handle_process_status)
+            await self.event_bus.unsubscribe(StatusEventType.RESOURCE_USAGE, self._handle_resource_usage)
+            await self.event_bus.unsubscribe(StatusEventType.SYSTEM_STATUS_CHANGE, self._handle_system_status_change)
+            await self.event_bus.unsubscribe(StatusEventType.EXCHANGE_HEALTH_UPDATE, self._handle_exchange_health_update)
+            await self.event_bus.unsubscribe(StatusEventType.ERROR_EVENT, self._handle_error_event)
     
     async def _monitor_status(self):
         """상태 모니터링 루프 실행"""
@@ -421,53 +421,60 @@ class StatusManager:
             logger.error(f"{LOG_SYSTEM} 시스템 상태 평가 중 오류: {str(e)}")
     
     async def _publish_status_change_event(self, old_status: str, new_status: str, message: str):
-        """상태 변경 이벤트를 발행합니다."""
+        """
+        상태 변경 이벤트 발행
+        
+        Args:
+            old_status: 이전 상태
+            new_status: 새로운 상태
+            message: 상태 변경 메시지
+        """
         try:
-            # 상태가 실제로 변경되었는지 확인
-            if old_status == new_status:
-                return
-                
-            # 상태 변경 이벤트 발행 (변경됨)
+            event_data = {
+                "type": "system_status_change",
+                "old_status": old_status,
+                "new_status": new_status,
+                "message": message,
+                "timestamp": time.time()
+            }
             await self.event_bus.publish(
-                StatusEventTypes.SYSTEM_STATUS_CHANGE,
-                {
-                    "old_status": old_status,
-                    "new_status": new_status,
-                    "message": message,
-                    "timestamp": time.time()
-                }
+                StatusEventType.SYSTEM_STATUS_CHANGE,
+                event_data
             )
-            
-            logger.info(f"{LOG_SYSTEM} 시스템 상태 변경: {old_status} -> {new_status}")
-            
+            logger.debug(f"{LOG_SYSTEM} 시스템 상태 변경 이벤트 발행: {old_status} → {new_status}")
         except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 상태 변경 이벤트 발행 중 오류: {str(e)}")
-    
+            logger.error(f"{LOG_SYSTEM} 상태 변경 이벤트 발행 실패: {str(e)}")
+            
     async def _send_status_alert(self, status: str, message: str):
-        """상태 알림 이벤트를 발행합니다."""
+        """
+        상태 알림 전송 (텔레그램)
+        
+        Args:
+            status: 상태 (WARNING, ERROR, CRITICAL)
+            message: 알림 메시지
+        """
         try:
-            # 알림 이벤트 발행 (변경됨)
+            # 알림 이벤트 발행
             await self.event_bus.publish(
-                StatusEventTypes.SYSTEM_STATUS_CHANGE,
+                StatusEventType.SYSTEM_STATUS_CHANGE,
                 {
+                    "type": "status_alert",
                     "status": status,
                     "message": message,
                     "timestamp": time.time()
                 }
             )
             
-            # 오류 관리자에 알림
-            if status in [StatusType.ERROR, StatusType.CRITICAL]:
-                severity = ErrorSeverity.ERROR if status == StatusType.ERROR else ErrorSeverity.CRITICAL
-                await self.error_manager.handle_error(
-                    message=message,
-                    source="StatusManager",
-                    category=ErrorCategory.SYSTEM,
-                    severity=severity
-                )
+            # 로그에도 기록
+            if status == StatusType.WARNING:
+                logger.warning(f"{LOG_SYSTEM} 상태 경고: {message}")
+            elif status in [StatusType.ERROR, StatusType.CRITICAL]:
+                logger.error(f"{LOG_SYSTEM} 상태 오류: {message}")
+            else:
+                logger.info(f"{LOG_SYSTEM} 상태 알림: {message}")
                 
         except Exception as e:
-            logger.error(f"{LOG_SYSTEM} 상태 알림 발행 중 오류: {str(e)}")
+            logger.error(f"{LOG_SYSTEM} 상태 알림 전송 실패: {str(e)}")
     
     async def _log_status_summary(self):
         """상태 요약 로깅"""
@@ -1041,34 +1048,42 @@ class StatusManager:
         return status_type
 
     async def _handle_system_event(self, event_data):
-        """시스템 시작/종료 이벤트 처리"""
-        event_type = event_data.get("event_type", "unknown")
+        """
+        시스템 이벤트 처리 (시작/종료)
         
-        # 이벤트 타입 확인 및 수정
-        if "startup" in event_type or event_type == StatusEventTypes.SYSTEM_STARTUP:
+        Args:
+            event_data: 이벤트 데이터
+        """
+        try:
+            event_type = event_data.get("type", "")
+            timestamp = event_data.get("timestamp", time.time())
+            
             # 시스템 시작 이벤트 처리
-            logger.info(f"{LOG_SYSTEM} 시스템 시작 이벤트 수신")
-            
-            # 시스템 상태 업데이트
-            self.overall_status["status_type"] = StatusType.INITIALIZING
-            self.overall_status["message"] = "시스템 초기화 중"
-            self.overall_status["startup_time"] = time.time()
-            
-        elif "shutdown" in event_type or event_type == StatusEventTypes.SYSTEM_SHUTDOWN:
+            if "startup" in event_type or event_type == StatusEventType.SYSTEM_STARTUP:
+                self.overall_status["startup_time"] = timestamp
+                
+                # INITIALIZING 상태에서만 상태 업데이트
+                if self.overall_status["status_type"] == StatusType.INITIALIZING:
+                    self.overall_status["status_type"] = StatusType.NORMAL
+                    self.overall_status["message"] = "시스템이 시작되었습니다."
+                    self.overall_status["last_update"] = time.time()
+                    
+                logger.info(f"{LOG_SYSTEM} 시스템 시작 이벤트를 수신했습니다. ({datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')})")
+                    
             # 시스템 종료 이벤트 처리
-            logger.info(f"{LOG_SYSTEM} 시스템 종료 이벤트 수신")
-            
-            # 시스템 상태 업데이트
-            old_status = self.overall_status["status_type"]
-            self.overall_status["status_type"] = StatusType.SHUTDOWN
-            self.overall_status["message"] = "시스템 종료 중"
-            
-            # 상태 변경 이벤트 발행
-            await self._publish_status_change_event(
-                old_status,
-                StatusType.SHUTDOWN,
-                "시스템 종료 중"
-            )
+            elif "shutdown" in event_type or event_type == StatusEventType.SYSTEM_SHUTDOWN:
+                # 종료 이유
+                reason = event_data.get("reason", "정상 종료")
+                
+                # 상태 업데이트
+                self.overall_status["status_type"] = StatusType.SHUTDOWN
+                self.overall_status["message"] = f"시스템이 종료되었습니다. ({reason})"
+                self.overall_status["last_update"] = time.time()
+                
+                logger.info(f"{LOG_SYSTEM} 시스템 종료 이벤트를 수신했습니다. 이유: {reason}")
+                
+        except Exception as e:
+            logger.error(f"{LOG_SYSTEM} 시스템 이벤트 처리 중 오류: {str(e)}")
 
 # 편의를 위한 글로벌 함수
 def get_status_manager() -> StatusManager:
