@@ -758,6 +758,6 @@ class BaseSubscription(ABC):
         Returns:
             SystemEventBus: 글로벌 이벤트 버스 인스턴스
         """
-        from crosskimp.common.events import get_event_bus
+        from crosskimp.common.events.system_eventbus import get_event_bus
         return get_event_bus()
 

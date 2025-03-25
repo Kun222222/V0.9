@@ -15,7 +15,8 @@ import traceback
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import LOG_SYSTEM
-from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import Component, StatusEventTypes
 from crosskimp.common.events.domains.orderbook import OrderbookEventTypes
 from crosskimp.telegrambot.notification_manager import get_notification_manager
 

@@ -13,8 +13,8 @@ from telegram.ext import Application, CommandHandler, CallbackContext, ContextTy
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import LOG_TELEGRAM
 # 새로운 이벤트 시스템 임포트 추가
-from crosskimp.common.events import (
-    get_component_event_bus,
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import (
     Component,
     StatusEventTypes,
     TelegramEventTypes

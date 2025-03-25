@@ -16,8 +16,8 @@ from typing import Dict, Optional, List, Tuple, Any
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import LOG_SYSTEM
-from crosskimp.common.events import (
-    get_component_event_bus,
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import (
     Component,
     EventTypes,
     EventPriority

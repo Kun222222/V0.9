@@ -14,6 +14,8 @@ import logging
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import EXCHANGE_NAMES_KR, LOG_SYSTEM
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import Component, StatusEventTypes
 
 # 로거 설정
 logger = get_unified_logger()
@@ -136,7 +138,6 @@ class MetricManager:
             logger.info(f"{LOG_SYSTEM} 메트릭 요약 태스크가 시작되었습니다.")
             
             # 새 이벤트 시스템 사용으로 변경
-            from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes
             event_bus = get_component_event_bus(Component.SERVER)
             
             # METRIC_UPDATE 이벤트 구독
@@ -153,7 +154,6 @@ class MetricManager:
                 logger.debug(f"{LOG_SYSTEM} 메트릭 요약 태스크가 취소되었습니다.")
             
             # 이벤트 구독 해제 - 새 이벤트 시스템 사용
-            from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes
             event_bus = get_component_event_bus(Component.SERVER)
             asyncio.create_task(event_bus.unsubscribe(StatusEventTypes.METRIC_UPDATE, self._handle_metric_update))
     
@@ -306,7 +306,6 @@ class MetricManager:
                 # 이벤트 버스가 임포트되지 않은 경우 (순환 참조 방지)
                 # 필요할 때만 임포트하여 이벤트 발행
                 try:
-                    from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes
                     event_bus = get_component_event_bus(Component.SERVER)
                     
                     # 이벤트 데이터 준비

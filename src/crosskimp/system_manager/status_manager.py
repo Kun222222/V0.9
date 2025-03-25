@@ -15,7 +15,8 @@ from datetime import datetime
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import LOG_SYSTEM, EXCHANGE_NAMES_KR
 
-from crosskimp.common.events import get_component_event_bus, Component
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import Component
 from crosskimp.common.events.domains.status import StatusEventTypes
 
 from crosskimp.system_manager.metric_manager import get_metric_manager

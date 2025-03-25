@@ -12,30 +12,36 @@ from typing import Dict, List, Callable, Any, Optional
 from enum import Enum, auto
 
 from crosskimp.common.logger.logger import get_unified_logger
+from crosskimp.common.config.common_constants import EventType, Component
 
 # 로거 설정
 logger = get_unified_logger()
 
-class EventType(Enum):
-    """시스템 이벤트 유형"""
-    # 시스템 이벤트
-    SYSTEM_START = auto()
-    SYSTEM_STOP = auto()
+# 글로벌 이벤트 버스 인스턴스
+_event_bus_instance: Optional['SystemEventBus'] = None
+_component_event_buses = {}
+
+def get_event_bus() -> 'SystemEventBus':
+    """글로벌 이벤트 버스 인스턴스를 반환합니다."""
+    global _event_bus_instance
     
-    # 프로세스 이벤트
-    PROCESS_START = auto()
-    PROCESS_STOP = auto()
-    PROCESS_STATUS = auto()
-    PROCESS_CONTROL = auto()  # 프로세스 제어 (시작/종료/재시작)
+    if _event_bus_instance is None:
+        _event_bus_instance = SystemEventBus()
+        
+    return _event_bus_instance
+
+def get_component_event_bus(component: Component) -> 'SystemEventBus':
+    """
+    컴포넌트별 이벤트 버스 인스턴스를 반환합니다.
+    실제로는 글로벌 이벤트 버스와 동일한 인스턴스이지만,
+    컴포넌트별로 구분하여 사용할 수 있도록 합니다.
+    """
+    global _component_event_buses
     
-    # 명령 이벤트
-    COMMAND = auto()
-    
-    # 상태 이벤트
-    STATUS_UPDATE = auto()
-    
-    # 오류 이벤트
-    ERROR = auto()
+    if component not in _component_event_buses:
+        _component_event_buses[component] = get_event_bus()
+        
+    return _component_event_buses[component]
 
 class SystemEventBus:
     """

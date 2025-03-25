@@ -15,9 +15,8 @@ import time
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events import get_event_bus
-from crosskimp.common.events.system_eventbus import EventType
-from crosskimp.common.events.domains.process_types import ProcessStatus, ProcessEvent, ProcessEventData
+from crosskimp.common.events.system_eventbus import get_event_bus
+from crosskimp.common.config.common_constants import EventType, ProcessStatus, ProcessEvent, ProcessEventData
 from crosskimp.common.config.app_config import get_config
 
 logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
@@ -84,7 +83,7 @@ class Orchestrator:
             logger.info("프로세스 컴포넌트 초기화 중...")
             
             # 오더북 프로세스 핸들러 초기화
-            from crosskimp.common.events.handler import initialize_orderbook_process
+            from crosskimp.common.events.handler.orderbook_handler import initialize_orderbook_process
             await initialize_orderbook_process()
             logger.info("오더북 프로세스 핸들러가 초기화되었습니다.")
             

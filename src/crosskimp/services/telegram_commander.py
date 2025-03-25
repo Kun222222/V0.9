@@ -16,8 +16,8 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
 from crosskimp.common.config.app_config import get_config
-from crosskimp.common.events import get_event_bus
-from crosskimp.common.events.system_eventbus import EventType
+from crosskimp.common.events.system_eventbus import get_event_bus
+from crosskimp.common.config.common_constants import EventType
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.SYSTEM.value)

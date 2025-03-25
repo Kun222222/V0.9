@@ -11,7 +11,8 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.legacy.constants_v3 import LOG_TELEGRAM
 
 # 새 이벤트 시스템 임포트로 변경
-from crosskimp.common.events import get_component_event_bus, Component, StatusEventTypes, TelegramEventTypes
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import Component, StatusEventTypes, TelegramEventTypes
 
 # 로거 설정
 logger = get_unified_logger()

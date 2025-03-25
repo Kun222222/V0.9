@@ -17,8 +17,8 @@ from crosskimp.system_manager.process_manager import get_process_status
 # from crosskimp.ob_collector.orderbook.util.event_bus import EventBus, EVENT_TYPES
 
 # 새 이벤트 시스템 임포트 추가
-from crosskimp.common.events import (
-    get_component_event_bus,
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import (
     Component,
     EventTypes,
     StatusEventTypes,

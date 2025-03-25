@@ -10,9 +10,8 @@ from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.events import get_event_bus
-from crosskimp.common.events.system_eventbus import EventType
-from crosskimp.common.events.domains.process_types import ProcessStatus, ProcessEvent, ProcessEventData
+from crosskimp.common.events.system_eventbus import get_event_bus
+from crosskimp.common.config.common_constants import EventType, ProcessStatus, ProcessEvent, ProcessEventData
 
 # 로거 설정
 logger = get_unified_logger()

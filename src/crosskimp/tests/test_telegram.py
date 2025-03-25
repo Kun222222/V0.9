@@ -22,7 +22,7 @@ logger = logging.getLogger('telegram_test')
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
 from crosskimp.services.telegram_commander import get_telegram_commander
-from crosskimp.common.events import get_event_bus
+from crosskimp.common.events.system_eventbus import get_event_bus
 
 async def test_telegram_send():
     """텔레그램 메시지 전송 테스트"""

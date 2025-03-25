@@ -13,8 +13,8 @@ import websockets
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import EXCHANGE_NAMES_KR, normalize_exchange_code
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events.system_eventbus import EventType
-from crosskimp.common.events import get_event_bus  # 글로벌 이벤트 버스 가져오기 위한 임포트
+from crosskimp.common.events.system_eventbus import get_event_bus
+from crosskimp.common.config.common_constants import EventType
 
 # 전역 로거 설정
 logger = get_unified_logger(component=SystemComponent.ORDERBOOK.value)

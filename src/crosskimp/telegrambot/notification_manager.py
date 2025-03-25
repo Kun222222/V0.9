@@ -15,7 +15,8 @@ import logging
 from crosskimp.common.logger.logger import get_unified_logger
 # 순환 참조 해결을 위해 지연 임포트
 # from crosskimp.telegrambot import get_bot_manager
-from crosskimp.common.events import get_component_event_bus, Component, EventTypes
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.config.common_constants import Component, EventTypes
 
 # NotificationType 정의 (문자열 리터럴 사용)
 class NotificationType:
