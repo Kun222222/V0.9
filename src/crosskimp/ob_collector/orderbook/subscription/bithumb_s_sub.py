@@ -378,10 +378,6 @@ class BithumbSubscription(BaseSubscription):
                         # 오더북 데이터 로깅 (플래그 확인)
                         if self.orderbook_logging_enabled:
                             self.log_orderbook_data(symbol, orderbook_data)
-                        
-                        # 이벤트 발행 (스냅샷 또는 델타)
-                        event_type = "snapshot" if is_snapshot else "delta"
-                        self.publish_event(symbol, orderbook_data, event_type)
                     else:
                         self.log_error(f"{symbol} 오더북 검증 실패: {result.errors}")
             except Exception as e:

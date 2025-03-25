@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import Dict, List, Optional, Any, Type
+from typing import Dict, List, Optional, Any
 import logging
 
 from crosskimp.common.logger.logger import get_unified_logger
@@ -10,7 +10,7 @@ from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.common.config.app_config import get_config
-from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR, normalize_exchange_code, Exchange, EventType, ProcessStatus
+from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR, Exchange, EventType, ProcessStatus
 
 # 모든 거래소 컴포넌트 임포트
 # 연결 컴포넌트
@@ -455,14 +455,13 @@ class ObCollector(ProcessComponent):
         except Exception as e:
             self.logger.error(f"거래소 상태 발행 중 오류: {str(e)}")
 
-    def _create_connector(self, exchange_code: str, settings: Dict[str, Any], on_status_change=None) -> Optional[BaseWebsocketConnector]:
+    def _create_connector(self, exchange_code: str, settings: Dict[str, Any]) -> Optional[BaseWebsocketConnector]:
         """
         거래소별 웹소켓 연결 객체 생성
         
         Args:
             exchange_code: 거래소 코드
             settings: 설정 딕셔너리
-            on_status_change: 연결 상태 변경 시 호출될 콜백 함수
             
         Returns:
             BaseWebsocketConnector: 웹소켓 연결 객체 또는 None (실패 시)
@@ -476,8 +475,8 @@ class ObCollector(ProcessComponent):
                 self.logger.warning(f"{exchange_kr} 해당 거래소의 연결 클래스를 찾을 수 없습니다")
                 return None
                 
-            # 연결 객체 생성 (콜백 전달)
-            connector = connector_class(settings, exchange_code, on_status_change)
+            # 연결 객체 생성
+            connector = connector_class(settings, exchange_code)
             self.logger.debug(f"{exchange_kr} 연결 객체 생성됨")
             return connector
             
@@ -487,15 +486,13 @@ class ObCollector(ProcessComponent):
 
     def _create_subscription(
         self,
-        connector: BaseWebsocketConnector,
-        on_data_received=None
+        connector: BaseWebsocketConnector
     ) -> Optional[BaseSubscription]:
         """
         거래소별 구독 객체 생성
         
         Args:
             connector: 웹소켓 연결 객체
-            on_data_received: 데이터 수신 시 호출될 콜백 함수
             
         Returns:
             BaseSubscription: 구독 객체 또는 None (실패 시)
@@ -510,8 +507,8 @@ class ObCollector(ProcessComponent):
                 self.logger.warning(f"{exchange_kr} 해당 거래소의 구독 클래스를 찾을 수 없습니다")
                 return None
                 
-            # 구독 객체 생성 (콜백 전달)
-            subscription = subscription_class(connector, exchange_code, on_data_received)
+            # 구독 객체 생성
+            subscription = subscription_class(connector, exchange_code)
             self.logger.debug(f"{exchange_kr} 구독 객체 생성됨")
             return subscription
             

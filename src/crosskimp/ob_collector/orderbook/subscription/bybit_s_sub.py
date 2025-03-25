@@ -180,7 +180,6 @@ class BybitSubscription(BaseSubscription):
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self._update_metrics("error_count", 1, op="increment")
             return False
     
     # 4. 메시지 수신 및 처리 단계
@@ -441,7 +440,6 @@ class BybitSubscription(BaseSubscription):
                     
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
-            # 내부 이벤트 발행 코드 삭제
     
     # 6. 구독 취소 단계
     async def create_unsubscribe_message(self, symbol: str) -> Dict:
@@ -466,6 +464,4 @@ class BybitSubscription(BaseSubscription):
     async def process_error_message(self, message: str) -> None:
         """에러 메시지 처리"""
         self.log_error(f"에러 메시지 수신: {message}")
-        
-        # 에러 이벤트 발행 코드 삭제
  

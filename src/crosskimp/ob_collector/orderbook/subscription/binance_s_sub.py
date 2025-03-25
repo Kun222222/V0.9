@@ -193,15 +193,10 @@ class BinanceSubscription(BaseSubscription):
                 self.stop_event.clear()
                 self.message_loop_task = asyncio.create_task(self.message_loop())
             
-            # 구독 이벤트 발행 코드 제거
-            # 필요시 메트릭 업데이트는 유지
-            self._update_metrics("subscription_count", len(symbols), op="set")
-            
             return True
             
         except Exception as e:
             self.log_error(f"구독 중 오류 발생: {str(e)}")
-            self._update_metrics("error_count", 1, op="increment")
             return False
 
     # 4. 스냅샷 요청 및 처리
@@ -319,9 +314,6 @@ class BinanceSubscription(BaseSubscription):
             if self.orderbook_logging_enabled:
                 self.log_orderbook_data(symbol, snapshot_data)
                 
-            # 이벤트 발행 (스냅샷)
-            self.publish_event(symbol, snapshot_data, "snapshot")
-            
             # 버퍼된 메시지 처리
             await self._process_buffered_messages(symbol)
             
@@ -541,9 +533,6 @@ class BinanceSubscription(BaseSubscription):
             # 오더북 데이터 로깅
             if self.orderbook_logging_enabled:
                 self.log_orderbook_data(symbol, updated_data)
-            
-            # 이벤트 발행 (델타)
-            self.publish_event(symbol, updated_data, "delta")
             
         except Exception as e:
             self.log_error(f"[{symbol}] 델타 처리 중 오류: {str(e)}")

@@ -387,9 +387,6 @@ class BybitFutureSubscription(BaseSubscription):
                                 # 오더북 데이터 로깅 (부모 클래스의 메서드 사용)
                                 self.log_orderbook_data(symbol, orderbook_data)
                                 
-                                # 스냅샷 이벤트 발행
-                                self.publish_event(symbol, orderbook_data, "snapshot")
-                                
                                 # 성능 측정 종료
                                 processing_time_ms = (time.time() - start_time) * 1000
                                 self.log_debug(f"[{symbol}] 스냅샷 처리 완료 (처리 시간: {processing_time_ms:.2f}ms)")
@@ -456,9 +453,6 @@ class BybitFutureSubscription(BaseSubscription):
                                     
                                     # 오더북 데이터 로깅 (부모 클래스의 메서드 사용)
                                     self.log_orderbook_data(symbol, orderbook_data)
-                                    
-                                    # 델타 이벤트 발행
-                                    self.publish_event(symbol, orderbook_data, "delta")
                                     
                                     # 성능 측정 종료
                                     processing_time_ms = (time.time() - start_time) * 1000
