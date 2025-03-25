@@ -87,9 +87,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
             self.log_info("🔵 웹소켓 연결 시도")
             self.is_connected = False
             
-            # 연결 시도 중 상태 업데이트
-            self._update_connection_metric("status", "connecting")
-            
             retry_count = 0
             
             while not self.stop_event.is_set():
@@ -116,10 +113,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                     retry_count += 1
                     self.log_warning(f"연결 타임아웃 ({retry_count}번째 시도), 재시도...")
                     
-                    # 오류 메트릭 업데이트
-                    self._update_connection_metric("last_error", "연결 타임아웃")
-                    self._update_connection_metric("last_error_time", time.time())
-                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -129,10 +122,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                     retry_count += 1
                     self.log_warning(f"연결 실패 ({retry_count}번째): {str(e)}")
                     
-                    # 오류 메트릭 업데이트
-                    self._update_connection_metric("last_error", str(e))
-                    self._update_connection_metric("last_error_time", time.time())
-                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -140,10 +129,6 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                     
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
-            
-            # 오류 메트릭 업데이트
-            self._update_connection_metric("last_error", str(e))
-            self._update_connection_metric("last_error_time", time.time())
             
             self.is_connected = False
             return False

@@ -69,25 +69,11 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
             self.is_connected = False
             retry_count = 0
             
-            # 연결 시도 중 상태 업데이트
-            self._update_connection_metric("status", "connecting")
-            
             while not self.stop_event.is_set():
                 try:
                     # 연결 시도 이벤트 발행
                     self._connection_attempt_count += 1
                     retry_count += 1
-                    
-                    if hasattr(self, 'event_bus') and self.event_bus:
-                        event_data = {
-                            "exchange_code": self.exchange_code,
-                            "attempt": self._connection_attempt_count,
-                            "timestamp": time.time()
-                        }
-                        # 첫 연결 시도와 재연결 시도 구분
-                        event_type = "connection_attempt" if self._connection_attempt_count == 1 else "connection_retry"
-                        # 비동기 컨텍스트에서 호출되므로 create_task 사용
-                        asyncio.create_task(self.event_bus.publish(event_type, event_data))
                     
                     # 웹소켓 라이브러리의 내장 핑퐁 기능 사용
                     self.ws = await connect(
@@ -111,10 +97,6 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                 except asyncio.TimeoutError:
                     self.log_warning(f"연결 타임아웃 ({retry_count}번째 시도), 재시도...")
                     
-                    # 오류 메트릭 업데이트
-                    self._update_connection_metric("last_error", "연결 타임아웃")
-                    self._update_connection_metric("last_error_time", time.time())
-                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -124,10 +106,6 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                 except Exception as e:
                     self.log_warning(f"연결 실패 ({retry_count}번째): {str(e)}")
                     
-                    # 오류 메트릭 업데이트
-                    self._update_connection_metric("last_error", str(e))
-                    self._update_connection_metric("last_error_time", time.time())
-                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -135,10 +113,6 @@ class BybitWebSocketConnector(BaseWebsocketConnector):
                     
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
-            
-            # 오류 메트릭 업데이트
-            self._update_connection_metric("last_error", str(e))
-            self._update_connection_metric("last_error_time", time.time())
             
             self.is_connected = False
             return False

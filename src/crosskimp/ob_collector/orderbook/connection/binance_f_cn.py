@@ -76,9 +76,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
             self.connecting = True  # 연결 중 플래그 추가
             retry_count = 0
             
-            # 연결 시도 중 상태 업데이트
-            self._update_connection_metric("status", "connecting")
-            
             while not self.stop_event.is_set():
                 try:
                     # 웹소켓 라이브러리의 내장 핑퐁 기능 사용
@@ -113,10 +110,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
                     retry_count += 1
                     self.log_warning(f"연결 실패 ({retry_count}번째): {str(e)}")
                     
-                    # 오류 메트릭 업데이트
-                    self._update_connection_metric("last_error", str(e))
-                    self._update_connection_metric("last_error_time", time.time())
-                    
                     # 재연결 전략에 따른 지연 시간 적용
                     delay = self.reconnect_strategy.next_delay()
                     self.log_info(f"{delay:.2f}초 후 재연결 시도...")
@@ -124,10 +117,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
                     
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
-            
-            # 오류 메트릭 업데이트
-            self._update_connection_metric("last_error", str(e))
-            self._update_connection_metric("last_error_time", time.time())
             
             self.is_connected = False
             return False
@@ -153,10 +142,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
                 self.log_debug("PING 메시지 전송")
         except Exception as e:
             self.log_error(f"PING 메시지 전송 실패: {str(e)}")
-            
-            # 오류 메트릭 업데이트
-            self._update_connection_metric("last_error", f"PING 전송 실패: {str(e)}")
-            self._update_connection_metric("last_error_time", time.time())
             
             # 연결 문제로 핑 전송 실패 시 재연결 시도
             if isinstance(e, websockets.exceptions.ConnectionClosed):

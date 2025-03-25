@@ -13,8 +13,6 @@ import websockets
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import EXCHANGE_NAMES_KR, normalize_exchange_code
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.config.common_constants import EventType
 
 # 전역 로거 설정
 logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
@@ -113,13 +111,6 @@ class BaseWebsocketConnector(ABC):
         
         # URL 속성 추가 (자식 클래스에서 설정)
         self.ws_url = None
-        
-        # 초기 메트릭 설정
-        self._update_connection_metric("status", "initialized")
-        self._update_connection_metric("reconnect_count", 0)
-        self._update_connection_metric("last_error", "")
-        self._update_connection_metric("last_error_time", 0)
-        self._update_connection_metric("uptime", 0)
 
     # 로깅 메서드
     def log_debug(self, message: str) -> None:
@@ -167,9 +158,6 @@ class BaseWebsocketConnector(ABC):
                 }
                 # 비동기 태스크로 콜백 실행
                 asyncio.create_task(self.on_status_change(status, **callback_data))
-            
-            # 연결 상태 메트릭 업데이트
-            self._update_connection_metric("status", "connected" if value else "disconnected")
                 
             # 연결 상태 메시지 로깅
             if value:
@@ -209,9 +197,6 @@ class BaseWebsocketConnector(ABC):
         try:
             self.stats.reconnect_count += 1
             self.log_info("웹소켓 재연결 시도")
-            
-            # 재연결 카운트 메트릭 업데이트
-            self._update_connection_metric("reconnect_count", self.stats.reconnect_count)
             
             await self.disconnect()
             
@@ -334,10 +319,6 @@ class BaseWebsocketConnector(ABC):
             self.stats.error_count += 1
             self.stats.last_error_time = time.time()
             self.stats.last_error_message = message
-            
-            # 마지막 오류 메트릭 업데이트
-            self._update_connection_metric("last_error", message)
-            self._update_connection_metric("last_error_time", time.time())
             
             # 오류 심각도에 따른 로깅
             if severity == "critical":
