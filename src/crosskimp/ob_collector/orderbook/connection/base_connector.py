@@ -198,18 +198,82 @@ class BaseWebsocketConnector(ABC):
             self.stats.reconnect_count += 1
             self.log_info("웹소켓 재연결 시도")
             
-            await self.disconnect()
+            # 연결이 아직 활성화 상태면 먼저 연결 종료
+            if self.ws:
+                try:
+                    await self.disconnect()
+                except Exception as e:
+                    self.log_warning(f"연결 종료 중 예외 발생 (무시함): {str(e)}")
             
             # 재연결 지연 계산
-            delay = self.reconnect_strategy.next_delay()
-            await asyncio.sleep(delay)
+            if self.reconnect_strategy:
+                delay = self.reconnect_strategy.next_delay()
+                self.log_info(f"재연결 전 {delay:.1f}초 대기 중 (시도: {self.reconnect_strategy.attempts})")
+                await asyncio.sleep(delay)
+            else:
+                # 기본 지연 시간
+                await asyncio.sleep(1.0)
             
+            # 연결 시도
             success = await self.connect()
+            
+            if success:
+                self.log_info("웹소켓 재연결 성공")
+                # 재연결 전략 초기화
+                if self.reconnect_strategy:
+                    self.reconnect_strategy.reset()
+            else:
+                self.log_error("웹소켓 재연결 실패")
             
             return success
             
         except Exception as e:
             self.log_error(f"재연결 실패: {str(e)}")
+            return False
+            
+    async def handle_disconnection(self, reason_type: str, reason_msg: str) -> bool:
+        """
+        연결 끊김 처리 및 자동 재연결 시도
+        
+        Args:
+            reason_type: 연결 끊김 유형
+            reason_msg: 연결 끊김 상세 이유
+            
+        Returns:
+            bool: 재연결 성공 여부
+        """
+        # 이미 연결이 끊어져 있는 상태면 작업 건너뜀
+        if not self.is_connected and self.ws is None:
+            self.log_debug(f"이미 연결이 끊어져 있음, 처리 건너뜀 ({reason_type}: {reason_msg})")
+            return False
+        
+        # 연결 상태 업데이트
+        if self.is_connected:
+            self.is_connected = False
+        
+        # 에러 처리 및 로깅
+        self.log_warning(f"연결 끊김 감지: {reason_type} - {reason_msg}")
+        await self.handle_error(
+            error_type="websocket_disconnected",
+            message=f"연결 끊김: {reason_type} - {reason_msg}",
+            severity="warning"
+        )
+        
+        # 현재 웹소켓 객체 정리
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception as e:
+                self.log_debug(f"웹소켓 객체 정리 중 오류 (무시함): {str(e)}")
+            self.ws = None
+        
+        # 자동 재연결 시도
+        try:
+            # 재연결 수행 - 내부적으로 지연시간 로직 포함
+            reconnect_success = await self.reconnect()
+            return reconnect_success
+        except Exception as e:
+            self.log_error(f"자동 재연결 처리 중 오류: {str(e)}")
             return False
 
     async def connect_with_timeout(self, timeout: float = 1.0) -> bool:

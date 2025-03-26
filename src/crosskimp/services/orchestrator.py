@@ -16,8 +16,7 @@ import time
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.events.system_types import SystemEventType
-from crosskimp.common.config.common_constants import ProcessStatus, ProcessEvent, ProcessEventData
+from crosskimp.common.events.system_types import EventPaths
 from crosskimp.common.config.app_config import get_config
 
 logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
@@ -35,9 +34,9 @@ class Orchestrator:
         self.process_dependencies = {
             "ob_collector": set(),  # 오더북은 독립적
             "telegram": set(),  # 텔레그램 커맨더는 독립적
-            "monitoring": {"ob_collector"},  # 모니터링은 오더북에 의존
-            "data_collector": {"ob_collector"},  # 데이터 수집기는 오더북에 의존
-            "trade_executor": {"ob_collector", "data_collector"}  # 거래 실행기는 오더북과 데이터 수집기에 의존
+            "radar": {"ob_collector"},  # 레이더는 오더북에 의존
+            "trader": {"radar"},  # 트레이더는 레이더에 의존
+            "web_server": {"ob_collector", "trader"}  # 웹서비스는 오더북과 트레이더에 의존
         }
         
         # 프로세스 실행 상태 추적
@@ -55,13 +54,13 @@ class Orchestrator:
             
             # 이벤트 핸들러 등록
             self.event_bus.register_handler(
-                SystemEventType.COMMAND,
+                EventPaths.SYSTEM_COMMAND,
                 self._process_command
             )
             
             # 프로세스 상태 이벤트 구독
             self.event_bus.register_handler(
-                SystemEventType.PROCESS_CONTROL,
+                EventPaths.PROCESS_STATUS,
                 self._handle_process_status
             )
             
@@ -83,9 +82,21 @@ class Orchestrator:
         try:
             logger.info("프로세스 컴포넌트 초기화 중...")
             
+            # 텔레그램 노티파이어 초기화
+            try:
+                from crosskimp.telegram_bot.notify import get_telegram_notifier
+                
+                # 노티파이어 인스턴스 가져오기 (자동 초기화됨)
+                notifier = get_telegram_notifier()
+                logger.info("텔레그램 노티파이어 초기화 요청 완료")
+            except Exception as e:
+                logger.error(f"텔레그램 노티파이어 초기화 중 오류 발생: {str(e)}")
+                logger.error(traceback.format_exc())
+                logger.warning("텔레그램 노티파이어 없이 계속 진행합니다.")
+            
             # 오더북 프로세스 핸들러 초기화
             from crosskimp.common.events.handler.obcollector_handler import initialize_orderbook_process
-            await initialize_orderbook_process()
+            await initialize_orderbook_process(eventbus=self.event_bus, config=get_config())
             logger.info("오더북 프로세스 핸들러가 초기화되었습니다.")
             
             # 추가 프로세스 핸들러 초기화 (필요에 따라 추가)
@@ -106,7 +117,7 @@ class Orchestrator:
             
             # 텔레그램 커맨더 실행
             try:
-                from crosskimp.services.telegram_commander import get_telegram_commander
+                from crosskimp.telegram_bot.commander import get_telegram_commander
                 
                 telegram = get_telegram_commander()
                 # 텔레그램 커맨더 시작
@@ -172,13 +183,13 @@ class Orchestrator:
                 return
             
             # 상태에 따라 running_processes 집합 업데이트
-            if status == ProcessStatus.RUNNING.value:
+            if status == EventPaths.PROCESS_STATUS_RUNNING:
                 self.running_processes.add(process_name)
                 logger.info(f"프로세스 '{process_name}'이(가) 실행 중 상태로 변경되었습니다.")
-            elif status == ProcessStatus.STOPPED.value:
+            elif status == EventPaths.PROCESS_STATUS_STOPPED:
                 self.running_processes.discard(process_name)
                 logger.info(f"프로세스 '{process_name}'이(가) 중지 상태로 변경되었습니다.")
-            elif status == ProcessStatus.ERROR.value:
+            elif status == EventPaths.PROCESS_STATUS_ERROR:
                 self.running_processes.discard(process_name)
                 error_msg = data.get("error_message", "알 수 없는 오류")
                 logger.error(f"프로세스 '{process_name}' 오류 발생: {error_msg}")
@@ -212,18 +223,22 @@ class Orchestrator:
         try:
             # 이벤트 데이터 생성
             logger.debug(f"프로세스 '{process_name}' 시작 요청 이벤트 데이터 생성")
-            event_data = ProcessEventData(
-                process_name=process_name,
-                event_type=ProcessEvent.START_REQUESTED,
-                status=ProcessStatus.STARTING
-            ).to_dict()
+            event_data = {
+                "process_name": process_name,
+                "event_type": EventPaths.PROCESS_EVENT_START_REQUESTED,
+                "status": EventPaths.PROCESS_STATUS_STARTING,
+                "error_message": None,
+                "details": {}
+            }
             
             # 디버그 로그로 이벤트 데이터 확인
             logger.debug(f"이벤트 데이터: {event_data}")
             
             # 프로세스 시작 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 시작 요청을 발행합니다.")
-            await self.event_bus.publish(SystemEventType.PROCESS_CONTROL, event_data)
+            
+            # 이벤트 발행
+            await self.event_bus.publish(EventPaths.PROCESS_START, event_data)
             
             # 요청 성공으로 간주 (실제 시작은 비동기적으로 처리)
             return True
@@ -258,18 +273,22 @@ class Orchestrator:
         try:
             # 이벤트 데이터 생성
             logger.debug(f"프로세스 '{process_name}' 중지 요청 이벤트 데이터 생성")
-            event_data = ProcessEventData(
-                process_name=process_name,
-                event_type=ProcessEvent.STOP_REQUESTED,
-                status=ProcessStatus.STOPPING
-            ).to_dict()
+            event_data = {
+                "process_name": process_name,
+                "event_type": EventPaths.PROCESS_EVENT_STOP_REQUESTED,
+                "status": EventPaths.PROCESS_STATUS_STOPPING,
+                "error_message": None,
+                "details": {}
+            }
             
             # 디버그 로그로 이벤트 데이터 확인
             logger.debug(f"이벤트 데이터: {event_data}")
             
             # 프로세스 중지 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 중지 요청을 발행합니다.")
-            await self.event_bus.publish(SystemEventType.PROCESS_CONTROL, event_data)
+            
+            # 이벤트 발행
+            await self.event_bus.publish(EventPaths.PROCESS_STOP, event_data)
             
             # 요청 성공으로 간주 (실제 중지는 비동기적으로 처리)
             return True
@@ -438,7 +457,7 @@ class Orchestrator:
         if request_id:
             command_data["request_id"] = request_id
             
-        await self.event_bus.publish(SystemEventType.COMMAND, command_data)
+        await self.event_bus.publish(EventPaths.SYSTEM_COMMAND, command_data)
         
         # 응답 대기
         if wait_response:
@@ -469,7 +488,7 @@ class Orchestrator:
         if not self.event_bus:
             return
             
-        await self.event_bus.publish(SystemEventType.COMMAND, {
+        await self.event_bus.publish(EventPaths.SYSTEM_COMMAND, {
             "command": command,
             "is_response": True,
             "data": data,
@@ -607,18 +626,20 @@ class Orchestrator:
         try:
             # 이벤트 데이터 생성
             logger.debug(f"프로세스 '{process_name}' 재시작 요청 이벤트 데이터 생성")
-            event_data = ProcessEventData(
-                process_name=process_name,
-                event_type=ProcessEvent.RESTART_REQUESTED,
-                status=ProcessStatus.STOPPING
-            ).to_dict()
+            event_data = {
+                "process_name": process_name,
+                "event_type": EventPaths.PROCESS_EVENT_RESTART_REQUESTED,
+                "status": EventPaths.PROCESS_STATUS_STOPPING,
+                "error_message": None,
+                "details": {}
+            }
             
             # 디버그 로그로 이벤트 데이터 확인
             logger.debug(f"이벤트 데이터: {event_data}")
             
             # 프로세스 재시작 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 재시작 요청을 발행합니다.")
-            await self.event_bus.publish(SystemEventType.PROCESS_CONTROL, event_data)
+            await self.event_bus.publish(EventPaths.PROCESS_RESTART, event_data)
             
         except Exception as e:
             logger.error(f"프로세스 '{process_name}' 재시작 실패: {str(e)}")

@@ -52,9 +52,11 @@ dependencies = [
     "aiofiles==23.2.1",
     "watchdog==3.0.0",
     
-    # 데이터 처리
+    # 데이터 처리 및 시각화
     "numpy==1.24.3",
     "pandas==2.0.2",
+    "matplotlib==3.7.2",
+    "mplfinance==0.12.9b0",
     
     # 비동기 작업 관리
     "asyncio-throttle==1.0.2",

@@ -1,18 +1,17 @@
 import asyncio
 import time
-import random
 from typing import Dict, List, Optional, Any
 import logging
 
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.events.domains.process_component import ProcessComponent
 from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.common.config.app_config import get_config
-from crosskimp.common.events.system_types import EventCategory, SystemEventType, ObCollectorEventType
-from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR, Exchange, ProcessStatus
+from crosskimp.common.events.system_types import EventPaths
+from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR, Exchange
+from crosskimp.ob_collector.metric.metric_manager import ObcMetricManager
 
 # 모든 거래소 컴포넌트 임포트
 # 연결 컴포넌트
@@ -52,257 +51,188 @@ EXCHANGE_SUBSCRIPTIONS = {
     Exchange.BINANCE_FUTURE.value: BinanceFutureSubscription
 }
 
-# 효율적인 메시지 카운팅을 위한 클래스
-class HybridMessageCounter:
-    """시간 윈도우와 샘플링을 결합한 메시지 카운터"""
-    
-    def __init__(self, window_size=60, sample_rate=0.1):
-        """
-        초기화
-        
-        Args:
-            window_size: 유지할 시간 윈도우 크기(초)
-            sample_rate: 샘플링 비율 (0.0~1.0)
-        """
-        self.window_size = window_size
-        self.sample_rate = sample_rate
-        self.windows = {}  # 시간별 샘플링된 카운트
-        self.last_cleanup = time.time()
-        self.total_estimated = 0  # 예상 총 메시지 수
-        
-    def update(self, count=1):
-        """메시지 수신 업데이트"""
-        # 샘플링 적용
-        if random.random() >= self.sample_rate:
-            # 총 예상치는 업데이트
-            self.total_estimated += count
-            return
-            
-        current_time = int(time.time())
-        self.windows.setdefault(current_time, 0)
-        self.windows[current_time] += count
-        self.total_estimated += count
-        
-        # 주기적 정리 (매 100번째 샘플링된 업데이트마다)
-        if sum(self.windows.values()) % 100 == 0:
-            self._cleanup_old_windows(current_time)
-            
-    def _cleanup_old_windows(self, current_time=None):
-        """오래된 윈도우 제거"""
-        if current_time is None:
-            current_time = int(time.time())
-            
-        self.windows = {
-            t: c for t, c in self.windows.items()
-            if current_time - t < self.window_size
-        }
-        
-    def get_metrics(self):
-        """현재 메트릭 조회"""
-        current_time = int(time.time())
-        
-        # 필요시 오래된 윈도우 정리
-        self._cleanup_old_windows(current_time)
-        
-        recent_windows = {
-            t: c for t, c in self.windows.items()
-            if current_time - t < self.window_size
-        }
-        
-        if not recent_windows:
-            return {"rate": 0, "total_estimated": self.total_estimated}
-            
-        # 시간 범위 계산
-        time_range = min(self.window_size, 
-                          current_time - min(recent_windows.keys()) + 1)
-        
-        sampled_count = sum(recent_windows.values())
-        estimated_window_count = sampled_count / self.sample_rate
-        rate = estimated_window_count / time_range
-        
-        return {
-            "rate": rate,  # 추정 초당 메시지 수
-            "total_estimated": self.total_estimated  # 추정 총 메시지 수
-        }
-
-# 오류 카운터 클래스
-class ErrorCounter:
-    """오류 추적 카운터"""
-    
-    def __init__(self):
-        """오류 카운터 초기화"""
-        self.error_types = {
-            "connection_errors": 0,
-            "parsing_errors": 0, 
-            "sequence_errors": 0,
-            "timeout_errors": 0,
-            "other_errors": 0
-        }
-        self.last_error_time = 0  # 마지막 오류 시간
-        self.total_errors = 0  # 총 오류 수
-        
-    def update(self, error_type, count=1):
-        """오류 발생 기록"""
-        if error_type in self.error_types:
-            self.error_types[error_type] += count
-        else:
-            self.error_types["other_errors"] += count
-            
-        self.total_errors += count
-        self.last_error_time = time.time()
-        
-    def get_metrics(self):
-        """오류 메트릭 조회"""
-        return {
-            "total": self.total_errors,
-            "types": self.error_types,
-            "last_error_time": self.last_error_time
-        }
-
 class ObCollector:
     """
-    오더북 수집기 클래스
+    오더북 데이터 수집기
+    
+    거래소 데이터를 실시간으로 수집하는 기술적 컴포넌트입니다.
+    상태 관리는 하지 않으며 순수한 데이터 수집 기능만 제공합니다.
     """
+
     def __init__(self):
         """초기화"""
+        # 로거 설정
         self.logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
+        
+        # 설정 로드
         self.settings = get_config()
-        self.connectors = {}  # 거래소별 커넥터
-        self.subscriptions = {}  # 거래소별 구독 객체
-        self.filtered_symbols = {}  # 필터링된 심볼 정보
+        
+        # 데이터 수집 관련 변수
+        self._initialized = False
+        
+        # 단순화된 상태 관리
+        self.status = "stopped"  # "stopped", "starting", "running" 세 가지 상태로 단순화
+        
+        # 거래소 관련 변수
+        self.connectors = {}
+        self.subscriptions = {}
+        self.filtered_symbols = {}
+        
+        # 상태 추적 (기술적 목적)
+        self.exchange_status = {}
+        
+        # 오류 로그
+        self.error_logs = []
+        
+        # USDT/KRW 모니터
         self.usdt_monitor = None
         
-        # 거래소 상태 관리
-        self.exchange_status = {}  # 거래소별 연결 상태 추적
-        self.subscription_status = {}  # 거래소별 구독 상태 추적
-        self.last_status_update = {}  # 마지막 상태 업데이트 시간
-        self.connection_start_time = {}  # 각 거래소별 연결 시작 시간
+        # 연결된 거래소 수 추적 
+        self.connected_exchanges_count = 0
+        self.total_exchanges_count = 0
         
-        # 메트릭 추적을 위한 카운터 
-        self.message_counters = {}  # 거래소별 메시지 카운터
-        self.error_counters = {}    # 거래소별 오류 카운터
-        self.reconnect_counts = {}  # 거래소별 재연결 횟수
-        
-        # 심볼별 업데이트 추적
-        self.symbol_updates = {}    # 거래소+심볼별 마지막 업데이트 시간
-        self.symbol_subscribe_times = {}  # 거래소+심볼별 구독 시작 시간
-        
-        # 시스템 시작 시간
-        self.start_time = None
-        self.component_status = {
-            "websocket": "stopped",
-            "aggregator": "stopped",
-            "usdtkrw_monitor": "stopped"
-        }
-        
-        # 상태 관리용 변수들
-        self.system_status = {"status": "stopped", "details": {}}
-        self.error_logs = []
+        # 메트릭 관리자 초기화
+        self.metric_manager = ObcMetricManager()
+
+    def is_initialized(self) -> bool:
+        """초기화 여부 확인"""
+        return self._initialized and bool(self.connectors)
         
     async def setup(self):
         """
         초기 설정 메서드
-        이벤트 수신 및 필요한 설정을 수행합니다
         """
         self.logger.info("오더북 수집기 설정 시작")
         self.logger.info("오더북 수집기 설정 완료")
         return True
         
     async def initialize(self) -> bool:
-        """시스템 초기화: 심볼 필터링 및 USDT/KRW 모니터 설정"""
+        """
+        시스템 초기화: 심볼 필터링 및 USDT/KRW 모니터 설정
+        
+        Returns:
+            bool: 초기화 성공 여부
+        """
         try:
             self.logger.info("오더북 수집 시스템 초기화 시작")
             
             # 메트릭 초기화
-            self.start_time = time.time()
-            self.component_status["aggregator"] = "running"
+            self.metric_manager.initialize()
+            self.metric_manager.update_component_status("aggregator", "running")
             
             # 1. 심볼 필터링
             aggregator = Aggregator(self.settings)
             self.filtered_symbols = await aggregator.run_filtering()
             
             if not self.filtered_symbols:
-                self.logger.error("필터링된 심볼이 없습니다")
-                self.component_status["aggregator"] = "error"
+                self.logger.error("심볼 필터링 실패")
                 return False
                 
-            # 2. USDT/KRW 모니터 초기화
-            self.usdt_monitor = WsUsdtKrwMonitor()
-            self.component_status["usdtkrw_monitor"] = "ready"
+            self.logger.debug(f"필터링된 심볼: {self.filtered_symbols}")
             
-            # 3. 각 거래소별 커넥터 및 구독 객체 초기화
-            for exchange, symbols in self.filtered_symbols.items():
-                if not symbols:
-                    continue
-                
-                # 한글 거래소명 가져오기
-                exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
-                    
-                # 커넥터 생성
-                connector = self._create_connector(exchange, self.settings)
-                self.connectors[exchange] = connector
-                
-                # 구독 객체 생성 및 커넥터 연결
-                subscription = self._create_subscription(connector)
-                self.subscriptions[exchange] = subscription
-                
-                # 상태 초기화
-                self.exchange_status[exchange] = False  # 연결 상태
-                self.subscription_status[exchange] = {
-                    "active": False,
-                    "symbol_count": len(symbols)
-                }
-                self.last_status_update[exchange] = time.time()
-                
-                # 메트릭 트래커 초기화
-                self.init_metrics_for_exchange(exchange)
-                
-                # 심볼별 타임스탬프 초기화
-                for symbol in symbols:
-                    self.update_symbol_timestamp(exchange, symbol, "subscribe")
-                
-                self.logger.info(f"{exchange_kr} 컴포넌트 초기화 완료")
+            # 2. USDT/KRW 모니터 설정 - 단순화
+            try:
+                self.usdt_monitor = WsUsdtKrwMonitor()
+                self.logger.debug("USDT/KRW 모니터 생성 완료")
+            except Exception as e:
+                self.logger.warning(f"USDT/KRW 모니터 초기화 실패, 무시하고 계속: {str(e)}")
             
-            self.logger.info("오더북 수집 시스템 초기화 완료")
+            # 3. 거래소별 웹소켓 연결 객체 및 구독 객체 생성
+            if not await self._prepare_exchange_connections():
+                self.logger.error("거래소 연결 준비 실패")
+                return False
+                
+            # 성공 로깅 및 상태 설정
+            self._initialized = True
+            self.total_exchanges_count = len(self.connectors)
+            self.logger.info(f"오더북 수집 시스템 초기화 완료, {self.total_exchanges_count}개 거래소 준비됨")
+            
             return True
             
         except Exception as e:
-            self.logger.error(f"초기화 중 오류 발생: {str(e)}", exc_info=True)
-            self.component_status["aggregator"] = "error"
-            # 오류 메트릭 업데이트
-            for exchange in self.filtered_symbols.keys():
-                self.update_error_counter(exchange, "connection_errors")
+            self.logger.error(f"시스템 초기화 중 오류 발생: {str(e)}", exc_info=True)
+            self._log_error("system_init_error", str(e))
             return False
-            
+
     async def start_collection(self) -> bool:
         """
-        오더북 수집 시작
-        실제 수집 작업을 시작합니다
+        오더북 수집 시작 - 핵심 초기화 작업 완료 후 성공 반환
+        
+        Returns:
+            bool: 시작 요청 성공 여부
         """
         try:
-            self.logger.info("오더북 수집 시작")
+            self.logger.info("----------------")
+            self.logger.info("오더북 수집 시작 요청")
+            self.logger.info("----------------")
+            
+            # 실행 즉시 starting 상태로 변경
+            self.status = "starting"
+            
+            # 상태 로깅
+            self.logger.info("오더북 수집기가 starting 상태로 전환되었습니다")
             
             # 1. 초기화가 안되어 있으면 초기화 먼저 실행
-            if not self.connectors:
+            if not self.is_initialized():
+                self.logger.info("오더북 수집기가 초기화되지 않았습니다. 초기화를 시작합니다.")
                 init_success = await self.initialize()
                 if not init_success:
-                    self.logger.error("오더북 수집 초기화 실패")
+                    self.logger.error("오더북 수집 초기화 실패! 수집을 시작할 수 없습니다.")
                     return False
+                self.logger.info("오더북 수집기 초기화 완료")
+            else:
+                self.logger.info("오더북 수집기가 이미 초기화되어 있습니다.")
             
-            # 2. USDT/KRW 모니터 시작 (비동기로 백그라운드에서 실행)
+            # 3. USDT/KRW 모니터 시작 - 단순화 (백그라운드 관리 및 초기화 대기 제거)
             if self.usdt_monitor:
-                asyncio.create_task(self.usdt_monitor.start())
+                try:
+                    # 단순히 시작만 하고 백그라운드에서 실행 (대기 없음)
+                    asyncio.create_task(self.usdt_monitor.start())
+                    self.logger.info("USDT/KRW 모니터 시작")
+                except Exception as e:
+                    self.logger.warning(f"USDT/KRW 모니터 시작 중 오류, 무시하고 계속: {str(e)}")
+            
+            # 커넥터 목록 로깅
+            self.logger.info(f"등록된 거래소 커넥터: {list(self.connectors.keys())}")
+            
+            # 모든 거래소 연결 및 구독을 백그라운드에서 시작
+            connect_all_task = asyncio.create_task(self._connect_all_exchanges())
+            
+            # 주기적 연결 상태 확인 태스크 시작
+            connection_health_task = asyncio.create_task(self._monitor_connection_health())
+            
+            # 메트릭 및 상태 업데이트
+            self.metric_manager.update_component_status("websocket", "initializing")
+            
+            # 초기화 작업 완료 후 성공 반환
+            self.logger.info("----------------")
+            self.logger.info("오더북 수집 초기화 완료 - 모든 거래소 연결은 백그라운드에서 계속됩니다")
+            self.logger.info("----------------")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"시스템 시작 중 오류 발생: {str(e)}", exc_info=True)
+            self._log_error("system_start_error", str(e))
+            return False
+            
+    async def _connect_all_exchanges(self):
+        """모든 거래소를 백그라운드에서 동시에 연결"""
+        try:
+            # 연결할 거래소 목록
+            exchanges_to_connect = list(self.connectors.keys())
+            
+            if not exchanges_to_connect:
+                self.logger.debug("연결할 거래소가 없습니다")
+                # 연결할 거래소가 없으면 이미 모든 거래소가 연결된 것으로 간주
+                self.status = "running"
+                self.logger.info("🟢 연결할 거래소가 없어 오더북 수집기가 running 상태로 전환되었습니다")
+                return
                 
-            # 3. 시스템 시작 상태 업데이트
-            system_details = {
-                "exchange_count": len(self.connectors),
-                "total_symbols": sum(len(symbols) for symbols in self.filtered_symbols.values())
-            }
-            self.system_status = {"status": "starting", "details": system_details}
-                
-            # 4. 각 거래소별 웹소켓 연결 및 구독 시작
+            self.logger.debug(f"백그라운드에서 {len(exchanges_to_connect)}개 거래소 연결 시작")
+            
+            # 각 거래소별 웹소켓 연결 및 구독 시작
             connect_tasks = []
-            for exchange, connector in self.connectors.items():
+            for exchange in exchanges_to_connect:
                 # 연결 태스크 생성
                 connect_task = asyncio.create_task(self._connect_and_subscribe(exchange))
                 connect_tasks.append(connect_task)
@@ -310,41 +240,139 @@ class ObCollector:
             # 모든 연결 태스크 병렬 실행
             await asyncio.gather(*connect_tasks)
             
-            # 5. 시스템 시작 완료 상태 업데이트
-            system_details = {
-                "exchange_count": len(self.connectors),
-                "connected_exchanges": sum(1 for status in self.exchange_status.values() if status),
-                "total_symbols": sum(len(symbols) for symbols in self.filtered_symbols.values()),
-                "active_subscriptions": sum(status["symbol_count"] for status in self.subscription_status.values() if status["active"])
-            }
-            self.system_status = {"status": "running", "details": system_details}
+            # 모든 거래소 연결 완료 후 running 상태로 변경
+            self.status = "running"
+            self.logger.info("🟢 모든 거래소 연결 및 구독이 완료되어 오더북 수집기가 running 상태로 전환되었습니다")
             
-            # 6. 프로세스 상태 업데이트
-            self.logger.debug(ProcessStatus.RUNNING)
+        except Exception as e:
+            self.logger.error(f"거래소 연결 중 오류 발생: {str(e)}", exc_info=True)
+            self._log_error("exchange_connection_error", str(e))
             
-            self.logger.info("모든 거래소 연결 및 구독 시작 완료")
+            # 오류가 발생했지만 일부 거래소는 연결되었을 수 있으므로 
+            # 연결된 거래소가 전체 거래소 수와 같으면 running으로 간주
+            if self.connected_exchanges_count >= self.total_exchanges_count:
+                self.status = "running"
+                self.logger.info("🟢 일부 오류가 있지만 모든 거래소 연결 시도가 완료되어 running 상태로 전환되었습니다")
+            
+    async def _connect_and_subscribe(self, exchange_code: str) -> bool:
+        """
+        특정 거래소에 웹소켓 연결 및 구독 수행
+        
+        Args:
+            exchange_code: 거래소 코드
+            
+        Returns:
+            bool: 성공 여부
+        """
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
+        connector = self.connectors.get(exchange_code)
+        
+        if not connector:
+            self.logger.warning(f"{exchange_kr} 연결 객체가 없습니다")
+            return False
+            
+        try:
+            # 웹소켓 연결 시도 - 중요: 연결 결과 확인 
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 시도")
+            connected = await connector.connect()
+            
+            # 연결 상태 확인
+            if not connected and not connector.is_connected():
+                self.logger.error(f"{exchange_kr} 웹소켓 연결 실패")
+                
+                # 오류 메트릭 업데이트
+                self.update_error_counter(exchange_code, "connection_errors")
+                self.increment_reconnect_counter(exchange_code)
+                
+                # 연결 상태 업데이트
+                self.exchange_status[exchange_code] = False
+                self.metric_manager.update_exchange_status(exchange_code, False)
+                return False
+                
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 성공")
+            
+            # 연결 성공 시 연결 시작 시간 기록 및 연결된 거래소 수 증가
+            self.exchange_status[exchange_code] = True
+            self.metric_manager.update_exchange_status(exchange_code, True)
+            self.metric_manager.update_component_status("websocket", "running")
+            
+            # 연결된 거래소 수 업데이트
+            self.connected_exchanges_count += 1
+            
+            # 모든 거래소가 연결되었는지 확인
+            if self.connected_exchanges_count >= self.total_exchanges_count:
+                old_status = self.status
+                self.status = "running"
+                self.logger.info(f"🟢 모든 거래소가 연결되어 오더북 수집기가 {old_status} → running 상태로 전환되었습니다 (연결됨: {self.connected_exchanges_count}/{self.total_exchanges_count})")
+            
+            # 구독 수행
+            subscription = self.subscriptions.get(exchange_code)
+            if not subscription:
+                self.logger.warning(f"{exchange_kr} 구독 객체가 없습니다")
+                return False
+                
+            # 필터링된 심볼 목록 가져오기
+            symbols = self.filtered_symbols.get(exchange_code, [])
+            if not symbols:
+                self.logger.warning(f"{exchange_kr} 구독할 심볼이 없습니다")
+                return False
+                
+            # 구독 시작
+            self.logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
+            subscribe_result = await subscription.subscribe(symbols)
+            
+            # 구독 결과 확인
+            if not subscribe_result:
+                self.logger.warning(f"{exchange_kr} 구독 실패 또는 부분 성공")
+                # 구독 실패 시 오류 메트릭 업데이트
+                self.update_error_counter(exchange_code, "subscription_errors")
+            else:
+                self.logger.info(f"{exchange_kr} 구독 성공")
+            
+            # 구독 상태 업데이트 (결과와 상관없이 상태는 업데이트)
+            subscription_active = bool(subscribe_result)
+            self.metric_manager.update_subscription_status(
+                exchange_code, 
+                active=subscription_active, 
+                symbol_count=len(symbols),
+                symbols=symbols
+            )
+            
+            # 모든 심볼에 대해 타임스탬프 업데이트
+            for symbol in symbols:
+                self.update_symbol_timestamp(exchange_code, symbol, "subscribe")
+                
+            # 최종 연결 및 구독 상태 로깅
+            self.logger.info(f"{exchange_kr} 연결 및 구독 처리 완료 (연결: {self.exchange_status[exchange_code]}, 구독: {subscription_active})")
             return True
             
         except Exception as e:
-            self.logger.error(f"시스템 시작 중 오류 발생: {str(e)}", exc_info=True)
-            # 오류 기록
-            self._log_error("system_start_error", str(e))
-            return False
+            self.logger.error(f"{exchange_kr} 연결 및 구독 중 오류 발생: {str(e)}", exc_info=True)
+            self.update_error_counter(exchange_code, "connection_errors")
             
+            # 오류 기록
+            self._log_error(f"{exchange_code}_connection_error", str(e))
+            
+            # 연결 상태 업데이트
+            self.exchange_status[exchange_code] = False
+            self.metric_manager.update_exchange_status(exchange_code, False)
+            
+            # 실패 반환
+            return False
+
     async def stop_collection(self) -> bool:
         """
         오더북 수집 중지
-        실행 중인 수집 작업을 중지합니다
+        
+        Returns:
+            bool: 중지 성공 여부
         """
         try:
             self.logger.info("오더북 수집 중지 중")
             
-            # 시스템 종료 시작 상태 업데이트
-            system_details = {
-                "exchange_count": len(self.connectors),
-                "connected_exchanges": sum(1 for status in self.exchange_status.values() if status)
-            }
-            self.system_status = {"status": "stopping", "details": system_details}
+            # 상태 플래그 초기화
+            self.status = "stopped"
+            self.connected_exchanges_count = 0
             
             # USDT/KRW 모니터 중지
             if self.usdt_monitor:
@@ -361,9 +389,7 @@ class ObCollector:
                     self.logger.info(f"{exchange_kr} 구독 해제 완료")
                     
                     # 상태 업데이트
-                    self.subscription_status[exchange]["active"] = False
-                    self.subscription_status[exchange]["symbol_count"] = 0
-                    self.last_status_update[exchange] = time.time()
+                    self.metric_manager.update_subscription_status(exchange, active=False, symbol_count=0)
                     
                     # 연결 종료
                     connector = self.connectors.get(exchange)
@@ -373,10 +399,7 @@ class ObCollector:
                         
                         # 상태 업데이트
                         self.exchange_status[exchange] = False
-                        
-                        # 연결 시작 시간 초기화
-                        if exchange in self.connection_start_time:
-                            del self.connection_start_time[exchange]
+                        self.metric_manager.update_exchange_status(exchange, False)
                         
                 except Exception as e:
                     exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
@@ -384,93 +407,22 @@ class ObCollector:
             
             self.connectors = {}
             self.subscriptions = {}
-            
-            # 시스템 종료 완료 상태 업데이트
-            self.system_status = {"status": "stopped", "details": {}}
-            
-            # 프로세스 상태 업데이트
-            self.logger.debug(ProcessStatus.STOPPED)
+            self._initialized = False
             
             self.logger.info("오더북 수집 중지 완료")
             return True
             
         except Exception as e:
             self.logger.error(f"시스템 중지 중 오류 발생: {str(e)}", exc_info=True)
-            # 오류 기록
             self._log_error("system_stop_error", str(e))
             return False
-            
-    async def _connect_and_subscribe(self, exchange: str) -> bool:
-        """특정 거래소 연결 및 구독 처리"""
-        try:
-            connector = self.connectors.get(exchange)
-            subscription = self.subscriptions.get(exchange)
-            symbols = self.filtered_symbols.get(exchange, [])
-            
-            # 한글 거래소명 가져오기
-            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
-            
-            if not connector or not subscription or not symbols:
-                self.logger.warning(f"{exchange_kr} 컴포넌트 또는 심볼이 없음")
-                return False
-                
-            # 1. 웹소켓 연결
-            self.logger.info(f"{exchange_kr} 웹소켓 연결 시도")
-            connected = await connector.connect()
-            
-            # 2. 연결 상태 업데이트
-            self.exchange_status[exchange] = connected
-            self.last_status_update[exchange] = time.time()
-            
-            # 연결 성공 시 연결 시작 시간 기록
-            if connected:
-                self.connection_start_time[exchange] = time.time()
-                self.component_status["websocket"] = "running"
-            else:
-                # 연결 실패 시 오류 메트릭 업데이트
-                self.update_error_counter(exchange, "connection_errors")
-                self.increment_reconnect_counter(exchange)
-            
-            if not connected:
-                self.logger.error(f"{exchange_kr} 웹소켓 연결 실패")
-                return False
-                
-            self.logger.info(f"{exchange_kr} 웹소켓 연결 성공")
-            
-            # 3. 심볼 구독
-            self.logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
-            subscribe_result = await subscription.subscribe(symbols)
-            
-            # 4. 구독 상태 업데이트
-            subscription_active = bool(subscribe_result)
-            self.subscription_status[exchange]["active"] = subscription_active
-            self.subscription_status[exchange]["symbol_count"] = len(symbols)
-            self.last_status_update[exchange] = time.time()
-            
-            # 구독 시 심볼별 구독 시간 업데이트
-            if subscription_active:
-                for symbol in symbols:
-                    self.update_symbol_timestamp(exchange, symbol, "subscribe")
-            
-            if subscribe_result:
-                self.logger.info(f"{exchange_kr} 구독 성공")
-            else:
-                self.logger.warning(f"{exchange_kr} 구독 실패 또는 부분 성공")
-                # 구독 실패 시 오류 메트릭 업데이트
-                self.update_error_counter(exchange, "subscription_errors")
-                
-            return True
-            
-        except Exception as e:
-            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
-            self.logger.error(f"{exchange_kr} 연결 및 구독 중 오류 발생: {str(e)}", exc_info=True)
-            
-            # 오류 기록
-            self._log_error(f"{exchange}_connection_error", str(e))
-            
-            # 오류 메트릭 업데이트
-            self.update_error_counter(exchange, "connection_errors")
-            return False
+
+    # 상태 조회 메서드 추가
+    # ======================================================
+    
+    def get_status(self):
+        """현재 오더북 수집기의 상태 반환"""
+        return self.status
 
     # 이벤트 발행 대신 내부 상태 관리를 위한 메서드들
     # ======================================================
@@ -491,47 +443,24 @@ class ObCollector:
     
     def init_metrics_for_exchange(self, exchange):
         """특정 거래소에 대한 메트릭 트래커 초기화"""
-        if exchange not in self.message_counters:
-            self.message_counters[exchange] = HybridMessageCounter()
-            
-        if exchange not in self.error_counters:
-            self.error_counters[exchange] = ErrorCounter()
-            
-        if exchange not in self.reconnect_counts:
-            self.reconnect_counts[exchange] = 0
+        self.metric_manager.init_metrics_for_exchange(exchange)
             
     def update_message_counter(self, exchange, count=1):
         """메시지 카운터 업데이트"""
-        if exchange not in self.message_counters:
-            self.init_metrics_for_exchange(exchange)
-            
-        self.message_counters[exchange].update(count)
+        self.metric_manager.update_message_counter(exchange, count)
         
     def update_error_counter(self, exchange, error_type, count=1):
         """오류 카운터 업데이트"""
-        if exchange not in self.error_counters:
-            self.init_metrics_for_exchange(exchange)
-            
-        self.error_counters[exchange].update(error_type, count)
+        self.metric_manager.update_error_counter(exchange, error_type, count)
         
     def increment_reconnect_counter(self, exchange):
         """재연결 카운터 증가"""
-        if exchange not in self.reconnect_counts:
-            self.reconnect_counts[exchange] = 0
-            
-        self.reconnect_counts[exchange] += 1
+        self.metric_manager.increment_reconnect_counter(exchange)
         
     def update_symbol_timestamp(self, exchange, symbol, update_type="data"):
         """심볼별 타임스탬프 업데이트"""
-        key = f"{exchange}:{symbol}"
-        current_time = time.time()
+        self.metric_manager.update_symbol_timestamp(exchange, symbol, update_type)
         
-        if update_type == "subscribe":
-            if key not in self.symbol_subscribe_times:
-                self.symbol_subscribe_times[key] = current_time
-        else:  # data update
-            self.symbol_updates[key] = current_time
-            
     # 통합 메트릭 제공 메서드
     # ======================================================
     
@@ -542,125 +471,14 @@ class ObCollector:
         Returns:
             Dict: 메트릭 데이터 딕셔너리
         """
-        return {
-            "connection": self._get_connection_metrics(),
-            "message": self._get_message_metrics(),
-            "subscription": self._get_subscription_metrics(),
-            "error": self._get_error_metrics(),
-            "system": self._get_system_metrics()
-        }
+        # 현재 시스템 상태를 메트릭 매니저에 전달
+        self.metric_manager.set_system_state(
+            is_starting=self.status == "starting",
+            is_fully_started=self.status == "running"
+        )
         
-    def _get_connection_metrics(self):
-        """연결 관련 메트릭 수집"""
-        current_time = time.time()
-        result = {}
-        
-        for exchange in self.exchange_status:
-            connected = self.exchange_status.get(exchange, False)
-            
-            # 업타임 계산
-            uptime = 0
-            if connected and exchange in self.connection_start_time:
-                uptime = current_time - self.connection_start_time[exchange]
-            
-            result[exchange] = {
-                "connected": connected,
-                "uptime": uptime,
-                "reconnect_count": self.reconnect_counts.get(exchange, 0),
-                "last_connected": self.connection_start_time.get(exchange, 0)
-            }
-            
-        return result
-        
-    def _get_message_metrics(self):
-        """메시지 관련 메트릭 수집"""
-        result = {}
-        
-        for exchange, counter in self.message_counters.items():
-            metrics = counter.get_metrics()
-            result[exchange] = {
-                "total_count": metrics["total_estimated"],
-                "rate": metrics["rate"],
-                # 최근 메시지 시간은 symbol_updates에서 최신값을 찾아서 사용
-                "last_message_time": self._get_latest_symbol_update(exchange)
-            }
-            
-        return result
-        
-    def _get_latest_symbol_update(self, exchange):
-        """특정 거래소에 대한 가장 최근 심볼 업데이트 시간 조회"""
-        latest_time = 0
-        prefix = f"{exchange}:"
-        
-        for key, timestamp in self.symbol_updates.items():
-            if key.startswith(prefix) and timestamp > latest_time:
-                latest_time = timestamp
-                
-        return latest_time
-        
-    def _get_subscription_metrics(self):
-        """구독 관련 메트릭 수집"""
-        result = {}
-        
-        for exchange, status in self.subscription_status.items():
-            symbols_data = {}
-            prefix = f"{exchange}:"
-            
-            # 구독 중인 심볼들의 상태 정보 수집
-            for symbol in self.filtered_symbols.get(exchange, []):
-                key = f"{exchange}:{symbol}"
-                symbols_data[symbol] = {
-                    "active": status["active"],
-                    "last_update": self.symbol_updates.get(key, 0),
-                    "subscribe_time": self.symbol_subscribe_times.get(key, 0)
-                }
-                
-            result[exchange] = {
-                "active": status["active"],
-                "total_symbols": status["symbol_count"],
-                "symbols": symbols_data
-            }
-            
-        return result
-        
-    def _get_error_metrics(self):
-        """오류 관련 메트릭 수집"""
-        result = {}
-        
-        for exchange, counter in self.error_counters.items():
-            metrics = counter.get_metrics()
-            
-            # 오류율 계산 (메시지 수 대비)
-            error_rate = 0
-            if exchange in self.message_counters:
-                msg_metrics = self.message_counters[exchange].get_metrics()
-                total_messages = msg_metrics["total_estimated"]
-                if total_messages > 0:
-                    error_rate = metrics["total"] / total_messages
-                    
-            result[exchange] = {
-                "total": metrics["total"],
-                "types": metrics["types"],
-                "last_error_time": metrics["last_error_time"],
-                "rate": error_rate
-            }
-            
-        return result
-        
-    def _get_system_metrics(self):
-        """시스템 상태 메트릭 수집"""
-        current_time = time.time()
-        uptime = 0
-        
-        if self.start_time:
-            uptime = current_time - self.start_time
-            
-        return {
-            "status": ProcessStatus.RUNNING if self.start_time else ProcessStatus.STOPPED,
-            "start_time": self.start_time or 0,
-            "uptime": uptime,
-            "components": self.component_status
-        }
+        # 메트릭 반환
+        return self.metric_manager.get_metrics()
 
     def _create_connector(self, exchange_code: str, settings: Dict[str, Any]) -> Optional[BaseWebsocketConnector]:
         """
@@ -673,7 +491,7 @@ class ObCollector:
         Returns:
             BaseWebsocketConnector: 웹소켓 연결 객체 또는 None (실패 시)
         """
-        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"{exchange_code}")
         
         try:
             # 거래소 코드에 해당하는 클래스 찾기
@@ -683,12 +501,14 @@ class ObCollector:
                 return None
                 
             # 연결 객체 생성
+            self.logger.debug(f"{exchange_kr} 연결 객체 생성 시도 (클래스: {connector_class.__name__})")
             connector = connector_class(settings, exchange_code)
-            self.logger.debug(f"{exchange_kr} 연결 객체 생성됨")
+            self.logger.info(f"{exchange_kr} 연결 객체 생성 성공")
             return connector
             
         except Exception as e:
-            self.logger.error(f"{exchange_kr} 연결 객체 생성 실패: {str(e)}")
+            self.logger.error(f"{exchange_kr} 연결 객체 생성 실패: {str(e)}", exc_info=True)
+            self._log_error(f"{exchange_code}_connector_creation_error", str(e))
             return None
 
     def _create_subscription(
@@ -705,7 +525,7 @@ class ObCollector:
             BaseSubscription: 구독 객체 또는 None (실패 시)
         """
         exchange_code = connector.exchange_code
-        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"[{exchange_code}]")
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, f"{exchange_code}")
         
         try:
             # 거래소 코드에 해당하는 클래스 찾기
@@ -715,10 +535,234 @@ class ObCollector:
                 return None
                 
             # 구독 객체 생성 (collector 객체 전달)
+            self.logger.debug(f"{exchange_kr} 구독 객체 생성 시도 (클래스: {subscription_class.__name__})")
             subscription = subscription_class(connector, exchange_code, collector=self)
-            self.logger.debug(f"{exchange_kr} 구독 객체 생성됨")
+            self.logger.info(f"{exchange_kr} 구독 객체 생성 성공")
             return subscription
             
         except Exception as e:
-            self.logger.error(f"{exchange_kr} 구독 객체 생성 실패: {str(e)}")
+            self.logger.error(f"{exchange_kr} 구독 객체 생성 실패: {str(e)}", exc_info=True)
+            self._log_error(f"{exchange_code}_subscription_creation_error", str(e))
             return None
+
+    async def _prepare_exchange_connections(self) -> bool:
+        """거래소별 연결 및 구독 객체 준비
+
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            self.logger.info("================")
+            self.logger.info("거래소 연결 및 구독 객체 준비 시작")
+            self.logger.info("================")
+            
+            # 필터링된 심볼 재확인
+            if not self.filtered_symbols:
+                self.logger.error("필터링된 심볼이 없습니다. 거래소 연결을 준비할 수 없습니다.")
+                return False
+                
+            self.logger.info(f"총 {len(self.filtered_symbols)} 개의 거래소에 대한 연결을 준비합니다")
+            
+            # 각 거래소별 커넥터 및 구독 객체 초기화
+            success_count = 0
+            for exchange, symbols in self.filtered_symbols.items():
+                if not symbols:
+                    self.logger.warning(f"거래소 '{exchange}'에 구독할 심볼이 없습니다. 건너뜁니다.")
+                    continue
+                
+                # 한글 거래소명 가져오기
+                exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+                self.logger.info(f"[{exchange_kr}] 컴포넌트 초기화 시작 ({len(symbols)}개 심볼)")
+                
+                # 커넥터 생성
+                connector = self._create_connector(exchange, self.settings)
+                if not connector:
+                    self.logger.error(f"[{exchange_kr}] 커넥터 생성 실패, 해당 거래소 건너뜀")
+                    continue
+                    
+                self.connectors[exchange] = connector
+                
+                # 구독 객체 생성
+                subscription = self._create_subscription(connector)
+                if not subscription:
+                    self.logger.error(f"[{exchange_kr}] 구독 객체 생성 실패, 해당 거래소 건너뜀")
+                    continue
+                    
+                self.subscriptions[exchange] = subscription
+                
+                # 상태 초기화
+                self.exchange_status[exchange] = False
+                
+                # 메트릭 트래커 초기화
+                self.init_metrics_for_exchange(exchange)
+                
+                # 구독 상태 초기화
+                self.metric_manager.update_subscription_status(
+                    exchange, 
+                    active=False, 
+                    symbol_count=len(symbols),
+                    symbols=symbols
+                )
+                
+                # 심볼별 타임스탬프 초기화
+                for symbol in symbols:
+                    self.update_symbol_timestamp(exchange, symbol, "subscribe")
+                
+                success_count += 1
+                self.logger.info(f"[{exchange_kr}] 컴포넌트 초기화 완료 ({len(symbols)}개 심볼)")
+                
+            # 결과 확인
+            if success_count == 0:
+                self.logger.error("어떤 거래소도 초기화되지 않았습니다. 오더북 수집기를 시작할 수 없습니다.")
+                return False
+                
+            self.logger.info(f"거래소 연결 및 구독 객체 준비 완료 ({success_count}/{len(self.filtered_symbols)} 성공)")
+            self.logger.info("================")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"거래소 연결 준비 중 오류 발생: {str(e)}", exc_info=True)
+            self._log_error("exchange_preparation_error", str(e))
+            return False
+
+    async def _monitor_connection_health(self):
+        """
+        주기적으로 모든 거래소 연결 상태를 확인하고 필요시 재연결하는 태스크
+        """
+        check_interval = 30  # 30초마다 상태 확인
+        self.logger.info(f"연결 상태 모니터링 시작 (점검 간격: {check_interval}초)")
+        
+        while self.status != "stopped":
+            try:
+                # 시스템이 시작 중이거나 실행 중인 경우에만 확인
+                if self.status in ["starting", "running"]:
+                    await self._check_all_connections()
+                
+                # 지정된 간격만큼 대기
+                await asyncio.sleep(check_interval)
+                
+            except asyncio.CancelledError:
+                self.logger.debug("연결 상태 모니터링 태스크 취소됨")
+                break
+            except Exception as e:
+                self.logger.error(f"연결 상태 모니터링 중 오류: {str(e)}")
+                await asyncio.sleep(check_interval)  # 오류 발생 시에도 계속 진행
+                
+        self.logger.debug("연결 상태 모니터링 종료")
+    
+    async def _check_all_connections(self):
+        """
+        모든 거래소의 연결 상태를 확인하고 필요시 재연결 시도
+        """
+        for exchange_code, connector in self.connectors.items():
+            # 실제 상태와 내부 상태가 일치하는지 확인
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
+            
+            try:
+                # 연결되어 있다고 표시되었지만 실제로 연결이 끊어진 경우
+                if connector.is_connected:
+                    # 웹소켓 객체 확인
+                    ws = await connector.get_websocket()
+                    if not ws:
+                        self.logger.warning(f"{exchange_kr} 웹소켓 연결이 불일치: 상태는 연결됨이지만 웹소켓 객체가 없음")
+                        # 연결 복구 시도
+                        await self._reconnect_exchange(exchange_code, "connection_inconsistent")
+                elif self.exchange_status.get(exchange_code, False):
+                    # 내부 상태는 연결됨으로 표시되어 있지만 실제로는 끊어진 경우
+                    self.logger.warning(f"{exchange_kr} 연결 상태가 불일치: ObCollector는 연결됨, 커넥터는 끊어짐")
+                    # 연결 복구 시도
+                    await self._reconnect_exchange(exchange_code, "status_inconsistent")
+            except Exception as e:
+                self.logger.error(f"{exchange_kr} 연결 상태 확인 중 오류: {str(e)}")
+                # 오류 발생 시 연결 복구 시도
+                await self._reconnect_exchange(exchange_code, f"check_error: {str(e)}")
+    
+    async def _reconnect_exchange(self, exchange_code: str, reason: str):
+        """
+        특정 거래소에 재연결 시도
+        
+        Args:
+            exchange_code: 거래소 코드
+            reason: 재연결 이유
+        """
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
+        
+        # 재연결 카운터 증가
+        self.increment_reconnect_counter(exchange_code)
+        reconnect_count = self.reconnect_counts.get(exchange_code, 0)
+        
+        self.logger.info(f"🔄 [{exchange_kr}] 재연결 시도 #{reconnect_count} (이유: {reason})")
+        
+        try:
+            # 1. 연결 객체 확인
+            connector = self.connectors.get(exchange_code)
+            if not connector:
+                self.logger.error(f"[{exchange_kr}] 연결 객체가 없습니다")
+                return False
+                
+            # 2. 연결 상태 업데이트
+            self.exchange_status[exchange_code] = False
+            self.metric_manager.update_exchange_status(exchange_code, False)
+            
+            # 3. 재연결 시도
+            reconnect_success = await connector.reconnect()
+            
+            # 4. 재연결 실패 처리
+            if not reconnect_success:
+                self.logger.error(f"❌ [{exchange_kr}] 재연결 #{reconnect_count} 실패")
+                self.update_error_counter(exchange_code, "reconnect_errors")
+                return False
+                
+            # 5. 재연결 성공 처리
+            self.logger.info(f"✅ [{exchange_kr}] 재연결 #{reconnect_count} 성공")
+            self.exchange_status[exchange_code] = True
+            self.metric_manager.update_exchange_status(exchange_code, True)
+            
+            # 6. 다시 구독 필요 - 구독 객체 확인
+            subscription = self.subscriptions.get(exchange_code)
+            if not subscription:
+                self.logger.warning(f"[{exchange_kr}] 구독 객체가 없습니다")
+                return True  # 재연결은 성공했으므로 True 반환
+                
+            # 7. 필터링된 심볼 목록 가져오기
+            symbols = self.filtered_symbols.get(exchange_code, [])
+            if not symbols:
+                self.logger.warning(f"[{exchange_kr}] 구독할 심볼이 없습니다")
+                return True  # 재연결은 성공했으므로 True 반환
+                
+            # 8. 재구독 수행
+            self.logger.info(f"[{exchange_kr}] 재구독 시작 ({len(symbols)}개 심볼)")
+            subscribe_result = await subscription.subscribe(symbols)
+            
+            # 9. 구독 결과 확인
+            if not subscribe_result:
+                self.logger.warning(f"[{exchange_kr}] 재구독 실패 또는 부분 성공")
+                self.update_error_counter(exchange_code, "subscription_errors")
+            else:
+                self.logger.info(f"✅ [{exchange_kr}] 재구독 성공")
+                
+                # 10. 재구독 성공 시 메트릭 초기화
+                # 메시지 카운터 명시적 초기화 (재시작을 위해)
+                self.metric_manager.reset_message_counter(exchange_code)
+                
+                # 각 심볼의 타임스탬프 초기화
+                for symbol in symbols:
+                    self.update_symbol_timestamp(exchange_code, symbol, "reset")
+                
+            # 11. 구독 상태 업데이트
+            self.metric_manager.update_subscription_status(
+                exchange_code, 
+                active=bool(subscribe_result), 
+                symbol_count=len(symbols),
+                symbols=symbols
+            )
+            
+            # 12. 재연결/재구독 후 수신 확인 메시지 로깅
+            self.logger.info(f"📊 [{exchange_kr}] 재연결 및 재구독 완료 - 데이터 수신이 곧 재개됩니다.")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ [{exchange_kr}] 재연결 #{reconnect_count} 처리 중 오류: {str(e)}", exc_info=True)
+            self.update_error_counter(exchange_code, "reconnect_errors")
+            return False

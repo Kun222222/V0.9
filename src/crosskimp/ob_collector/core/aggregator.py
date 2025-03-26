@@ -144,7 +144,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             
             for i, chunk in enumerate(chunks, 1):
                 markets = ",".join(f"KRW-{symbol}" for symbol in chunk)
-                logger.info(
+                logger.debug(
                     f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 거래량 조회가 진행 중입니다. "
                     f"청크 {i}/{len(chunks)}, 심볼 {len(chunk)}개"
                 )
@@ -175,7 +175,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 필터링 결과입니다. "
                 f"전체 {len(symbols)}개 중 거래량 {min_volume:,.0f} KRW 이상은 {len(filtered_symbols)}개입니다."
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
@@ -234,7 +234,7 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
                 f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 필터링 결과입니다. "
                 f"전체 {len(symbols)}개 중 거래량 {min_volume:,.0f} KRW 이상은 {len(filtered_symbols)}개입니다."
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 필터링된 심볼: {sorted(filtered_symbols)}")
+            logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 필터링된 심볼: {sorted(filtered_symbols)}")
             
             return filtered_symbols
 
@@ -603,7 +603,7 @@ class Aggregator:
             # min_volume_krw가 없으면 min_daily_volume_krw 설정을 대신 사용
             min_volume = get_value_from_settings("trading.settings.min_daily_volume_krw")
             if min_volume is not None:
-                logger.info(f"min_daily_volume_krw 설정을 사용합니다: {min_volume:,} KRW")
+                logger.debug(f"min_daily_volume_krw 설정을 사용합니다: {min_volume:,} KRW")
             else:
                 logger.error(f"필수 설정 누락: trading.settings.min_volume_krw 또는 trading.settings.min_daily_volume_krw")
                 logger.error(f"exchange_settings.cfg 파일에서 최소 거래량 설정이 필요합니다.")

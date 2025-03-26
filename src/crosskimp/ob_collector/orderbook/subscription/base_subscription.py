@@ -18,7 +18,7 @@ from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 from crosskimp.common.config.app_config import AppConfig, get_config
 
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
-from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.subscription.validators import BaseOrderBookValidator
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
@@ -235,10 +235,22 @@ class BaseSubscription(ABC):
             
             return message
             
+        except websockets.exceptions.ConnectionClosed as e:
+            # 웹소켓 연결이 명시적으로 닫힘 - 재연결 필요
+            self.log_error(f"웹소켓 연결이 닫힘: {e.code} {e.reason}")
+            # 연결 상태 업데이트
+            self.connection.is_connected = False
+            # 재연결 요청
+            asyncio.create_task(self.connection.handle_disconnection("connection_closed", f"{e.code} {e.reason}"))
+            return None
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self.log_error(f"메시지 수신 중 오류: {str(e)}")
+            # 예외가 발생하면 연결 문제로 간주하고 재연결 시도
+            self.connection.is_connected = False
+            # 재연결 요청
+            asyncio.create_task(self.connection.handle_disconnection("receive_error", str(e)))
             return None
     
     async def _preprocess_symbols(self, symbol: Union[str, List[str]]) -> List[str]:
@@ -375,20 +387,47 @@ class BaseSubscription(ABC):
                 self.log_error("메시지 루프 시작 실패: 웹소켓 연결 없음")
                 return
                 
+            reconnect_attempts = 0
+            max_reconnect_attempts = 5  # 최대 재연결 시도 횟수
+            
             while not self.stop_event.is_set():
                 try:
+                    # 연결 상태 확인
+                    if not self.connection.is_connected:
+                        if reconnect_attempts < max_reconnect_attempts:
+                            reconnect_attempts += 1
+                            self.log_info(f"연결이 끊어짐, 자동 재연결 시도 {reconnect_attempts}/{max_reconnect_attempts}")
+                            # 웹소켓 재연결 시도
+                            reconnect_success = await self.connection.reconnect()
+                            if reconnect_success:
+                                self.log_info("재연결 성공, 메시지 루프 계속")
+                                reconnect_attempts = 0  # 성공 시 카운터 초기화
+                            else:
+                                self.log_error("재연결 실패, 재시도 예정")
+                                await asyncio.sleep(1)  # 재시도 전 대기
+                                continue
+                        else:
+                            self.log_error(f"최대 재연결 시도 횟수 초과 ({max_reconnect_attempts}회), 메시지 루프 종료")
+                            break
+                    
                     message = await self.receive_message()
                     if not message:
                         await asyncio.sleep(0.1)
                         continue
                     
                     await self._on_message(message)
+                    # 메시지를 성공적으로 수신했으면 재연결 시도 카운터 초기화
+                    reconnect_attempts = 0
                     
                 except asyncio.CancelledError:
                     self.log_debug("메시지 루프 취소됨")
                     break
                 except Exception as e:
                     self.log_error(f"메시지 처리 중 예외 발생: {str(e)}")
+                    # 심각한 오류 발생 시 연결 상태 확인 및 재연결 시도
+                    if self.connection.is_connected:
+                        self.connection.is_connected = False
+                        asyncio.create_task(self.connection.handle_disconnection("message_loop_error", str(e)))
                     await asyncio.sleep(0.1)
             
             self.log_info("메시지 수신 루프 종료")

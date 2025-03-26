@@ -16,7 +16,7 @@ from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
-from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.subscription.validators import BaseOrderBookValidator
 
 # 웹소켓 설정
 WS_URL = "wss://stream.bybit.com/v5/public/spot"  # 웹소켓 URL
@@ -439,6 +439,12 @@ class BybitSubscription(BaseSubscription):
             # 오더북 데이터 로깅 
             self.log_orderbook_data(symbol, orderbook_data)
                     
+            # 메트릭 업데이트 (수신 카운트 증가)
+            if self.collector:
+                self.collector.update_message_counter(self.exchange_code)
+                # 심볼별 타임스탬프 업데이트
+                self.collector.update_symbol_timestamp(self.exchange_code, symbol, "data")
+                
         except Exception as e:
             self.log_error(f"메시지 처리 실패: {str(e)}")
     

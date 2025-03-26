@@ -15,7 +15,7 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
-from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.subscription.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 
 # 바이낸스 선물 웹소켓 및 REST API 설정

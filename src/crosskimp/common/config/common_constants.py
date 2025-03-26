@@ -24,7 +24,7 @@ class SystemComponent(Enum):
     TRADER = "trader"          # 트레이더 (자동 거래 시스템)
     TELEGRAM = "telegram"      # 텔레그램 서비스
     SYSTEM = "system"          # 시스템 (통합 프로그램)
-    WEB = "web"                # 웹 서비스
+    WEB_SERVER = "web_server"  # 웹 서버
 
 # 컴포넌트 이름 한글 매핑
 COMPONENT_NAMES_KR = {
@@ -33,7 +33,7 @@ COMPONENT_NAMES_KR = {
     SystemComponent.TRADER.value: "[트레이더]",
     SystemComponent.TELEGRAM.value: "[텔레그램]",
     SystemComponent.SYSTEM.value: "[시스템]",
-    SystemComponent.WEB.value: "[웹서비스]",
+    SystemComponent.WEB_SERVER.value: "[웹서버]",
 }
 
 # 이전 버전과의 호환성을 위한 별칭
@@ -43,82 +43,9 @@ ORDERBOOK = SystemComponent.OB_COLLECTOR.value
 #                프로세스 관련 상수 정의                      #
 #############################################################
 
-class ProcessStatus(Enum):
-    """
-    프로세스 상태
-    
-    시스템 내 프로세스의 현재 상태를 나타냅니다.
-    """
-    STOPPED = "stopped"    # 중지됨
-    STARTING = "starting"  # 시작 중
-    RUNNING = "running"    # 실행 중
-    STOPPING = "stopping"  # 종료 중
-    ERROR = "error"        # 오류 상태
-
-class ProcessEvent(Enum):
-    """
-    프로세스 이벤트 타입
-    
-    프로세스 생명주기 관련 이벤트 유형을 정의합니다.
-    """
-    START_REQUESTED = "start_requested"     # 시작 요청됨
-    STARTED = "started"                     # 시작됨
-    STOP_REQUESTED = "stop_requested"       # 종료 요청됨
-    STOPPED = "stopped"                     # 종료됨
-    RESTART_REQUESTED = "restart_requested" # 재시작 요청됨
-    ERROR = "error"                         # 오류 발생
-
-class ProcessEventData:
-    """
-    프로세스 이벤트 데이터
-    
-    프로세스 관련 이벤트에 포함되는 데이터 구조입니다.
-    """
-    
-    def __init__(
-        self, 
-        process_name: str, 
-        event_type: ProcessEvent,
-        status: Optional[ProcessStatus] = None,
-        error_message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        """
-        프로세스 이벤트 데이터 초기화
-        
-        Args:
-            process_name: 프로세스 이름
-            event_type: 이벤트 유형
-            status: 프로세스 상태 (선택)
-            error_message: 오류 메시지 (선택)
-            details: 추가 상세 정보 (선택)
-        """
-        self.process_name = process_name
-        self.event_type = event_type
-        self.status = status
-        self.error_message = error_message
-        self.details = details or {}
-        
-    def to_dict(self) -> Dict[str, Any]:
-        """이벤트 데이터를 딕셔너리로 변환"""
-        return {
-            "process_name": self.process_name,
-            "event_type": self.event_type.value,
-            "status": self.status.value if self.status else None,
-            "error_message": self.error_message,
-            "details": self.details
-        }
-        
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ProcessEventData':
-        """딕셔너리에서 이벤트 데이터 생성"""
-        return cls(
-            process_name=data["process_name"],
-            event_type=ProcessEvent(data["event_type"]),
-            status=ProcessStatus(data["status"]) if data.get("status") else None,
-            error_message=data.get("error_message"),
-            details=data.get("details", {})
-        )
+# 프로세스 관련 상수는 system_types.py로 이동되었습니다.
+# 아래 import를 사용하여 접근하세요:
+# from crosskimp.common.events.system_types import ProcessStatus, ProcessEvent, ProcessEventData
 
 #############################################################
 #                HTTP 상태 코드 정의                         #

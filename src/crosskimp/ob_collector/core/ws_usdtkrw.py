@@ -11,7 +11,6 @@ import websockets
 from typing import Dict, Callable, List, Any, Optional
 
 from crosskimp.common.logger.logger import get_unified_logger
-# constants_v3 대신 새로운 모듈에서 가져오기
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
 
 # 웹소켓 URL 정의
@@ -111,7 +110,7 @@ class WsUsdtKrwMonitor:
     async def _status_monitor(self):
         """연결 상태 및 가격 모니터링"""
         last_log_time = 0  # 마지막 로깅 시간 추적
-        log_interval = 10  # 10초마다 로깅
+        log_interval = 5  # 5초마다 로깅 (10초에서 5초로 변경)
         
         while not self.stop_event.is_set():
             try:
@@ -127,7 +126,7 @@ class WsUsdtKrwMonitor:
                     else:
                         status_msg += f"{status_emoji} {EXCHANGE_NAMES_KR[exchange]}: 가격 없음 | "
                 
-                # 10초마다 가격 정보 로깅
+                # 5초마다 가격 정보 로깅 (항상 로깅하도록 변경)
                 if current_time - last_log_time >= log_interval:
                     logger.info(status_msg.rstrip(" | "))
                     last_log_time = current_time
@@ -209,7 +208,7 @@ class WsUsdtKrwMonitor:
                 price = float(data["trade_price"])
                 if price > 0:
                     self.prices[Exchange.UPBIT.value] = price
-                    # logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
+                    logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
                     await self._notify_price_change(Exchange.UPBIT.value)
         except Exception as e:
             logger.error(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 메시지 파싱 중 오류가 발생했습니다: {str(e)}")
@@ -223,7 +222,7 @@ class WsUsdtKrwMonitor:
                     price = float(content["closePrice"])
                     if price > 0:
                         self.prices[Exchange.BITHUMB.value] = price
-                        # logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
+                        logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
                         await self._notify_price_change(Exchange.BITHUMB.value)
         except Exception as e:
             logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 메시지 파싱 중 오류가 발생했습니다: {str(e)}")

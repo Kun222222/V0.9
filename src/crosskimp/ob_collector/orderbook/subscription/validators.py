@@ -10,11 +10,10 @@ from enum import Enum
 from dataclasses import dataclass, field
 
 from crosskimp.common.logger.logger import get_unified_logger
-# constants_v3 대신 새로운 모듈에서 Exchange를 가져오기
-from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
 
 # 로거 설정
-logger = get_unified_logger()
+logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
 
 class ValidationError(Enum):
     """검증 오류 유형"""
@@ -239,7 +238,7 @@ class BaseOrderBookValidator:
                                 for new_bid in new_bid_prices:
                                     for p in list(self.orderbooks_dict[symbol]["asks"].keys()):
                                         if float(p) <= new_bid:
-                                            self.logger.warning(f"[{self.exchange_code}] {symbol} 매수가 {new_bid}로 인한 매도가 {p} 제거")
+                                            # self.logger.debug(f"[{self.exchange_code}] {symbol} 매수가 {new_bid}로 인한 매도가 {p} 제거")
                                             self.orderbooks_dict[symbol]["asks"].pop(p, None)
                             
                             # 새 매도가가 있는 경우와 없는 경우 구분
@@ -248,7 +247,7 @@ class BaseOrderBookValidator:
                                 for new_ask in new_ask_prices:
                                     for p in list(self.orderbooks_dict[symbol]["bids"].keys()):
                                         if float(p) >= new_ask:
-                                            self.logger.warning(f"[{self.exchange_code}] {symbol} 매도가 {new_ask}로 인한 매수가 {p} 제거")
+                                            # self.logger.debug(f"[{self.exchange_code}] {symbol} 매도가 {new_ask}로 인한 매수가 {p} 제거")
                                             self.orderbooks_dict[symbol]["bids"].pop(p, None)
                         else:
                             # 스냅샷의 경우 기존 로직 유지

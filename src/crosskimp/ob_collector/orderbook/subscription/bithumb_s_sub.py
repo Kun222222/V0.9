@@ -14,7 +14,7 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR
 
 from crosskimp.ob_collector.orderbook.subscription.base_subscription import BaseSubscription
-from crosskimp.ob_collector.orderbook.validator.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.subscription.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.connection.base_connector import BaseWebsocketConnector
 
 # 빗썸 REST API 및 웹소켓 관련 설정
