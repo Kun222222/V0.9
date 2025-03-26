@@ -7,7 +7,6 @@ from asyncio import Event
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import datetime
-import logging
 import websockets
 
 from crosskimp.common.logger.logger import get_unified_logger
@@ -152,7 +151,6 @@ class BaseWebsocketConnector(ABC):
                 status = "connected" if value else "disconnected"
                 callback_data = {
                     "exchange_code": self.exchange_code,
-                    "status": status,
                     "timestamp": time.time(),
                     "initial_connection": prev_status is False and value is True
                 }

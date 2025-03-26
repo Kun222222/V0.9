@@ -85,6 +85,7 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         """
         try:
             self.log_info("🔵 웹소켓 연결 시도")
+            # 부모 클래스의 setter 사용
             self.is_connected = False
             
             retry_count = 0
@@ -102,7 +103,7 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
                     )
                     
                     # 연결 성공 처리 - 부모 클래스의 setter 사용
-                    self.is_connected = True
+                    self.is_connected = True  # 부모 클래스의 setter 사용
                     self.stats.connection_start_time = time.time()
                     self.reconnect_strategy.reset()
                     
@@ -130,7 +131,8 @@ class UpbitWebSocketConnector(BaseWebsocketConnector):
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
             
-            self.is_connected = False
+            # 부모 클래스의 setter 사용
+            self.is_connected = False  # 부모 클래스의 setter 사용
             return False
             
         finally:

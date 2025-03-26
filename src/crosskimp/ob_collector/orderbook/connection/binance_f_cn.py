@@ -47,7 +47,6 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
         self.ws_url = WS_URL
         
         # 상태 및 설정값
-        self.is_connected = False
         self.connection_timeout = CONNECTION_TIMEOUT
         self.ping_interval = PING_INTERVAL
         self.ping_timeout = PING_TIMEOUT
@@ -72,7 +71,7 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
         """
         try:
             self.log_info("🔵 웹소켓 연결 시도")
-            self.is_connected = False
+            self.is_connected = False  # 부모 클래스의 setter 사용
             self.connecting = True  # 연결 중 플래그 추가
             retry_count = 0
             
@@ -88,7 +87,7 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
                         open_timeout=self.connection_timeout
                     )
                     
-                    self.is_connected = True
+                    self.is_connected = True  # 부모 클래스의 setter 사용
                     self.log_info("🟢 웹소켓 연결 성공")
                     
                     # 재연결 전략 초기화
@@ -118,7 +117,7 @@ class BinanceFutureWebSocketConnector(BaseWebsocketConnector):
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
             
-            self.is_connected = False
+            self.is_connected = False  # 부모 클래스의 setter 사용
             return False
         finally:
             self.connecting = False  # 연결 시도 종료 플래그

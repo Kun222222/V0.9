@@ -53,7 +53,6 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         self.ws_url = WS_URL
         
         # 상태 및 설정값
-        self.is_connected = False
         self.connection_timeout = CONNECTION_TIMEOUT
         self.ping_interval = PING_INTERVAL
         self.ping_timeout = PING_TIMEOUT
@@ -84,6 +83,7 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         try:
             self.log_info("🔵 웹소켓 연결 시도")
             self.connecting = True  # 연결 중 플래그 추가
+            # 부모 클래스의 setter 사용
             self.is_connected = False
             retry_count = 0
             
@@ -99,6 +99,7 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
                         open_timeout=self.connection_timeout
                     )
                     
+                    # 부모 클래스의 setter 사용
                     self.is_connected = True
                     self.log_info("🟢 웹소켓 연결 성공")
                     
@@ -136,6 +137,7 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         except Exception as e:
             self.log_error(f"🔴 연결 오류: {str(e)}")
             
+            # 부모 클래스의 setter 사용
             self.is_connected = False
             return False
         finally:
@@ -153,6 +155,7 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         except Exception as e:
             self.log_error(f"연결 종료 중 오류: {str(e)}")
             # 연결 상태 초기화 필요
+            # 부모 클래스의 setter 사용
             self.is_connected = False
             return False
             
@@ -215,6 +218,7 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
                             # 웹소켓 객체 확인
                             if not self.ws or self.ws.closed:
                                 self.log_warning("웹소켓 객체가 닫혔거나 없음, 연결 상태 업데이트")
+                                # 부모 클래스의 setter 사용
                                 self.is_connected = False
                                 asyncio.create_task(
                                     self.handle_disconnection("heartbeat_check", "웹소켓 객체가 유효하지 않음")
@@ -256,6 +260,7 @@ class BithumbWebSocketConnector(BaseWebsocketConnector):
         except Exception as e:
             self.log_warning(f"커스텀 핑 전송 중 오류: {str(e)}")
             # 오류 발생 시 연결 문제로 간주하고 재연결 요청
+            # 부모 클래스의 setter 사용
             self.is_connected = False
             asyncio.create_task(
                 self.handle_disconnection("ping_error", str(e))
