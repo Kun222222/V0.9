@@ -1,0 +1,40 @@
+{
+  "future": {
+    "exchange": "future",
+    "symbols_analyzed": [],
+    "price_inversions_total": 0,
+    "sequence_inversions_total": 0,
+    "depth_violations_total": 0,
+    "delta_errors_total": 0
+  },
+  "raw": {
+    "exchange": "raw",
+    "symbols_analyzed": [
+      {
+        "symbol": "ADA",
+        "price_inversions": 38,
+        "sequence_inversions": 0,
+        "depth_violations": 0,
+        "delta_errors": 0
+      },
+      {
+        "symbol": "AUCTION",
+        "price_inversions": 190,
+        "sequence_inversions": 0,
+        "depth_violations": 0,
+        "delta_errors": 0
+      },
+      {
+        "symbol": "DOGE",
+        "price_inversions": 0,
+        "sequence_inversions": 0,
+        "depth_violations": 0,
+        "delta_errors": 0
+      }
+    ],
+    "price_inversions_total": 228,
+    "sequence_inversions_total": 0,
+    "depth_violations_total": 0,
+    "delta_errors_total": 0
+  }
+}

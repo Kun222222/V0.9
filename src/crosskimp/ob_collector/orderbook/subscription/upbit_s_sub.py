@@ -306,13 +306,29 @@ class UpbitSubscription(BaseSubscription):
                 bid_price = unit.get("bid_price")
                 bid_size = unit.get("bid_size")
                 if bid_price is not None and bid_size is not None:
-                    bids.append([float(bid_price), float(bid_size)])
+                    # 유효한 값만 추가 (0보다 큰 값)
+                    if float(bid_price) > 0 and float(bid_size) > 0:
+                        bids.append([float(bid_price), float(bid_size)])
                     
                 # 매도 호가 추가
                 ask_price = unit.get("ask_price")
                 ask_size = unit.get("ask_size")
                 if ask_price is not None and ask_size is not None:
-                    asks.append([float(ask_price), float(ask_size)])
+                    # 유효한 값만 추가 (0보다 큰 값)
+                    if float(ask_price) > 0 and float(ask_size) > 0:
+                        asks.append([float(ask_price), float(ask_size)])
+            
+            # 가격 역전 문제 방지를 위한 추가 검증
+            if bids and asks:
+                max_bid = max(bid[0] for bid in bids)
+                min_ask = min(ask[0] for ask in asks)
+                
+                if max_bid >= min_ask:
+                    self.log_warning(f"[{symbol}] 가격 역전 감지 - 최고매수가({max_bid}) >= 최저매도가({min_ask})")
+                    
+                    # 가격 역전 해결 방법: 역전된 항목들을 제거
+                    bids = [bid for bid in bids if bid[0] < min_ask]
+                    asks = [ask for ask in asks if ask[0] > max_bid]
             
             # 가격 기준 내림차순 정렬 (매수 호가)
             bids.sort(key=lambda x: x[0], reverse=True)

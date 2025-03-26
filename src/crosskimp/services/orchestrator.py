@@ -84,7 +84,7 @@ class Orchestrator:
             logger.info("프로세스 컴포넌트 초기화 중...")
             
             # 오더북 프로세스 핸들러 초기화
-            from crosskimp.common.events.handler.orderbook_handler import initialize_orderbook_process
+            from crosskimp.common.events.handler.obcollector_handler import initialize_orderbook_process
             await initialize_orderbook_process()
             logger.info("오더북 프로세스 핸들러가 초기화되었습니다.")
             

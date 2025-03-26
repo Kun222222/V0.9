@@ -1,0 +1,18 @@
+{
+  "exchange": "raw",
+  "symbol": "DOGE",
+  "analysis_time": "2025-03-26T06:39:36.654399",
+  "data_count": 287,
+  "summary": {
+    "price_inversions": 0,
+    "sequence_inversions": 0,
+    "depth_violations": 0,
+    "delta_errors": 0
+  },
+  "details": {
+    "price_inversions": [],
+    "sequence_inversions": [],
+    "depth_violations": [],
+    "delta_errors": []
+  }
+}

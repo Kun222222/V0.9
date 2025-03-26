@@ -157,76 +157,121 @@ class BaseOrderBookValidator:
                            asks: List[List[float]], timestamp: Optional[int] = None,
                            sequence: Optional[int] = None, is_snapshot: bool = False) -> None:
         """
-        오더북 데이터 업데이트 (델타 방식)
+        오더북 델타 업데이트
         
         Args:
             symbol: 심볼
-            bids: 매수 호가 목록
-            asks: 매도 호가 목록
+            bids: 매수 호가 목록 [[price, size], ...]
+            asks: 매도 호가 목록 [[price, size], ...]
             timestamp: 타임스탬프
             sequence: 시퀀스 번호
             is_snapshot: 스냅샷 여부
         """
         try:
-            # 현재 시간 기록 (데이터 정리용)
-            self.last_update_time[symbol] = time.time()
-            
-            # 심볼별 오더북 데이터 초기화
+            # 오더북이 없으면 생성
             if symbol not in self.orderbooks_dict:
                 self.orderbooks_dict[symbol] = {
                     "bids": {},
-                    "asks": {}
+                    "asks": {},
+                    "timestamp": timestamp or 0,
+                    "sequence": sequence or 0
                 }
-                
-            # 스냅샷인 경우 기존 데이터 초기화
+            
+            # 스냅샷인 경우 기존 데이터 교체
             if is_snapshot:
-                self.orderbooks_dict[symbol]["bids"] = {}
-                self.orderbooks_dict[symbol]["asks"] = {}
+                # 기존 데이터 초기화
+                self.orderbooks_dict[symbol]["bids"].clear()
+                self.orderbooks_dict[symbol]["asks"].clear()
                 
-            # 매수 호가 업데이트
-            for bid in bids:
-                if len(bid) < 2:
-                    continue
-                    
-                try:
-                    price = float(bid[0])
-                    size = float(bid[1])
-                    
-                    if size > 0:
-                        self.orderbooks_dict[symbol]["bids"][price] = size
-                    else:
-                        # 수량이 0이면 해당 가격 삭제
-                        self.orderbooks_dict[symbol]["bids"].pop(price, None)
-                except (ValueError, TypeError) as e:
-                    self.logger.warning(f"[{self.exchange_code}] {symbol} 매수 호가 변환 오류: {e}, 데이터: {bid}")
-                    continue
-                    
-            # 매도 호가 업데이트
-            for ask in asks:
-                if len(ask) < 2:
-                    continue
-                    
-                try:
-                    price = float(ask[0])
-                    size = float(ask[1])
-                    
-                    if size > 0:
-                        self.orderbooks_dict[symbol]["asks"][price] = size
-                    else:
-                        # 수량이 0이면 해당 가격 삭제
-                        self.orderbooks_dict[symbol]["asks"].pop(price, None)
-                except (ValueError, TypeError) as e:
-                    self.logger.warning(f"[{self.exchange_code}] {symbol} 매도 호가 변환 오류: {e}, 데이터: {ask}")
-                    continue
-            
-            # 오더북 정리 후 정렬
-            self._update_sorted_orderbook(symbol)
-            
-            # 오더북 객체 업데이트
-            if symbol not in self.orderbooks:
-                self.orderbooks[symbol] = {}
+                # 새 데이터 추가
+                for bid in bids:
+                    if len(bid) >= 2 and bid[1] > 0:  # 수량이 0보다 큰 경우만 추가
+                        self.orderbooks_dict[symbol]["bids"][str(bid[0])] = bid[1]
+                        
+                for ask in asks:
+                    if len(ask) >= 2 and ask[1] > 0:  # 수량이 0보다 큰 경우만 추가
+                        self.orderbooks_dict[symbol]["asks"][str(ask[0])] = ask[1]
+            else:
+                # 델타 업데이트
+                # 새로운 호가 데이터 (신규 매수/매도 가격들)
+                new_bid_prices = set()
+                new_ask_prices = set()
                 
-            # 최종 오더북에 저장
+                # 매수 호가 업데이트
+                for bid in bids:
+                    if len(bid) >= 2:
+                        price, size = str(bid[0]), bid[1]
+                        if size > 0:
+                            self.orderbooks_dict[symbol]["bids"][price] = size
+                            new_bid_prices.add(float(price))
+                        else:
+                            # 수량이 0이면 해당 가격의 호가 삭제
+                            self.orderbooks_dict[symbol]["bids"].pop(price, None)
+                
+                # 매도 호가 업데이트
+                for ask in asks:
+                    if len(ask) >= 2:
+                        price, size = str(ask[0]), ask[1]
+                        if size > 0:
+                            self.orderbooks_dict[symbol]["asks"][price] = size
+                            new_ask_prices.add(float(price))
+                        else:
+                            # 수량이 0이면 해당 가격의 호가 삭제
+                            self.orderbooks_dict[symbol]["asks"].pop(price, None)
+            
+            # 가격 역전 문제 검증 및 수정
+            # 공통 로직: 가격 역전이 있는지 확인하고 있으면 수정
+            if self.orderbooks_dict[symbol]["bids"] and self.orderbooks_dict[symbol]["asks"]:
+                bid_prices = [float(p) for p in self.orderbooks_dict[symbol]["bids"].keys()]
+                ask_prices = [float(p) for p in self.orderbooks_dict[symbol]["asks"].keys()]
+                
+                if bid_prices and ask_prices:
+                    max_bid = max(bid_prices)
+                    min_ask = min(ask_prices)
+                    
+                    # 가격 역전 확인 (최고 매수가 >= 최저 매도가)
+                    if max_bid >= min_ask:
+                        # 가격 역전이 감지됨 - 새로운 호가를 우선시하고 기존 호가 중 충돌하는 것 제거
+                        if not is_snapshot:  # 델타 업데이트인 경우만 처리
+                            # 새 매수가가 있는 경우와 없는 경우 구분
+                            if new_bid_prices:
+                                # 새 매수가가 있으면, 해당 매수가들보다 작거나 같은 매도가 제거
+                                for new_bid in new_bid_prices:
+                                    for p in list(self.orderbooks_dict[symbol]["asks"].keys()):
+                                        if float(p) <= new_bid:
+                                            self.logger.warning(f"[{self.exchange_code}] {symbol} 매수가 {new_bid}로 인한 매도가 {p} 제거")
+                                            self.orderbooks_dict[symbol]["asks"].pop(p, None)
+                            
+                            # 새 매도가가 있는 경우와 없는 경우 구분
+                            if new_ask_prices:
+                                # 새 매도가가 있으면, 해당 매도가들보다 크거나 같은 매수가 제거
+                                for new_ask in new_ask_prices:
+                                    for p in list(self.orderbooks_dict[symbol]["bids"].keys()):
+                                        if float(p) >= new_ask:
+                                            self.logger.warning(f"[{self.exchange_code}] {symbol} 매도가 {new_ask}로 인한 매수가 {p} 제거")
+                                            self.orderbooks_dict[symbol]["bids"].pop(p, None)
+                        else:
+                            # 스냅샷의 경우 기존 로직 유지
+                            self.logger.warning(f"[{self.exchange_code}] {symbol} 스냅샷 가격 역전 감지: {max_bid} >= {min_ask}")
+                            
+                            # 가격 역전 해소 - 모든 역전된 가격 제거
+                            # 1. 역전된 매수 호가 제거
+                            for p in list(self.orderbooks_dict[symbol]["bids"].keys()):
+                                if float(p) >= min_ask:
+                                    self.orderbooks_dict[symbol]["bids"].pop(p, None)
+                            
+                            # 2. 역전된 매도 호가 제거
+                            for p in list(self.orderbooks_dict[symbol]["asks"].keys()):
+                                if float(p) <= max_bid:
+                                    self.orderbooks_dict[symbol]["asks"].pop(p, None)
+            
+            # 타임스탬프 및 시퀀스 업데이트
+            if timestamp is not None:
+                self.orderbooks_dict[symbol]["timestamp"] = timestamp
+                
+            if sequence is not None:
+                self.orderbooks_dict[symbol]["sequence"] = sequence
+                
             if symbol in self.orderbooks:
                 self.orderbooks[symbol]["timestamp"] = timestamp
                 self.orderbooks[symbol]["sequence"] = sequence
@@ -288,21 +333,23 @@ class BaseOrderBookValidator:
                 errors.extend(ts_errors)
                 error_types.extend([ValidationError.TIMESTAMP_INVALID] * len(ts_errors))
         
-        # 5. 오더북 업데이트
+        # 5. 오더북 업데이트 수행
         if len(errors) == 0:  # 검증 통과한 경우에만 업데이트
             self._update_orderbook_delta(symbol, bids, asks, timestamp, sequence, is_snapshot)
             
-            # 업데이트 후 가격 역전 검증 (경고만 추가하고 오류로 처리하지 않음)
+            # 업데이트 후 가격 역전 검증 (심각한 역전만 로그로 기록)
             if symbol in self.orderbooks_dict:
-                sorted_bids = sorted(self.orderbooks_dict[symbol]["bids"].items(), key=lambda x: x[0], reverse=True)
-                sorted_asks = sorted(self.orderbooks_dict[symbol]["asks"].items(), key=lambda x: x[0])
+                sorted_bids = sorted(self.orderbooks_dict[symbol]["bids"].items(), key=lambda x: float(x[0]), reverse=True)
+                sorted_asks = sorted(self.orderbooks_dict[symbol]["asks"].items(), key=lambda x: float(x[0]))
                 
                 if sorted_bids and sorted_asks:
-                    max_bid = sorted_bids[0][0]
-                    min_ask = sorted_asks[0][0]
+                    max_bid = float(sorted_bids[0][0])
+                    min_ask = float(sorted_asks[0][0])
+                    
+                    # 가격 역전이 여전히 있는지 확인 (정상적으로는 없어야 함)
                     if max_bid >= min_ask:
-                        warnings.append(f"가격 역전: {max_bid} >= {min_ask}")
-                        # 경고로만 처리하고 error_types에 추가하지 않음
+                        # 여전히 역전이 있으면 로그만 남기고 계속 진행
+                        warnings.append(f"오더북 업데이트 후에도 가격 역전 감지됨: {max_bid} >= {min_ask}")
             
             # 정렬된 오더북 생성 및 저장
             self._update_sorted_orderbook(symbol)
@@ -414,6 +461,38 @@ class BaseOrderBookValidator:
             sorted_bids = sorted(self.orderbooks_dict[symbol]["bids"].items(), key=lambda x: float(x[0]), reverse=True)
             sorted_asks = sorted(self.orderbooks_dict[symbol]["asks"].items(), key=lambda x: float(x[0]))
             
+            # 가격 역전 최종 확인 (일반적으로 이 단계에서는 발생하지 않아야 함)
+            if sorted_bids and sorted_asks:
+                highest_bid = float(sorted_bids[0][0])
+                lowest_ask = float(sorted_asks[0][0])
+                
+                if highest_bid >= lowest_ask:
+                    # 가격 역전 감지 - 로그 기록
+                    self.logger.warning(f"[{self.exchange_code}] {symbol} 최종 정렬 단계 가격 역전 감지: {highest_bid} >= {lowest_ask}")
+                    
+                    # 심각한 경우만 최소한으로 수정 - 기존 가격 구조를 최대한 보존
+                    if highest_bid > lowest_ask:
+                        # 명확한 역전은 모두 제거 
+                        filtered_bids = [(price, size) for price, size in sorted_bids if float(price) < lowest_ask]
+                        filtered_asks = [(price, size) for price, size in sorted_asks if float(price) > highest_bid]
+                        
+                        # 필터링 결과가 비어있지 않은지 확인
+                        if filtered_bids or len(sorted_bids) <= 1:
+                            sorted_bids = filtered_bids
+                        else:
+                            # 적어도 가장 큰 매수가는 제거
+                            sorted_bids = sorted_bids[1:]
+                        
+                        if filtered_asks or len(sorted_asks) <= 1:
+                            sorted_asks = filtered_asks
+                        else:
+                            # 적어도 가장 작은 매도가는 제거
+                            sorted_asks = sorted_asks[1:]
+                    else:
+                        # 같은 가격인 경우 매수 쪽을 1개 제거
+                        if len(sorted_bids) > 1:
+                            sorted_bids = sorted_bids[1:]  # 최고가만 제거
+            
             # 리스트 형태로 변환
             bids_list = [[float(price), float(size)] for price, size in sorted_bids]
             asks_list = [[float(price), float(size)] for price, size in sorted_asks]
@@ -427,10 +506,6 @@ class BaseOrderBookValidator:
             
         except Exception as e:
             self.logger.error(f"[{self.exchange_code}] {symbol} 오더북 정렬 중 오류 발생: {str(e)}")
-            # 오류 발생 시 빈 리스트로 초기화
-            if symbol in self.orderbooks:
-                self.orderbooks[symbol]["bids"] = []
-                self.orderbooks[symbol]["asks"] = []
         
     def get_orderbook(self, symbol: str) -> Optional[Dict]:
         """

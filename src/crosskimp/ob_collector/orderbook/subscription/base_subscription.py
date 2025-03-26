@@ -94,7 +94,7 @@ class BaseSubscription(ABC):
 
     def log_info(self, message: str) -> None:
         """정보 로그 출력"""
-        self.logger.info(f"{self.exchange_kr} {message}")
+        self.logger.debug(f"{self.exchange_kr} {message}")
 
     def log_warning(self, message: str) -> None:
         """경고 로그 출력"""
@@ -323,6 +323,7 @@ class BaseSubscription(ABC):
             asks = orderbook.get("asks", [])[:10]
             
             log_data = {
+                "exchange": self.exchange_code,  # 영문 거래소명으로 변경
                 "symbol": symbol,
                 "ts": orderbook.get("timestamp"),
                 "seq": orderbook.get("sequence"),

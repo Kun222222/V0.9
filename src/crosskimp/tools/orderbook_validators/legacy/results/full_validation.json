@@ -1,0 +1,75 @@
+{
+  "future": {
+    "exchange": "future",
+    "file_path": "/Users/kun/Desktop/CrossKimpArbitrage/v0.6/src/logs/raw_data/250326_062305_bybit_future_raw_logger.log",
+    "lines_processed": 100698,
+    "elapsed_time": 0.6429591178894043,
+    "stats": {
+      "total_messages": 50348,
+      "snapshots": 0,
+      "deltas": 50348,
+      "invalid_deltas": 0,
+      "symbols_count": 21,
+      "symbols": [
+        "ADA",
+        "ANKR",
+        "AVAX",
+        "BEAM",
+        "BERA",
+        "DOGE",
+        "ENS",
+        "HBAR",
+        "IMX",
+        "IP",
+        "LINK",
+        "ME",
+        "MEW",
+        "ONDO",
+        "RED",
+        "SEI",
+        "SOL",
+        "SONIC",
+        "SUI",
+        "TRUMP",
+        "UXLINK"
+      ]
+    },
+    "errors": {
+      "validation_errors": 0,
+      "missing_sequences": {},
+      "price_inversions": {}
+    }
+  },
+  "raw": {
+    "exchange": "raw",
+    "file_path": "/Users/kun/Desktop/CrossKimpArbitrage/v0.6/src/logs/raw_data/250326_062305_bithumb_raw_logger.log",
+    "lines_processed": 8546,
+    "elapsed_time": 0.10242104530334473,
+    "stats": {
+      "total_messages": 4272,
+      "snapshots": 0,
+      "deltas": 4272,
+      "invalid_deltas": 0,
+      "symbols_count": 12,
+      "symbols": [
+        "ADA",
+        "AUCTION",
+        "DOGE",
+        "IP",
+        "LAYER",
+        "NIL",
+        "ONDO",
+        "RED",
+        "SOL",
+        "USDT",
+        "WLD",
+        "XRP"
+      ]
+    },
+    "errors": {
+      "validation_errors": 0,
+      "missing_sequences": {},
+      "price_inversions": {}
+    }
+  }
+}
