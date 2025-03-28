@@ -331,6 +331,12 @@ class BaseOrderBookValidator:
             if ts_errors:
                 errors.extend(ts_errors)
                 error_types.extend([ValidationError.TIMESTAMP_INVALID] * len(ts_errors))
+                
+        # 중요: 검증 결과와 상관없이 시퀀스와 타임스탬프 정보 저장
+        if sequence is not None:
+            self.sequences[symbol] = sequence
+        if timestamp is not None:
+            self.last_timestamp[symbol] = timestamp
         
         # 5. 오더북 업데이트 수행
         if len(errors) == 0:  # 검증 통과한 경우에만 업데이트
@@ -352,6 +358,9 @@ class BaseOrderBookValidator:
             
             # 정렬된 오더북 생성 및 저장
             self._update_sorted_orderbook(symbol)
+            
+            # 현재 시간 기록 (오래된 데이터 정리용)
+            self.last_update_time[symbol] = time.time()
         
         # 6. 출력용 뎁스 제한 적용
         limited_bids = self._limit_depth(self.orderbooks[symbol]["bids"])
@@ -502,6 +511,25 @@ class BaseOrderBookValidator:
                 
             self.orderbooks[symbol]["bids"] = bids_list
             self.orderbooks[symbol]["asks"] = asks_list
+            
+            # 시퀀스와 타임스탬프 정보 저장 (추가된 부분)
+            # 시퀀스 정보 - sequences 딕셔너리에서 가져옴
+            if symbol in self.sequences:
+                self.orderbooks[symbol]["sequence"] = self.sequences[symbol]
+            else:
+                self.orderbooks[symbol]["sequence"] = 0
+                
+            # 타임스탬프 정보 - last_timestamp 딕셔너리에서 가져옴
+            if symbol in self.last_timestamp:
+                self.orderbooks[symbol]["timestamp"] = self.last_timestamp[symbol]
+            else:
+                self.orderbooks[symbol]["timestamp"] = int(time.time() * 1000)
+            
+            # orderbooks_dict의 시퀀스, 타임스탬프 정보도 업데이트
+            if "sequence" in self.orderbooks[symbol]:
+                self.orderbooks_dict[symbol]["sequence"] = self.orderbooks[symbol]["sequence"]
+            if "timestamp" in self.orderbooks[symbol]:
+                self.orderbooks_dict[symbol]["timestamp"] = self.orderbooks[symbol]["timestamp"]
             
         except Exception as e:
             self.logger.error(f"[{self.exchange_code}] {symbol} 오더북 정렬 중 오류 발생: {str(e)}")

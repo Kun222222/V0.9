@@ -208,7 +208,7 @@ class WsUsdtKrwMonitor:
                 price = float(data["trade_price"])
                 if price > 0:
                     self.prices[Exchange.UPBIT.value] = price
-                    logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
+                    # logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
                     await self._notify_price_change(Exchange.UPBIT.value)
         except Exception as e:
             logger.error(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 메시지 파싱 중 오류가 발생했습니다: {str(e)}")
@@ -222,7 +222,7 @@ class WsUsdtKrwMonitor:
                     price = float(content["closePrice"])
                     if price > 0:
                         self.prices[Exchange.BITHUMB.value] = price
-                        logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
+                        # logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 가격이 업데이트되었습니다: {price:,.2f} KRW")
                         await self._notify_price_change(Exchange.BITHUMB.value)
         except Exception as e:
             logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 메시지 파싱 중 오류가 발생했습니다: {str(e)}")

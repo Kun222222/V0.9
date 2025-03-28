@@ -56,7 +56,10 @@ class ObCollector:
     오더북 데이터 수집기
     
     거래소 데이터를 실시간으로 수집하는 기술적 컴포넌트입니다.
-    상태 관리는 하지 않으며 순수한 데이터 수집 기능만 제공합니다.
+    주요 역할:
+    1. 초기화 및 설정 관리
+    2. 수집 프로세스 시작/중지 관리
+    3. 메트릭 수집 및 보고
     """
 
     def __init__(self):
@@ -77,9 +80,6 @@ class ObCollector:
         self.subscriptions = {}
         self.filtered_symbols = {}
         
-        # 상태 추적 (기술적 목적)
-        self.exchange_status = {}
-        
         # 오류 로그
         self.error_logs = []
         
@@ -91,6 +91,9 @@ class ObCollector:
         
         # 연결 관리자 생성 - 메트릭 관리자 전달
         self.connection_manager = ConnectionManager(metrics_manager=self.metric_manager)
+        
+        # 로깅 추가 - 객체 생성 완료
+        self.logger.debug("ObCollector 객체 생성 완료")
 
     def is_initialized(self) -> bool:
         """초기화 여부 확인"""
@@ -101,6 +104,8 @@ class ObCollector:
         초기 설정 메서드
         """
         self.logger.info("오더북 수집기 설정 시작")
+        # 로깅 추가
+        self.logger.debug("ObCollector.setup() 호출됨")
         self.logger.info("오더북 수집기 설정 완료")
         return True
         
@@ -113,6 +118,8 @@ class ObCollector:
         """
         try:
             self.logger.info("오더북 수집 시스템 초기화 시작")
+            # 로깅 추가
+            self.logger.debug("ObCollector.initialize() 호출됨")
             
             # 메트릭 초기화
             self.metric_manager.initialize()
@@ -162,6 +169,8 @@ class ObCollector:
             self.logger.info("----------------")
             self.logger.info("오더북 수집 시작 요청")
             self.logger.info("----------------")
+            # 로깅 추가
+            self.logger.debug("ObCollector.start_collection() 호출됨")
             
             # 실행 즉시 starting 상태로 변경
             self.status = "starting"
@@ -215,6 +224,9 @@ class ObCollector:
     async def _connect_all_exchanges(self):
         """모든 거래소를 백그라운드에서 동시에 연결"""
         try:
+            # 로깅 추가
+            self.logger.debug("ObCollector._connect_all_exchanges() 호출됨")
+            
             # 연결할 거래소 목록
             exchanges_to_connect = list(self.connection_manager.connectors.keys())
             
@@ -250,90 +262,13 @@ class ObCollector:
             if self.connection_manager.get_connected_exchanges_count() >= self.connection_manager.get_total_exchanges_count():
                 self.status = "running"
                 self.logger.info("🟢 일부 오류가 있지만 모든 거래소 연결 시도가 완료되어 running 상태로 전환되었습니다")
-            
-    async def _connect_and_subscribe(self, exchange_code: str) -> bool:
-        """
-        특정 거래소에 웹소켓 연결 및 구독 수행 - 개선된 버전
-        
-        Args:
-            exchange_code: 거래소 코드
-            
-        Returns:
-            bool: 성공 여부
-        """
-        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
-        connector = self.connection_manager.get_connector(exchange_code)
-        
-        if not connector:
-            self.logger.warning(f"{exchange_kr} 연결 객체가 없습니다")
-            return False
-            
-        try:
-            # 웹소켓 연결 시도
-            self.logger.info(f"{exchange_kr} 웹소켓 연결 시도")
-            connected = await connector.connect()
-            
-            # 연결 실패 처리
-            if not connected and not connector.is_connected:
-                self.logger.error(f"{exchange_kr} 웹소켓 연결 실패")
-                self.update_error_counter(exchange_code, "connection_errors")
-                self.increment_reconnect_counter(exchange_code)
-                return False
-                
-            self.logger.info(f"{exchange_kr} 웹소켓 연결 성공")
-            
-            # 구독 수행
-            subscription = self.subscriptions.get(exchange_code)
-            if not subscription:
-                self.logger.warning(f"{exchange_kr} 구독 객체가 없습니다")
-                return False
-                
-            # 필터링된 심볼 목록 가져오기
-            symbols = self.filtered_symbols.get(exchange_code, [])
-            if not symbols:
-                self.logger.warning(f"{exchange_kr} 구독할 심볼이 없습니다")
-                return False
-                
-            # 구독 시작
-            self.logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
-            subscribe_result = await subscription.subscribe(symbols)
-            
-            # 구독 결과 확인
-            if not subscribe_result:
-                self.logger.warning(f"{exchange_kr} 구독 실패 또는 부분 성공")
-                self.update_error_counter(exchange_code, "subscription_errors")
-            else:
-                self.logger.info(f"{exchange_kr} 구독 성공")
-            
-            # 구독 상태 업데이트
-            subscription_active = bool(subscribe_result)
-            self.metric_manager.update_subscription_status(
-                exchange_code, 
-                active=subscription_active, 
-                symbol_count=len(symbols),
-                symbols=symbols
-            )
-            
-            # 모든 심볼에 대해 타임스탬프 업데이트
-            for symbol in symbols:
-                self.update_symbol_timestamp(exchange_code, symbol, "subscribe")
-                
-            # 최종 연결 및 구독 상태 로깅
-            self.logger.info(f"{exchange_kr} 연결 및 구독 처리 완료 (연결: {connector.is_connected}, 구독: {subscription_active})")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"{exchange_kr} 연결 및 구독 중 오류 발생: {str(e)}", exc_info=True)
-            self.update_error_counter(exchange_code, "connection_errors")
-            
-            # 오류 기록
-            self._log_error(f"{exchange_code}_connection_error", str(e))
-            
-            return False
 
     async def stop_collection(self) -> bool:
         """오더북 수집 중지"""
         try:
+            # 로깅 추가
+            self.logger.debug("ObCollector.stop_collection() 호출됨")
+            
             # 상태 업데이트
             old_status = self.status
             self.status = "stopped"
@@ -348,27 +283,22 @@ class ObCollector:
                 
             # 연결 관리자 모니터링 중지
             self.connection_manager.stop_monitoring()
-                
-            # 모든 심볼 구독 취소
-            for exchange, subscription in self.subscriptions.items():
+            
+            # 모든 거래소 연결 종료
+            try:
+                await self.connection_manager.close_all_connections()
+            except Exception as e:
+                self.logger.error(f"모든 거래소 연결 종료 중 오류: {str(e)}")
+            
+            # 구독 정리
+            # 모든 구독 객체 종료
+            for exchange_code, subscription in list(self.subscriptions.items()):
+                exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
                 try:
-                    # 한글 거래소명 가져오기
-                    exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
-                    
-                    # 구독 해제
-                    await subscription.unsubscribe()
-                    self.logger.info(f"{exchange_kr} 구독 해제 완료")
-                    
-                    # 상태 업데이트
-                    self.metric_manager.update_subscription_status(
-                        exchange, 
-                        active=False, 
-                        symbol_count=0,
-                        symbols=[]
-                    )
-                    
+                    if subscription:
+                        await subscription.unsubscribe()
+                        self.logger.info(f"{exchange_kr} 구독이 취소되었습니다")
                 except Exception as e:
-                    exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
                     self.logger.error(f"{exchange_kr} 종료 중 오류: {str(e)}")
             
             self.subscriptions = {}
@@ -462,30 +392,86 @@ class ObCollector:
         
         # ConnectionManager에 위임
         return self.connection_manager.create_connector(exchange_code, settings, connector_class)
-        
-    async def on_connection_status_change(self, status: str, exchange_code: str, timestamp: float = None, initial_connection: bool = False, **kwargs):
-        """
-        연결 상태 변경 콜백 함수 (ConnectionManager로 전달)
-        """
-        # ConnectionManager에 위임
-        await self.connection_manager.on_connection_status_change(status, exchange_code, timestamp, initial_connection, **kwargs)
-        
-        # 추가 처리: 전체 상태 업데이트
-        connected_count = self.connection_manager.get_connected_exchanges_count()
-        total_count = self.connection_manager.get_total_exchanges_count()
-        
-        # 전체 시스템 상태 확인 및 업데이트
-        if connected_count >= total_count and self.status != "running":
-            old_status = self.status
-            self.status = "running"
-            self.logger.info(f"🟢 모든 거래소가 연결되어 오더북 수집기가 {old_status} → running 상태로 전환되었습니다")
 
-    def update_exchange_status(self, exchange_code: str, is_connected: bool):
+    async def _connect_and_subscribe(self, exchange_code: str) -> bool:
         """
-        거래소 연결 상태 업데이트 (ConnectionManager 위임)
+        특정 거래소에 웹소켓 연결 및 구독 수행 - 개선된 버전
+        
+        Args:
+            exchange_code: 거래소 코드
+            
+        Returns:
+            bool: 성공 여부
         """
-        # ConnectionManager에 위임
-        self.connection_manager.update_exchange_status(exchange_code, is_connected)
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
+        connector = self.connection_manager.get_connector(exchange_code)
+        
+        if not connector:
+            self.logger.warning(f"{exchange_kr} 연결 객체가 없습니다")
+            return False
+            
+        try:
+            # 웹소켓 연결 시도
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 시도")
+            connected = await connector.connect()
+            
+            # 연결 실패 처리
+            if not connected and not connector.is_connected:
+                self.logger.error(f"{exchange_kr} 웹소켓 연결 실패")
+                self.update_error_counter(exchange_code, "connection_errors")
+                self.increment_reconnect_counter(exchange_code)
+                return False
+                
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 성공")
+            
+            # 구독 수행
+            subscription = self.subscriptions.get(exchange_code)
+            if not subscription:
+                self.logger.warning(f"{exchange_kr} 구독 객체가 없습니다")
+                return False
+                
+            # 필터링된 심볼 목록 가져오기
+            symbols = self.filtered_symbols.get(exchange_code, [])
+            if not symbols:
+                self.logger.warning(f"{exchange_kr} 구독할 심볼이 없습니다")
+                return False
+                
+            # 구독 시작
+            self.logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
+            subscribe_result = await subscription.subscribe(symbols)
+            
+            # 구독 결과 확인
+            if not subscribe_result:
+                self.logger.warning(f"{exchange_kr} 구독 실패 또는 부분 성공")
+                self.update_error_counter(exchange_code, "subscription_errors")
+            else:
+                self.logger.info(f"{exchange_kr} 구독 성공")
+            
+            # 구독 상태 업데이트
+            subscription_active = bool(subscribe_result)
+            self.metric_manager.update_subscription_status(
+                exchange_code, 
+                active=subscription_active, 
+                symbol_count=len(symbols),
+                symbols=symbols
+            )
+            
+            # 모든 심볼에 대해 타임스탬프 업데이트
+            for symbol in symbols:
+                self.update_symbol_timestamp(exchange_code, symbol, "subscribe")
+                
+            # 최종 연결 및 구독 상태 로깅
+            self.logger.info(f"{exchange_kr} 연결 및 구독 처리 완료 (연결: {connector.is_connected}, 구독: {subscription_active})")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"{exchange_kr} 연결 및 구독 중 오류 발생: {str(e)}", exc_info=True)
+            self.update_error_counter(exchange_code, "connection_errors")
+            
+            # 오류 기록
+            self._log_error(f"{exchange_code}_connection_error", str(e))
+            
+            return False
 
     async def _prepare_exchange_connections(self) -> bool:
         """거래소별 연결 및 구독 객체 준비"""

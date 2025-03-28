@@ -259,13 +259,13 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 심볼 조회를 시작합니다.")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} 심볼 조회를 시작합니다.")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot/Margin 심볼
             data = await make_request(session, "https://api.binance.com/api/v3/exchangeInfo")
             if not data:
-                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Spot API 응답에 실패했습니다.")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} Spot API 응답에 실패했습니다.")
                 return []
                 
             spot_symbols = {
@@ -283,14 +283,14 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             }
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Spot/Margin 심볼 조회가 완료되었습니다. "
+                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} Spot/Margin 심볼 조회가 완료되었습니다. "
                 f"Spot {len(spot_symbols)}개, Margin {len(margin_symbols)}개"
             )
             
             # 2. Future 심볼
             data = await make_request(session, "https://fapi.binance.com/fapi/v1/exchangeInfo")
             if not data:
-                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Future API 응답에 실패했습니다.")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} Future API 응답에 실패했습니다.")
                 return []
                 
             future_symbols = {
@@ -300,7 +300,7 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             }
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} Future 심볼 조회가 완료되었습니다. "
+                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} Future 심볼 조회가 완료되었습니다. "
                 f"Future {len(future_symbols)}개"
             )
             
@@ -308,19 +308,19 @@ async def fetch_binance_symbols(min_volume: float) -> List[str]:
             common_symbols = spot_symbols & margin_symbols & future_symbols
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 심볼 통계입니다. "
+                f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} 심볼 통계입니다. "
                 f"Spot({len(spot_symbols)}개), "
                 f"Margin({len(margin_symbols)}개), "
                 f"Future({len(future_symbols)}개), "
                 f"공통 심볼은 {len(common_symbols)}개입니다."
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
         logger.error(
-            f"{EXCHANGE_NAMES_KR[Exchange.BINANCE.value]} 심볼 조회에 실패했습니다: {str(e)}",
+            f"{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]} 심볼 조회에 실패했습니다: {str(e)}",
             exc_info=True
         )
         return []
@@ -339,13 +339,13 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
         List[str]: 필터링된 심볼 목록
     """
     try:
-        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 심볼 조회를 시작합니다.")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]} 심볼 조회를 시작합니다.")
         
         async with aiohttp.ClientSession() as session:
             # 1. Spot 심볼
             data = await make_request(session, "https://api.bybit.com/v5/market/instruments-info?category=spot")
             if not data or data.get("retCode") != 0:
-                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} Spot API 응답에 실패했습니다.")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]} Spot API 응답에 실패했습니다.")
                 return []
                 
             spot_symbols = {
@@ -357,7 +357,7 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             # 2. Future 심볼
             data = await make_request(session, "https://api.bybit.com/v5/market/instruments-info?category=linear")
             if not data or data.get("retCode") != 0:
-                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} Future API 응답에 실패했습니다.")
+                logger.error(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]} Future API 응답에 실패했습니다.")
                 return []
                 
             future_symbols = {
@@ -370,16 +370,16 @@ async def fetch_bybit_symbols(min_volume: float) -> List[str]:
             common_symbols = spot_symbols & future_symbols
             
             logger.info(
-                f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 심볼 통계입니다: "
+                f"{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]} 심볼 통계입니다: "
                 f"Spot({len(spot_symbols)}개), Future/Linear({len(future_symbols)}개)"
             )
-            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 공통 심볼: {sorted(list(common_symbols))}")
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]} 공통 심볼: {sorted(list(common_symbols))}")
             
             return list(common_symbols)
 
     except Exception as e:
         logger.error(
-            f"{EXCHANGE_NAMES_KR[Exchange.BYBIT.value]} 심볼 조회에 실패했습니다: {str(e)}",
+            f"{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]} 심볼 조회에 실패했습니다: {str(e)}",
             exc_info=True
         )
         return []
@@ -436,19 +436,19 @@ async def fetch_listing_times(symbols: List[str]) -> Dict[str, Dict[str, datetim
             now = datetime.now(timezone.utc)
             
             # 상장 시간 로깅
-            logger.info(f"=== 선물 거래소 상장 시간 ===")
+            # logger.info(f"=== 선물 거래소 상장 시간 ===")
             for exchange, times in listing_times.items():
-                logger.info(f"{EXCHANGE_NAMES_KR[exchange]}")
+                # logger.info(f"{EXCHANGE_NAMES_KR[exchange]}")
                 for symbol, listing_time in sorted(times.items()):
                     age = now - listing_time
                     days = age.days
                     hours = age.seconds // 3600
                     minutes = (age.seconds % 3600) // 60
                     
-                    logger.debug(
-                        f"{symbol}: {listing_time.strftime('%Y-%m-%d %H:%M:%S')} UTC"
-                        f" (상장 후 {days}일 {hours}시간 {minutes}분)"
-                    )
+                    # logger.debug(
+                    #    f"{symbol}: {listing_time.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                    #    f" (상장 후 {days}일 {hours}시간 {minutes}분)"
+                    # )
         
         return listing_times
         
@@ -551,17 +551,17 @@ async def get_paired_symbols(
         
         # 2. 결과 로깅
         logger.info(f"=== 거래소 간 동시 상장 현황 ===")
-        logger.info(f"빗썸↔바이낸스: {len(pair_bithumb_binance)}개 → {sorted(list(pair_bithumb_binance))}")
-        logger.info(f"빗썸↔바이빗: {len(pair_bithumb_bybit)}개 → {sorted(list(pair_bithumb_bybit))}")
-        logger.info(f"업비트↔바이낸스: {len(pair_upbit_binance)}개 → {sorted(list(pair_upbit_binance))}")
-        logger.info(f"업비트↔바이빗: {len(pair_upbit_bybit)}개 → {sorted(list(pair_upbit_bybit))}")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]}↔{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]}: {len(pair_bithumb_binance)}개 → {sorted(list(pair_bithumb_binance))}")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]}↔{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]}: {len(pair_bithumb_bybit)}개 → {sorted(list(pair_bithumb_bybit))}")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]}↔{EXCHANGE_NAMES_KR[Exchange.BINANCE_SPOT.value]}: {len(pair_upbit_binance)}개 → {sorted(list(pair_upbit_binance))}")
+        logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]}↔{EXCHANGE_NAMES_KR[Exchange.BYBIT_SPOT.value]}: {len(pair_upbit_bybit)}개 → {sorted(list(pair_upbit_bybit))}")
         
         # 3. 최종 심볼 세트 구성
         final_symbols = {
             Exchange.BITHUMB.value: pair_bithumb_binance | pair_bithumb_bybit,
             Exchange.UPBIT.value: pair_upbit_binance | pair_upbit_bybit,
-            Exchange.BINANCE.value: pair_bithumb_binance | pair_upbit_binance,
-            Exchange.BYBIT.value: pair_bithumb_bybit | pair_upbit_bybit,
+            Exchange.BINANCE_SPOT.value: pair_bithumb_binance | pair_upbit_binance,
+            Exchange.BYBIT_SPOT.value: pair_bithumb_bybit | pair_upbit_bybit,
             Exchange.BINANCE_FUTURE.value: pair_bithumb_binance | pair_upbit_binance,
             Exchange.BYBIT_FUTURE.value: pair_bithumb_bybit | pair_upbit_bybit
         }
@@ -591,8 +591,8 @@ class Aggregator:
         self.exchanges = [
             Exchange.BINANCE_FUTURE.value,
             Exchange.BYBIT_FUTURE.value,
-            Exchange.BINANCE.value,
-            Exchange.BYBIT.value,
+            Exchange.BINANCE_SPOT.value,
+            Exchange.BYBIT_SPOT.value,
             Exchange.UPBIT.value,
             Exchange.BITHUMB.value
         ]
@@ -643,13 +643,13 @@ class Aggregator:
             # Binance
             binance_symbols = await fetch_binance_symbols(self.min_volume)
             if binance_symbols:
-                filtered_data[Exchange.BINANCE.value] = binance_symbols
+                filtered_data[Exchange.BINANCE_SPOT.value] = binance_symbols
                 filtered_data[Exchange.BINANCE_FUTURE.value] = binance_symbols
             
             # Bybit
             bybit_symbols = await fetch_bybit_symbols(self.min_volume)
             if bybit_symbols:
-                filtered_data[Exchange.BYBIT.value] = bybit_symbols
+                filtered_data[Exchange.BYBIT_SPOT.value] = bybit_symbols
                 filtered_data[Exchange.BYBIT_FUTURE.value] = bybit_symbols
             
             # 2. 거래소 간 페어링
@@ -657,8 +657,8 @@ class Aggregator:
                 paired_data = await get_paired_symbols(
                     filtered_data.get(Exchange.UPBIT.value, []),
                     filtered_data.get(Exchange.BITHUMB.value, []),
-                    filtered_data.get(Exchange.BINANCE.value, []),
-                    filtered_data.get(Exchange.BYBIT.value, [])
+                    filtered_data.get(Exchange.BINANCE_SPOT.value, []),
+                    filtered_data.get(Exchange.BYBIT_SPOT.value, [])
                 )
                 filtered_data = {k: list(v) for k, v in paired_data.items()}
             

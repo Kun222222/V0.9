@@ -87,8 +87,8 @@ class Exchange(Enum):
     코드 전체에서 일관된 거래소 식별을 위해 사용됩니다.
     """
     # 현물 거래소
-    BINANCE = "binance"            # 바이낸스 현물
-    BYBIT = "bybit"                # 바이빗 현물
+    BINANCE_SPOT = "binance_spot"            # 바이낸스 현물
+    BYBIT_SPOT = "bybit"                # 바이빗 현물
     UPBIT = "upbit"                # 업비트 현물
     BITHUMB = "bithumb"            # 빗썸 현물
     
@@ -99,15 +99,15 @@ class Exchange(Enum):
 # 거래소 그룹화
 EXCHANGE_GROUPS = {
     "korean": [Exchange.UPBIT.value, Exchange.BITHUMB.value],
-    "global": [Exchange.BINANCE.value, Exchange.BYBIT.value],
-    "spot": [Exchange.BINANCE.value, Exchange.BYBIT.value, Exchange.UPBIT.value, Exchange.BITHUMB.value],
+    "global": [Exchange.BINANCE_SPOT.value, Exchange.BYBIT_SPOT.value],
+    "spot": [Exchange.BINANCE_SPOT.value, Exchange.BYBIT_SPOT.value, Exchange.UPBIT.value, Exchange.BITHUMB.value],
     "futures": [Exchange.BINANCE_FUTURE.value, Exchange.BYBIT_FUTURE.value]
 }
 
 # 거래소 한글 이름
 EXCHANGE_NAMES_KR = {
-    Exchange.BINANCE.value: "[바이낸스]",
-    Exchange.BYBIT.value: "[바이빗]",
+    Exchange.BINANCE_SPOT.value: "[바이낸스 현물]",
+    Exchange.BYBIT_SPOT.value: "[바이빗 현물]",
     Exchange.UPBIT.value: "[업비트]",
     Exchange.BITHUMB.value: "[빗썸]",
     Exchange.BINANCE_FUTURE.value: "[바이낸스 선물]",
