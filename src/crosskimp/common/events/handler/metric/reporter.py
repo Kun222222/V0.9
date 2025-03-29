@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, Callable, List
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events.system_types import EventPaths
+from crosskimp.common.events.system_types import EventChannels
 from crosskimp.common.events.system_eventbus import get_event_bus
 
 class MetricReporter:
@@ -348,7 +348,7 @@ class ObcMetricReporter(MetricReporter):
         super().__init__(
             metric_collector=collector.get_metrics,
             component=SystemComponent.OB_COLLECTOR.value,
-            event_path=EventPaths.OB_COLLECTOR_METRICS,
+            event_path=EventChannels.OB_COLLECTOR_METRICS,
             interval=interval
         )
         self.collector = collector 

@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
 
-from crosskimp.ob_collector.metric.collectors import HybridMessageCounter, ErrorCounter
+from crosskimp.common.events.handler.metric.collectors import HybridMessageCounter, ErrorCounter
 
 class ObcMetricManager:
     """오더북 수집기를 위한 메트릭 관리자"""

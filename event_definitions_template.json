@@ -1,0 +1,23 @@
+[
+  {
+    "path": "component/example/event1",
+    "description": "예시 이벤트 1 설명",
+    "module": "example_component",
+    "data_fields": {
+      "process_name": "str",
+      "message": "str",
+      "status": "str",
+      "details": "Dict[str, Any]"
+    }
+  },
+  {
+    "path": "component/example/event2",
+    "description": "예시 이벤트 2 설명",
+    "module": "example_component",
+    "data_fields": {
+      "item_id": "str",
+      "count": "int",
+      "is_active": "bool"
+    }
+  }
+]

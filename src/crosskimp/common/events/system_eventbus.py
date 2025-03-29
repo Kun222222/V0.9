@@ -12,7 +12,7 @@ from enum import Enum
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events.system_types import EventPaths
+from crosskimp.common.events.system_types import EventChannels, EventValues
 
 # 로거 설정
 logger = get_unified_logger()
@@ -138,28 +138,16 @@ class SystemEventBus:
             
         if handler not in self._handlers[event_path]:
             self._handlers[event_path].append(handler)
-            # 핸들러 함수 정보 추출
-            handler_module = handler.__module__.split('.')[-1]
-            handler_name = handler.__qualname__
-            # 핸들러 ID 생성 (디버깅 용이성 위해)
-            handler_id = id(handler)
-            
-            # 상세 로깅
-            self._logger.info(f"🔌 이벤트 핸들러 등록: {event_path} → {handler_module}.{handler_name} (ID: {handler_id})")
-            self._logger.info(f"📋 핸들러 등록 후 상태: 경로={event_path}, 총 핸들러={len(self._handlers[event_path])}")
-            
-            # 핸들러 목록 로깅
-            handler_names = [f"{h.__module__.split('.')[-1]}.{h.__qualname__}" for h in self._handlers[event_path]]
-            self._logger.debug(f"📑 '{event_path}' 등록된 모든 핸들러: {handler_names}")
+            self._logger.info(f"이벤트 핸들러 등록: {event_path}")
         else:
-            self._logger.warning(f"⚠️ 이벤트 핸들러가 이미 등록되어 있습니다: {event_path}")
+            self._logger.warning(f"이벤트 핸들러가 이미 등록되어 있습니다: {event_path}")
     
     def unregister_handler(self, event_path: str, handler: Callable):
         """
         이벤트 핸들러 등록 해제
         
         Args:
-            event_path: 이벤트 경로 (EventPaths 클래스의 상수)
+            event_path: 이벤트 경로 (EventChannels 클래스의 상수)
             handler: 등록 해제할 핸들러 함수
         """
         if event_path in self._handlers and handler in self._handlers[event_path]:
@@ -171,7 +159,7 @@ class SystemEventBus:
         이벤트 발행
         
         Args:
-            event_path: 이벤트 경로 (EventPaths 클래스의 상수)
+            event_path: 이벤트 경로 (EventChannels 클래스의 상수)
             data: 이벤트 데이터
         """
         if not self._running:
@@ -197,6 +185,18 @@ class SystemEventBus:
         # 디버그 로그 추가
         self._logger.debug(f"이벤트 발행: {event_path}, 데이터: {event_data}")
         
+        # 특정 이벤트 경로에 대한 추가 로깅
+        if event_path in [
+            "process/command/start", 
+            "process/status", 
+            "component/ob_collector/running",
+            "component/ob_collector/exchange_status"
+        ]:
+            self._logger.info(f"[디버깅] 중요 이벤트 발행: {event_path}")
+            self._logger.info(f"[디버깅] 이벤트 데이터: process_name={event_data.get('process_name')}, status={event_data.get('status')}")
+            if event_path == "process/command/start":
+                self._logger.info(f"[디버깅] COMMAND_START 이벤트 발행! 핸들러 수: {len(self._handlers.get(event_path, []))}")
+        
         # 이벤트 큐에 추가
         try:
             await self._queue.put((event_path, event_data))
@@ -213,34 +213,51 @@ class SystemEventBus:
                 try:
                     # 큐에서 이벤트 가져오기
                     event_path, data = await self._queue.get()
-                    self._logger.info(f"📨 이벤트 처리 시작: {event_path}")
+                    
+                    # 특정 이벤트 로깅 강화
+                    if event_path in [
+                        "process/command/start", 
+                        "process/status",
+                        "component/ob_collector/running"
+                    ]:
+                        self._logger.info(f"[디버깅] 중요 이벤트 처리 시작: {event_path}")
                     
                     # 핸들러 실행
                     if event_path in self._handlers:
                         handlers = self._handlers[event_path]
                         if handlers:
-                            handler_count = len(handlers)
-                            self._logger.info(f"📨 이벤트 {event_path}에 등록된 핸들러 {handler_count}개 호출 시작")
+                            # 특정 이벤트에 대한 로깅 강화
+                            if event_path in [
+                                "process/command/start", 
+                                "process/status"
+                            ]:
+                                self._logger.info(f"[디버깅] {event_path} 이벤트에 대한 핸들러 {len(handlers)}개 실행 시작")
                             
-                            for idx, handler in enumerate(handlers):
+                            # 데이터에 이벤트 경로 추가
+                            data["_event_path"] = event_path
+                            for handler in handlers:
                                 try:
-                                    # 핸들러 정보 추출
-                                    handler_name = getattr(handler, "__qualname__", handler.__name__ if hasattr(handler, "__name__") else "unknown")
-                                    handler_module = handler.__module__ if hasattr(handler, "__module__") else "unknown"
-                                    
-                                    self._logger.info(f"📨 핸들러 호출 ({idx+1}/{handler_count}): {handler_module}.{handler_name}")
                                     await handler(data)
-                                    self._logger.info(f"📨 핸들러 호출 완료: {handler_module}.{handler_name}")
+                                    if event_path in [
+                                        "process/command/start", 
+                                        "process/status"
+                                    ]:
+                                        self._logger.info(f"[디버깅] 핸들러 {handler.__name__ if hasattr(handler, '__name__') else str(handler)} 실행 완료")
                                 except Exception as e:
-                                    self._logger.error(f"❌ 이벤트 핸들러 오류 ({event_path}): {str(e)}", exc_info=True)
+                                    self._logger.error(f"이벤트 핸들러 오류 ({event_path}): {str(e)}")
                                     self.stats["errors"] += 1
-                        else:
-                            self._logger.warning(f"⚠️ 이벤트 {event_path}에 등록된 핸들러가 없습니다.")
-                    else:
-                        self._logger.warning(f"⚠️ 이벤트 {event_path}에 대한 핸들러가 등록되지 않았습니다.")
+                        elif event_path in [
+                            "process/command/start", 
+                            "process/status"
+                        ]:
+                            self._logger.warning(f"[디버깅] {event_path} 이벤트에 대한 핸들러가 없음!")
+                    elif event_path in [
+                        "process/command/start", 
+                        "process/status"
+                    ]:
+                        self._logger.warning(f"[디버깅] {event_path} 이벤트가 핸들러 목록에 없음!")
                     
                     self.stats["processed_events"] += 1
-                    self._logger.info(f"📨 이벤트 처리 완료: {event_path}")
                     
                     # 큐 작업 완료 표시
                     self._queue.task_done()
@@ -248,9 +265,9 @@ class SystemEventBus:
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    self._logger.error(f"❌ 이벤트 처리 루프 오류: {str(e)}", exc_info=True)
+                    self._logger.error(f"이벤트 처리 오류: {str(e)}")
                     self.stats["errors"] += 1
         except asyncio.CancelledError:
             self._logger.debug("이벤트 처리 루프가 취소되었습니다.")
         except Exception as e:
-            self._logger.error(f"❌ 이벤트 처리 루프 치명적 오류: {str(e)}", exc_info=True) 
+            self._logger.error(f"이벤트 처리 루프 오류: {str(e)}") 

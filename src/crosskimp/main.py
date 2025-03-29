@@ -61,7 +61,7 @@ except ImportError as e:
 
 # 이벤트 버스 및 이벤트 타입
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.events.system_types import EventPaths
+from crosskimp.common.events.system_types import EventChannels, EventValues
 
 # 서비스 레이어
 from crosskimp.services.orchestrator import Orchestrator
@@ -92,20 +92,33 @@ async def initialize() -> bool:
         event_bus = get_event_bus()
         await event_bus.initialize()
         
-        # 오케스트레이터 초기화 (이벤트 버스 전달)
-        orchestrator = Orchestrator(event_bus)
-        await orchestrator.initialize()
+        # 중요: 텔레그램 알림 시스템을 오케스트레이터보다 먼저 초기화 (이벤트 핸들러 등록 순서 때문)
         
         # 텔레그램 커맨더 초기화 및 시작
         from crosskimp.telegram_bot.commander import get_telegram_commander
         telegram = get_telegram_commander()
         
-        # 오케스트레이터 인스턴스 설정 (의존성 주입)
-        telegram.set_orchestrator(orchestrator)
-        
         # 텔레그램 커맨더 시작
         await telegram.start()
         _logger.info("텔레그램 커맨더 시작 완료")
+        
+        # 텔레그램 알림 시스템 초기화
+        from crosskimp.telegram_bot.notify import get_telegram_notifier, initialize_notifier
+        notifier = get_telegram_notifier()
+        # 알림 시스템 초기화 (봇과 채팅 ID 설정)
+        await initialize_notifier(notifier)
+        # 이벤트 구독자 초기화 및 설정
+        from crosskimp.telegram_bot.event_subscriber import get_event_subscriber
+        event_subscriber = get_event_subscriber(notifier)
+        await notifier.setup_event_subscriber(event_subscriber)
+        _logger.info("텔레그램 알림 시스템 초기화 완료")
+        
+        # 오케스트레이터 초기화 (텔레그램 시스템 초기화 이후에)
+        orchestrator = Orchestrator(event_bus)
+        await orchestrator.initialize()
+        
+        # 오케스트레이터 인스턴스 설정 (의존성 주입)
+        telegram.set_orchestrator(orchestrator)
         
         _logger.info("✅ 시스템 초기화 완료")
         return True

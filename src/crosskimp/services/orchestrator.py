@@ -15,7 +15,7 @@ import time
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.events.system_types import EventPaths, ProcessStatusEvent
+from crosskimp.common.events.system_types import EventChannels, EventValues, ProcessStatusEvent
 from crosskimp.common.config.app_config import get_config
 
 logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
@@ -63,7 +63,7 @@ class Orchestrator:
             
             # 프로세스 상태 이벤트 구독
             self.event_bus.register_handler(
-                EventPaths.PROCESS_STATUS,
+                EventChannels.Process.STATUS,
                 self._handle_process_status
             )
             
@@ -83,19 +83,15 @@ class Orchestrator:
     async def _initialize_process_components(self):
         """프로세스 컴포넌트 초기화"""
         try:
-            logger.info("프로세스 컴포넌트 초기화 중...")
+            logger.info("프로세스 컴포넌트 초기화")
             
             # 오더북 프로세스 핸들러 초기화
             from crosskimp.common.events.handler.obcollector_handler import initialize_orderbook_process
             await initialize_orderbook_process(eventbus=self.event_bus, config=get_config())
-            logger.info("오더북 프로세스 핸들러가 초기화되었습니다.")
-            
-            # 추가 프로세스 핸들러 초기화 (필요에 따라 추가)
-            # ...
             
             logger.info("프로세스 컴포넌트 초기화 완료")
         except Exception as e:
-            logger.error(f"프로세스 컴포넌트 초기화 중 오류 발생: {str(e)}")
+            logger.error(f"프로세스 컴포넌트 초기화 오류: {str(e)}")
             raise
         
     async def start(self):
@@ -150,26 +146,26 @@ class Orchestrator:
             # 필수 필드 추출
             process_name = data.get("process_name")
             status = data.get("status")
+            error_message = data.get("error_message")
             
             if not process_name or not status:
                 logger.warning(f"프로세스 상태 이벤트 데이터 불완전: {data}")
                 return
             
             # 상태에 따라 running_processes 집합 업데이트
-            if status == EventPaths.PROCESS_STATUS_RUNNING:
+            if status == EventValues.PROCESS_RUNNING:
                 self.running_processes.add(process_name)
                 # 시작 요청 목록에서도 제거 (안전을 위해)
                 self.starting_processes.discard(process_name)
                 logger.info(f"프로세스 '{process_name}'이(가) 실행 중 상태로 변경되었습니다.")
-            elif status == EventPaths.PROCESS_STATUS_STOPPED:
+            elif status == EventValues.PROCESS_STOPPED:
                 self.running_processes.discard(process_name)
                 self.starting_processes.discard(process_name)
                 logger.info(f"프로세스 '{process_name}'이(가) 중지 상태로 변경되었습니다.")
-            elif status == EventPaths.PROCESS_STATUS_ERROR:
+            elif status == EventValues.PROCESS_ERROR:
                 self.running_processes.discard(process_name)
                 self.starting_processes.discard(process_name)
-                error_msg = data.get("error_message", "알 수 없는 오류")
-                logger.error(f"프로세스 '{process_name}' 오류 발생: {error_msg}")
+                logger.error(f"프로세스 '{process_name}'이(가) 오류 상태로 변경되었습니다: {error_message}")
             
         except Exception as e:
             logger.error(f"프로세스 상태 이벤트 처리 중 오류: {str(e)}")
@@ -208,16 +204,16 @@ class Orchestrator:
                 if not self.is_process_running(dep):
                     await self.start_process(dep)
                 
-            # 이벤트 데이터 생성
+            # 상태 이벤트 생성
             event_data = ProcessStatusEvent(
                 process_name=process_name,
-                status=EventPaths.PROCESS_STATUS_STARTING,
+                status=EventValues.PROCESS_STARTING,
                 event_type="process/start_requested"
             )
             
             # 프로세스 시작 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 시작 요청을 발행합니다.")
-            await self.event_bus.publish(EventPaths.PROCESS_COMMAND_START, event_data.__dict__)
+            await self.event_bus.publish(EventChannels.Process.COMMAND_START, event_data.__dict__)
             return True
         except Exception as e:
             logger.error(f"프로세스 '{process_name}' 시작 요청 중 오류: {str(e)}")
@@ -235,33 +231,25 @@ class Orchestrator:
         Args:
             process_name: 프로세스 이름
         """
-        # 프로세스가 등록되어 있는지 확인
-        if process_name not in self.process_dependencies:
-            logger.error(f"프로세스 '{process_name}'이(가) 등록되지 않았습니다.")
-            return False
+        try:
+            if process_name not in self.get_available_processes():
+                logger.error(f"지원되지 않는 프로세스 '{process_name}'")
+                return False
             
-        # 실행 중이 아니면 무시
-        if process_name not in self.running_processes:
-            logger.info(f"프로세스 '{process_name}'이(가) 실행 중이 아닙니다.")
+            # 이벤트 데이터 생성
+            event_data = ProcessStatusEvent(
+                process_name=process_name,
+                status=EventValues.PROCESS_STOPPING,
+                event_type="process/stop_requested"
+            )
+            
+            # 프로세스 중지 요청 이벤트 발행
+            logger.info(f"프로세스 '{process_name}' 중지 요청을 발행합니다.")
+            await self.event_bus.publish(EventChannels.Process.COMMAND_STOP, event_data.__dict__)
             return True
-        
-        # 이 프로세스에 의존하는 다른 프로세스들 먼저 중지
-        dependent_processes = self._get_dependent_processes(process_name)
-        for dep_proc in dependent_processes:
-            if self.is_process_running(dep_proc):
-                await self.stop_process(dep_proc)
-            
-        # 이벤트 데이터 생성
-        event_data = ProcessStatusEvent(
-            process_name=process_name,
-            status=EventPaths.PROCESS_STATUS_STOPPING,
-            event_type="process/stop_requested"
-        )
-        
-        # 프로세스 중지 요청 이벤트 발행
-        logger.info(f"프로세스 '{process_name}' 중지 요청을 발행합니다.")
-        await self.event_bus.publish(EventPaths.PROCESS_COMMAND_STOP, event_data.__dict__)
-        return True
+        except Exception as e:
+            logger.error(f"프로세스 중지 요청 중 오류: {str(e)}")
+            return False
         
     def is_process_running(self, process_name: str) -> bool:
         """프로세스 실행 중 여부 확인"""
@@ -369,7 +357,7 @@ class Orchestrator:
                     }
                     
                     # 시스템 상태 이벤트 발행
-                    await self.event_bus.publish(EventPaths.SYSTEM_STATUS, status_data)
+                    await self.event_bus.publish(EventChannels.System.STATUS, status_data)
                     logger.info(f"시스템 상태 보고 이벤트 발행됨 ({current_time})")
                     
                 except Exception as e:

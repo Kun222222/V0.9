@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.events.handler.process_component import ProcessComponent
 from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR
-from crosskimp.common.events.system_types import EventPaths
-from crosskimp.ob_collector.metric.reporter import ObcMetricReporter
+from crosskimp.common.events.system_types import EventChannels, EventValues
+from crosskimp.common.events.handler.metric.reporter import ObcMetricReporter
 
 # 오더북 수집기 임포트
 from crosskimp.ob_collector.obcollector import OrderbookCollectorManager
@@ -70,13 +70,17 @@ class OrderbookProcess(ProcessComponent):
         """
         try:
             self.logger.info("오더북 프로세스 시작 중...")
+            self.logger.info("[디버깅] _do_start 메서드 시작")
             
             # 1. 초기화 필요성 확인 및 수행
             if not self.collector.initialization_complete:
                 self.logger.info("오더북 수집기 초기화 시작")
+                self.logger.info("[디버깅] collector.initialize 호출 전")
                 
                 # 초기화 수행
                 init_success = await self.collector.initialize()
+                self.logger.info(f"[디버깅] collector.initialize 결과: {init_success}")
+                
                 if not init_success:
                     self.logger.error("오더북 수집기 초기화 실패")
                     return False
@@ -87,7 +91,9 @@ class OrderbookProcess(ProcessComponent):
             
             # 2. 기술적 작업 시작
             self.logger.info("오더북 수집기 시작 요청")
+            self.logger.info("[디버깅] collector.start 호출 전")
             success = await self.collector.start()
+            self.logger.info(f"[디버깅] collector.start 결과: {success}")
             
             if not success:
                 self.logger.error("오더북 수집기 시작 실패")
@@ -103,21 +109,22 @@ class OrderbookProcess(ProcessComponent):
                 # 메트릭 실패는 치명적이지 않으므로 계속 진행
             
             # 4. 상태 모니터링 태스크 시작 (백그라운드)
+            self.logger.info("[디버깅] 상태 모니터링 태스크 시작 전")
             self._monitoring_task = asyncio.create_task(self._monitor_collector_status())
-            self.add_task(self._monitoring_task)  # 부모 클래스의 태스크 추적 메서드 사용
+            self.logger.info("[디버깅] 상태 모니터링 태스크 생성 완료")
             
             self.logger.info("오더북 프로세스가 성공적으로 시작되었습니다. (거래소 연결은 백그라운드에서 계속됩니다)")
+            self.logger.info("[디버깅] _do_start 메서드 종료, 성공")
             return True
             
         except Exception as e:
             self.logger.error(f"오더북 프로세스 시작 중 오류 발생: {str(e)}")
+            self.logger.error("[디버깅] _do_start 메서드 종료, 예외 발생", exc_info=True)
             return False
 
     def _format_uptime(self, seconds: float) -> str:
         """거래소 업타임을 가독성 있는 형태로 포맷팅"""
-        if seconds < 0.1:  # 거의 0에 가까운 값일 경우
-            return "방금 연결됨"
-        elif seconds < 60:
+        if seconds < 60:
             return f"{int(seconds)}초"
         elif seconds < 3600:
             return f"{int(seconds / 60)}분 {int(seconds % 60)}초"
@@ -145,12 +152,27 @@ class OrderbookProcess(ProcessComponent):
             # 거래소 표시명 가져오기 (한글명 있으면 사용)
             exchange_name = EXCHANGE_NAMES_KR.get(exchange, exchange)
             
+            # 구독 심볼 수 정보 가져오기
+            subscribed_symbols_count = 0
+            
+            # 직접 collector의 filtered_symbols 속성에서 심볼 정보 가져오기
+            if hasattr(self.collector, 'filtered_symbols'):
+                # filtered_symbols는 {exchange_name: [symbol1, symbol2, ...]} 형태로 저장됨
+                if exchange in self.collector.filtered_symbols:
+                    subscribed_symbols_count = len(self.collector.filtered_symbols[exchange])
+                    self.logger.debug(f"거래소 '{exchange}'의 구독 심볼 수: {subscribed_symbols_count}")
+                else:
+                    self.logger.debug(f"거래소 '{exchange}'의 심볼 정보가 filtered_symbols에 없음")
+            else:
+                self.logger.debug("collector에 filtered_symbols 속성이 없음")
+            
             exchanges_info.append({
                 "name": exchange,
                 "display_name": exchange_name,
                 "connected": is_connected,
                 "uptime_seconds": uptime_seconds,
-                "uptime_formatted": self._format_uptime(uptime_seconds) if uptime_seconds > 0 else "연결 안됨"
+                "uptime_formatted": self._format_uptime(uptime_seconds) if uptime_seconds > 0 else "연결 안됨",
+                "subscribed_symbols_count": subscribed_symbols_count  # 구독 심볼 수 추가
             })
             
         return exchanges_info
@@ -169,7 +191,7 @@ class OrderbookProcess(ProcessComponent):
         while True:
             try:
                 # 프로세스가 시작 중이 아니거나 이미 실행 중인 경우 (상태가 변경된 경우) 모니터링 중단
-                if not self.is_starting() and not self.is_running():
+                if not self.is_starting and not self.is_running:
                     self.logger.info("프로세스가 시작 중 또는 실행 중 상태가 아니므로 모니터링 종료")
                     break
                 
@@ -224,13 +246,10 @@ class OrderbookProcess(ProcessComponent):
                         
                 # 연결 상태 변경 또는 모든 거래소 처음 연결된 경우 이벤트 발행
                 if status_changed or (self.all_connected and not prev_all_connected):
-                    # 상태 메시지 생성
-                    status_message = self._create_status_message(exchanges_info, connected_count, total_count)
-                    
-                    # 이벤트 데이터 준비
+                    # 이벤트 데이터 준비 (포맷팅은 notify_formatter.py에 위임)
                     event_data = {
                         "process_name": self.process_name,
-                        "message": status_message,
+                        "timestamp": current_time,
                         "details": {
                             "exchanges": exchanges_info,
                             "connected_count": connected_count,
@@ -244,26 +263,38 @@ class OrderbookProcess(ProcessComponent):
                         # 모든 거래소 연결 완료 - 컴포넌트 이벤트 발행 후 프로세스 상태 변경
                         all_connected_event_sent = True
                         
-                        # 헤더 메시지 추가
-                        event_data["message"] = f"🚀 오더북 수집기 구동 완료\n{status_message}"
+                        # 1. 컴포넌트 특화 이벤트 발행 (오더북 수집기 실행 이벤트)
+                        self.logger.info("[디버깅] 모든 거래소 연결 완료, 컴포넌트 특화 이벤트 발행 시작")
+                        # 연결된 거래소 이름 목록 추가
+                        event_data["exchanges"] = [ex["name"] for ex in exchanges_info if ex["connected"]]
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.RUNNING, event_data)
+                        self.logger.info("[디버깅] 컴포넌트 특화 이벤트 발행 완료")
                         
-                        # 1. 컴포넌트 이벤트 발행 (오더북 수집기 특화 이벤트)
-                        await self.event_bus.publish(EventPaths.OB_COLLECTOR_RUNNING, event_data)
-                        
+                        self.logger.info("[디버깅] 모든 거래소 연결 완료, PROCESS_RUNNING 상태로 변경 시작")
                         # 2. 프로세스 상태 변경 (프로세스 생명주기 이벤트)
-                        await self._publish_status(EventPaths.PROCESS_STATUS_RUNNING)
+                        await self._publish_status(EventValues.PROCESS_RUNNING)
+                        self.logger.info("[디버깅] PROCESS_RUNNING 상태로 변경 완료")
                         
                         self.logger.info("모든 거래소 연결 완료, 프로세스 상태를 RUNNING으로 변경")
                         
                     elif prev_all_connected and not self.all_connected:
                         # 연결 끊김 이벤트 (컴포넌트 특화 이벤트)
-                        event_data["message"] = f"⚠️ 오더북 수집기 연결 끊김\n{status_message}"
-                        await self.event_bus.publish(EventPaths.OB_COLLECTOR_CONNECTION_LOST, event_data)
+                        # reason 정보 추가 (포맷터에서 사용할 수 있도록)
+                        event_data["reason"] = "일부 거래소 연결이 끊겼습니다"
+                        # 연결이 끊긴 거래소 정보 추가
+                        disconnected_exchanges = [ex["name"] for ex in exchanges_info if not ex["connected"]]
+                        event_data["exchange"] = disconnected_exchanges[0] if disconnected_exchanges else "unknown"
+                        
+                        self.logger.info("[디버깅] 거래소 연결 끊김 이벤트 발행 시작")
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, event_data)
+                        self.logger.info("[디버깅] 거래소 연결 끊김 이벤트 발행 완료")
                         self.logger.info("거래소 연결 끊김 이벤트 발행됨")
                         
                     elif status_changed:
                         # 일반 상태 변경 이벤트 (컴포넌트 특화 이벤트)
-                        await self.event_bus.publish(EventPaths.OB_COLLECTOR_EXCHANGE_STATUS, event_data)
+                        self.logger.info("[디버깅] 거래소 상태 변경 이벤트 발행 시작")
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.EXCHANGE_STATUS, event_data)
+                        self.logger.info("[디버깅] 거래소 상태 변경 이벤트 발행 완료")
                         self.logger.info("거래소 상태 변경 이벤트 발행됨")
                 
                 # 현재 상태를 이전 상태로 저장
@@ -281,52 +312,6 @@ class OrderbookProcess(ProcessComponent):
                 
         self.logger.info("오더북 수집기 상태 모니터링 태스크 종료")
         
-    def _create_status_message(self, exchanges_info: List[Dict[str, Any]], connected_count: int, total_count: int) -> str:
-        """거래소 상태 알림 메시지 생성"""
-        # 헤더
-        # message = "📊 오더북 수집기 상태:\n"
-        message = "───────────────\n"
-        message += f"📡 거래소 연결 상태 ({connected_count}/{total_count})\n\n"
-        
-        # 한글 문자는 영문보다 시각적으로 더 넓기 때문에 시각적 길이를 계산
-        def visual_length(text):
-            # 한글은 2칸, 나머지는 1칸으로 계산 (텔레그램 고정폭 글꼴 기준)
-            length = 0
-            for char in text:
-                if '\uAC00' <= char <= '\uD7A3':  # 한글 유니코드 범위
-                    length += 2
-                else:
-                    length += 1
-            return length
-        
-        # 시각적 길이 기준으로 가장 긴 거래소명 찾기
-        max_visual_length = max(visual_length(ex["display_name"]) for ex in exchanges_info)
-        
-        # 각 거래소별 상태
-        for ex in sorted(exchanges_info, key=lambda x: x["name"]):
-            # 상태 이모지 선택
-            status_emoji = "🟢" if ex["connected"] else "🔴"
-            
-            # 거래소명과 이모지
-            exchange_name = f"{status_emoji} {ex['display_name']}"
-            
-            # 현재 항목의 시각적 길이 계산
-            current_visual_length = visual_length(exchange_name)
-            
-            # 필요한 공백 수 계산 (이모지 + 거래소명 + 추가 공백)
-            spaces_needed = max_visual_length + 8 - current_visual_length
-            
-            # 공백 추가로 패딩
-            padded_exchange = exchange_name + " " * spaces_needed
-            
-            # 연결 상태에 따른 업타임 또는 상태 메시지
-            if ex["connected"]:
-                message += f"{padded_exchange}│ {ex['uptime_formatted']}\n"
-            else:
-                message += f"{padded_exchange}│ 연결 끊김\n"
-        
-        return message
-
     async def _do_stop(self) -> bool:
         """
         오더북 프로세스 중지
@@ -392,5 +377,5 @@ async def initialize_orderbook_process(eventbus, config=None):
         OrderbookProcess: 초기화된 오더북 프로세스 인스턴스
     """
     process = get_orderbook_process(eventbus=eventbus, config=config)
-    await process.setup()
+    await process.register_event_handlers()
     return process
