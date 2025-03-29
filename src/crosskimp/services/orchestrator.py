@@ -23,53 +23,49 @@ logger = get_unified_logger(component=SystemComponent.SYSTEM.value)
 class Orchestrator:
     """시스템 오케스트레이터 및 명령 처리기"""
     
-    def __init__(self, event_bus):
+    def __init__(self, event_bus = None):
         """
         오케스트레이터 초기화
         
         Args:
-            event_bus: 이벤트 버스 인스턴스 (필수)
+            event_bus: 이벤트 버스 인스턴스 (없으면 새로 생성)
         """
-        self.event_bus = event_bus
+        logger.info("오케스트레이터 초기화 중...")
+        
+        # 이벤트 버스
+        self.event_bus = event_bus or get_event_bus()
+        
+        # 프로세스 의존성 정의 (프로세스가 시작되기 위해 필요한 다른 프로세스)
+        self.process_dependencies = {
+            "ob_collector": set(),         # 의존성 없음
+            "radar": {"ob_collector"},     # 오더북에 의존
+            "trader": {"ob_collector", "radar"},  # 오더북, 레이더에 의존
+            "web_server": set()            # 의존성 없음 (독립적으로 실행 가능)
+        }
+        
+        # 프로세스 상태 추적
+        self.running_processes = set()        # 실행 중인 프로세스
+        self.starting_processes = set()       # 시작 요청 중인 프로세스 (중복 시작 방지)
+        
+        # 초기화 상태
         self.initialized = False
         self.shutting_down = False
         
-        # 프로세스 의존성 정의
-        self.process_dependencies = {
-            "ob_collector": set(),  # 오더북은 독립적
-            "telegram": set(),  # 텔레그램 커맨더는 독립적
-            "radar": set(),  # 레이더는 독립적으로 설정 (아직 구현되지 않음)
-            "trader": set(),  # 트레이더는 독립적으로 설정 (아직 구현되지 않음)
-            "web_server": set()  # 웹서비스도 독립적으로 설정 (아직 구현되지 않음)
-        }
+        # 프로세스 시작/종료 타임스탬프
+        self.start_time = time.time()
         
-        # 프로세스 실행 상태 추적
-        self.running_processes = set()
-        
-        # 시작 요청된 프로세스 추적 (중복 요청 방지)
-        self.starting_processes = set()
-        
-        # 명령 핸들러 관련 속성
-        self._command_handlers = {}
-        self._pending_responses = {}
+        logger.info("오케스트레이터 인스턴스가 생성되었습니다.")
         
     async def initialize(self):
         """오케스트레이터 초기화"""
         try:
-            # 이벤트 핸들러 등록
-            self.event_bus.register_handler(
-                EventPaths.SYSTEM_COMMAND,
-                self._process_command
-            )
+            # 텔레그램 명령 이벤트 구독은 더 이상 필요하지 않음 (텔레그램 커맨더가 직접 호출)
             
             # 프로세스 상태 이벤트 구독
             self.event_bus.register_handler(
                 EventPaths.PROCESS_STATUS,
                 self._handle_process_status
             )
-            
-            # 표준 명령 핸들러 등록
-            self._register_standard_handlers()
             
             # 프로세스 컴포넌트 초기화
             await self._initialize_process_components()
@@ -88,11 +84,6 @@ class Orchestrator:
         """프로세스 컴포넌트 초기화"""
         try:
             logger.info("프로세스 컴포넌트 초기화 중...")
-            
-            # 텔레그램 노티파이어 초기화
-            from crosskimp.telegram_bot.notify import get_telegram_notifier
-            notifier = get_telegram_notifier()
-            logger.info("텔레그램 노티파이어 초기화 완료")
             
             # 오더북 프로세스 핸들러 초기화
             from crosskimp.common.events.handler.obcollector_handler import initialize_orderbook_process
@@ -114,12 +105,6 @@ class Orchestrator:
             
         try:
             logger.info("시스템 시작 중...")
-            
-            # 텔레그램 커맨더 실행
-            from crosskimp.telegram_bot.commander import get_telegram_commander
-            telegram = get_telegram_commander()
-            await telegram.start()
-            logger.info("텔레그램 커맨더 시작 완료")
             
             # 현재는 ob_collector만 시작 (다른 프로세스는 아직 구현되지 않음)
             await self.start_process("ob_collector")
@@ -227,12 +212,12 @@ class Orchestrator:
             event_data = ProcessStatusEvent(
                 process_name=process_name,
                 status=EventPaths.PROCESS_STATUS_STARTING,
-                event_type=EventPaths.PROCESS_EVENT_START_REQUESTED
+                event_type="process/start_requested"
             )
             
             # 프로세스 시작 요청 이벤트 발행
             logger.info(f"프로세스 '{process_name}' 시작 요청을 발행합니다.")
-            await self.event_bus.publish(EventPaths.PROCESS_START, event_data.__dict__)
+            await self.event_bus.publish(EventPaths.PROCESS_COMMAND_START, event_data.__dict__)
             return True
         except Exception as e:
             logger.error(f"프로세스 '{process_name}' 시작 요청 중 오류: {str(e)}")
@@ -270,295 +255,22 @@ class Orchestrator:
         event_data = ProcessStatusEvent(
             process_name=process_name,
             status=EventPaths.PROCESS_STATUS_STOPPING,
-            event_type=EventPaths.PROCESS_EVENT_STOP_REQUESTED
+            event_type="process/stop_requested"
         )
         
         # 프로세스 중지 요청 이벤트 발행
         logger.info(f"프로세스 '{process_name}' 중지 요청을 발행합니다.")
-        await self.event_bus.publish(EventPaths.PROCESS_STOP, event_data.__dict__)
+        await self.event_bus.publish(EventPaths.PROCESS_COMMAND_STOP, event_data.__dict__)
         return True
         
     def is_process_running(self, process_name: str) -> bool:
-        """
-        프로세스가 실행 중인지 확인
-        
-        Args:
-            process_name: 프로세스 이름
-            
-        Returns:
-            bool: 실행 중이면 True, 아니면 False
-        """
+        """프로세스 실행 중 여부 확인"""
         return process_name in self.running_processes
         
     def is_process_registered(self, process_name: str) -> bool:
-        """
-        프로세스가 등록되어 있는지 확인
-        
-        Args:
-            process_name: 프로세스 이름
-            
-        Returns:
-            bool: 프로세스가 등록되어 있으면 True, 아니면 False
-        """
+        """프로세스가 등록되어 있는지 확인"""
         return process_name in self.process_dependencies
             
-    #
-    # 명령 처리 관련 메서드
-    #
-    
-    def _register_standard_handlers(self):
-        """기본 명령 핸들러 등록"""
-        self.register_command_handler("start_process", self._handle_start_process)
-        self.register_command_handler("stop_process", self._handle_stop_process)
-        self.register_command_handler("restart_process", self._handle_restart_process)
-        self.register_command_handler("get_process_status", self._handle_get_process_status)
-        logger.debug("기본 명령 핸들러가 등록되었습니다.")
-    
-    def register_command_handler(self, command: str, handler: Callable):
-        """
-        명령 핸들러 등록
-        
-        Args:
-            command: 명령 이름
-            handler: 핸들러 함수 (coroutine)
-        """
-        self._command_handlers[command] = handler
-        logger.debug(f"명령 핸들러 등록: {command}")
-    
-    async def _process_command(self, data: Dict):
-        """
-        명령 이벤트 처리
-        
-        Args:
-            data: 명령 이벤트 데이터
-        """
-        if not isinstance(data, dict):
-            return
-            
-        # 응답 메시지인 경우 처리
-        if data.get("is_response", False):
-            await self._handle_command_response(data)
-            return
-            
-        command = data.get("command")
-        args = data.get("args", {})
-        source = data.get("source", "unknown")
-        request_id = data.get("request_id")
-        
-        if not command:
-            return
-            
-        logger.info(f"명령 수신: {command} (소스: {source})")
-        
-        # 명령 핸들러 실행
-        handler = self._command_handlers.get(command)
-        if handler:
-            try:
-                result = await handler(args)
-                
-                # 요청 ID가 있으면 응답 전송
-                if request_id:
-                    await self._send_command_response(command, result, request_id)
-                    
-            except Exception as e:
-                logger.error(f"명령 '{command}' 처리 중 오류: {str(e)}")
-                
-                # 오류 응답 전송
-                if request_id:
-                    await self._send_command_response(
-                        command, 
-                        {"success": False, "error": str(e)}, 
-                        request_id
-                    )
-        else:
-            logger.warning(f"알 수 없는 명령: {command}")
-            
-            # 알 수 없는 명령 응답
-            if request_id:
-                await self._send_command_response(
-                    command, 
-                    {"success": False, "error": f"알 수 없는 명령: {command}"}, 
-                    request_id
-                )
-    
-    async def _handle_command_response(self, data: Dict):
-        """
-        명령 응답 처리
-        
-        Args:
-            data: 응답 데이터
-        """
-        request_id = data.get("request_id")
-        if not request_id:
-            return
-            
-        # 대기 중인 응답이 있는지 확인
-        if request_id in self._pending_responses:
-            future = self._pending_responses.pop(request_id)
-            if not future.done():
-                # Future에 결과 설정
-                future.set_result(data.get("data", {}))
-    
-    async def send_command(self, command: str, args: Dict = None, source: str = "system", wait_response: bool = False, timeout: float = 5.0) -> Optional[Dict]:
-        """
-        명령 전송 메서드
-        
-        Args:
-            command: 명령 이름
-            args: 명령 인자
-            source: 명령 소스
-            wait_response: 응답 대기 여부
-            timeout: 응답 대기 시간 (초)
-            
-        Returns:
-            Dict or None: 응답 데이터 (wait_response=True인 경우)
-        """
-        request_id = None
-        
-        if wait_response:
-            # 고유 요청 ID 생성
-            request_id = str(uuid.uuid4())
-            
-            # 응답 대기 Future 생성
-            response_future = asyncio.Future()
-            self._pending_responses[request_id] = response_future
-        
-        # 명령 이벤트 발행
-        command_data = {
-            "command": command,
-            "args": args or {},
-            "source": source,
-        }
-        
-        if request_id:
-            command_data["request_id"] = request_id
-            
-        await self.event_bus.publish(EventPaths.SYSTEM_COMMAND, command_data)
-        
-        # 응답 대기
-        if wait_response:
-            try:
-                return await asyncio.wait_for(response_future, timeout=timeout)
-            except asyncio.TimeoutError:
-                logger.warning(f"명령 응답 시간 초과: {command}")
-                if request_id in self._pending_responses:
-                    del self._pending_responses[request_id]
-                return {"success": False, "error": "응답 시간 초과"}
-            except Exception as e:
-                logger.error(f"명령 응답 대기 중 오류: {str(e)}")
-                if request_id in self._pending_responses:
-                    del self._pending_responses[request_id]
-                return {"success": False, "error": str(e)}
-        
-        return None
-    
-    async def _send_command_response(self, command: str, data: Dict, request_id):
-        """
-        명령 응답 전송
-        
-        Args:
-            command: 명령어
-            data: 응답 데이터
-            request_id: 요청 ID
-        """
-        await self.event_bus.publish(EventPaths.SYSTEM_COMMAND, {
-            "command": command,
-            "is_response": True,
-            "data": data,
-            "request_id": request_id,
-            "timestamp": datetime.now().isoformat()
-        })
-    
-    # 프로세스 관련 명령 핸들러
-    async def _handle_start_process(self, args: Dict) -> Dict:
-        """
-        프로세스 시작 명령 처리
-        
-        Args:
-            args: 명령 인자 (process_name 포함)
-        
-        Returns:
-            Dict: 처리 결과
-        """
-        process_name = args.get("process_name")
-        if not process_name:
-            return {"success": False, "error": "프로세스 이름이 필요합니다."}
-            
-        result = await self.start_process(process_name)
-        return {"success": result, "process_name": process_name}
-    
-    async def _handle_stop_process(self, args: Dict) -> Dict:
-        """
-        프로세스 중지 명령 처리
-        
-        Args:
-            args: 명령 인자 (process_name 포함)
-        
-        Returns:
-            Dict: 처리 결과
-        """
-        process_name = args.get("process_name")
-        if not process_name:
-            return {"success": False, "error": "프로세스 이름이 필요합니다."}
-            
-        result = await self.stop_process(process_name)
-        return {"success": result, "process_name": process_name}
-    
-    async def _handle_restart_process(self, args: Dict) -> Dict:
-        """
-        프로세스 재시작 명령 처리
-        
-        Args:
-            args: 명령 인자 (process_name 포함)
-        
-        Returns:
-            Dict: 처리 결과
-        """
-        process_name = args.get("process_name")
-        if not process_name:
-            return {"success": False, "error": "프로세스 이름이 필요합니다."}
-        
-        # 프로세스 중지 후 시작
-        await self.stop_process(process_name)
-        await asyncio.sleep(1)  # 종료 대기
-        result = await self.start_process(process_name)
-        
-        return {"success": result, "process_name": process_name}
-    
-    async def _handle_get_process_status(self, args: Dict) -> Dict:
-        """
-        프로세스 상태 조회 명령 처리
-        
-        Args:
-            args: 명령 인자
-        
-        Returns:
-            Dict: 프로세스 상태 정보
-        """
-        specific_process = args.get("process_name")
-        
-        if specific_process:
-            # 특정 프로세스 상태만 조회
-            if specific_process not in self.process_dependencies:
-                return {"success": False, "error": f"프로세스 '{specific_process}'이(가) 등록되지 않았습니다."}
-                
-            is_running = self.is_process_running(specific_process)
-            return {
-                "success": True,
-                "process_name": specific_process,
-                "status": "running" if is_running else "stopped"
-            }
-        else:
-            # 모든 프로세스 상태 조회
-            all_statuses = {}
-            for process_name in self.process_dependencies:
-                all_statuses[process_name] = "running" if self.is_process_running(process_name) else "stopped"
-                
-            return {
-                "success": True,
-                "statuses": all_statuses
-            }
-                
     def _get_dependent_processes(self, process_name: str) -> Set[str]:
         """
         프로세스에 의존하는 다른 프로세스들 찾기

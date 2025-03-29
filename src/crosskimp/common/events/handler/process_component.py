@@ -38,6 +38,7 @@ class ProcessComponent(ABC):
         self.status = EventPaths.PROCESS_STATUS_STOPPED
         self.initialized = False
         self.logger = logger
+        self._tasks = []  # 실행 중인 태스크 추적
         
     async def setup(self):
         """
@@ -51,17 +52,17 @@ class ProcessComponent(ABC):
             
         # 계층적 이벤트 경로 핸들러 등록
         self.event_bus.register_handler(
-            EventPaths.PROCESS_START,
+            EventPaths.PROCESS_COMMAND_START,
             self._handle_process_control
         )
         
         self.event_bus.register_handler(
-            EventPaths.PROCESS_STOP,
+            EventPaths.PROCESS_COMMAND_STOP,
             self._handle_process_control
         )
         
         self.event_bus.register_handler(
-            EventPaths.PROCESS_RESTART,
+            EventPaths.PROCESS_COMMAND_RESTART,
             self._handle_process_control
         )
         
@@ -87,11 +88,11 @@ class ProcessComponent(ABC):
         
         try:
             # 명확한 이벤트 타입에 따른 처리
-            if event_type == EventPaths.PROCESS_EVENT_START_REQUESTED:
+            if event_type == "process/start_requested":
                 await self._start_process()
-            elif event_type == EventPaths.PROCESS_EVENT_STOP_REQUESTED:
+            elif event_type == "process/stop_requested":
                 await self._stop_process()
-            elif event_type == EventPaths.PROCESS_EVENT_RESTART_REQUESTED:
+            elif event_type == "process/restart_requested":
                 await self._restart_process()
             else:
                 self.logger.warning(f"지원되지 않는 이벤트 타입: {event_type}")
@@ -104,6 +105,33 @@ class ProcessComponent(ABC):
                 EventPaths.PROCESS_STATUS_ERROR,
                 error_message=str(e)
             )
+    
+    def is_running(self) -> bool:
+        """
+        프로세스가 실행 중인지 확인
+        
+        Returns:
+            bool: 프로세스가 실행 중이면 True, 아니면 False
+        """
+        return self.status == EventPaths.PROCESS_STATUS_RUNNING
+    
+    def is_starting(self) -> bool:
+        """
+        프로세스가 시작 중인지 확인
+        
+        Returns:
+            bool: 프로세스가 시작 중이면 True, 아니면 False
+        """
+        return self.status == EventPaths.PROCESS_STATUS_STARTING
+    
+    def is_error(self) -> bool:
+        """
+        프로세스가 오류 상태인지 확인
+        
+        Returns:
+            bool: 프로세스가 오류 상태이면 True, 아니면 False
+        """
+        return self.status == EventPaths.PROCESS_STATUS_ERROR
             
     async def _start_process(self):
         """
@@ -121,9 +149,10 @@ class ProcessComponent(ABC):
             success = await self._do_start()
             
             if success:
-                # 시작 성공 이벤트 발행
-                await self._publish_status(EventPaths.PROCESS_STATUS_RUNNING)
-                self.logger.info(f"프로세스 '{self.process_name}'이(가) 시작되었습니다.")
+                # 이 시점에서는 상태를 RUNNING으로 변경하지 않음
+                # 상태는 STARTING으로 유지하고, 도메인 로직에서 필요한 시점에
+                # _publish_status(RUNNING)을 호출하여 변경하도록 함
+                self.logger.info(f"프로세스 '{self.process_name}' 초기화 완료")
             else:
                 # 시작 실패 이벤트 발행
                 await self._publish_status(
@@ -153,6 +182,13 @@ class ProcessComponent(ABC):
         try:
             # 상태 변경 이벤트 발행
             await self._publish_status(EventPaths.PROCESS_STATUS_STOPPING)
+            
+            # 모든 실행 중인 태스크 취소
+            for task in self._tasks:
+                if not task.done():
+                    task.cancel()
+            
+            self._tasks.clear()
             
             # 실제 중지 로직 실행
             success = await self._do_stop()
@@ -217,11 +253,11 @@ class ProcessComponent(ABC):
         self.status = status
         
         # 상태에 따른 이벤트 타입 결정
-        event_type = EventPaths.PROCESS_EVENT_STARTED if status == EventPaths.PROCESS_STATUS_RUNNING else \
-                     EventPaths.PROCESS_EVENT_STOPPED if status == EventPaths.PROCESS_STATUS_STOPPED else \
-                     EventPaths.PROCESS_EVENT_ERROR if status == EventPaths.PROCESS_STATUS_ERROR else \
-                     EventPaths.PROCESS_EVENT_START_REQUESTED if status == EventPaths.PROCESS_STATUS_STARTING else \
-                     EventPaths.PROCESS_EVENT_STOP_REQUESTED if status == EventPaths.PROCESS_STATUS_STOPPING else \
+        event_type = "process/started" if status == EventPaths.PROCESS_STATUS_RUNNING else \
+                     "process/stopped" if status == EventPaths.PROCESS_STATUS_STOPPED else \
+                     "process/error" if status == EventPaths.PROCESS_STATUS_ERROR else \
+                     "process/start_requested" if status == EventPaths.PROCESS_STATUS_STARTING else \
+                     "process/stop_requested" if status == EventPaths.PROCESS_STATUS_STOPPING else \
                      None
         
         # ProcessStatusEvent 클래스 사용
@@ -240,23 +276,6 @@ class ProcessComponent(ABC):
         if status == EventPaths.PROCESS_STATUS_ERROR and error_message:
             await self.event_bus.publish(EventPaths.PROCESS_ERROR, event_data.__dict__)
         
-        # 컴포넌트별 상태 이벤트도 추가로 발행
-        self._publish_component_specific_event(status, event_data.__dict__)
-        
-    def _publish_component_specific_event(self, status: str, event_data: Dict[str, Any]):
-        """
-        컴포넌트별 상태 이벤트 발행
-        
-        각 컴포넌트 유형에 따라 특정 이벤트 경로로 이벤트를 발행합니다.
-        자식 클래스에서 오버라이드하여 사용할 수 있습니다.
-        
-        Args:
-            status: 상태
-            event_data: 이벤트 데이터
-        """
-        # 기본 구현은 빈 메서드
-        pass
-        
     async def start(self) -> bool:
         """
         프로세스 시작 메서드
@@ -269,7 +288,7 @@ class ProcessComponent(ABC):
             bool: 시작 요청 처리 성공 여부
         """
         await self._start_process()
-        return self.status == EventPaths.PROCESS_STATUS_RUNNING
+        return self.status != EventPaths.PROCESS_STATUS_ERROR
         
     async def stop(self) -> bool:
         """
@@ -284,6 +303,15 @@ class ProcessComponent(ABC):
         """
         await self._stop_process()
         return self.status == EventPaths.PROCESS_STATUS_STOPPED
+    
+    def add_task(self, task):
+        """
+        실행 중인 태스크 추가
+        
+        Args:
+            task: 추적할 asyncio 태스크
+        """
+        self._tasks.append(task)
     
     @abstractmethod
     async def _do_start(self) -> bool:

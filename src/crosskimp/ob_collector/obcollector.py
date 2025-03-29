@@ -337,7 +337,8 @@ class OrderbookCollectorManager:
     async def _print_stats_periodically(self):
         """주기적으로 데이터 관리자 통계 출력"""
         try:
-            stats_interval = int(self.config.get_system("orderbook.stats_interval", "300"))  # 기본값 5분
+            # 데이터 관리자에서 통계 출력 주기 가져오기
+            stats_interval = self.data_manager.stats_interval
             
             while self.is_running:
                 # 지정된 간격마다 통계 출력

@@ -18,8 +18,6 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes, App
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.events.system_types import EventPaths
 from crosskimp.common.config.app_config import get_config
 
 # 로거 설정
@@ -105,8 +103,18 @@ class TelegramCommander:
         # 폴링 태스크
         self._polling_task = None
         
-        # 이벤트 버스
-        self.event_bus = None
+        # 오케스트레이터 인스턴스
+        self.orchestrator = None
+    
+    def set_orchestrator(self, orchestrator):
+        """
+        오케스트레이터 인스턴스 설정
+        
+        Args:
+            orchestrator: 오케스트레이터 인스턴스
+        """
+        self.orchestrator = orchestrator
+        self.logger.info("텔레그램 커맨더에 오케스트레이터가 설정되었습니다.")
     
     async def start(self) -> bool:
         """
@@ -117,9 +125,6 @@ class TelegramCommander:
         """
         try:
             self.logger.info("텔레그램 커맨더 초기화 중...")
-            
-            # 이벤트 버스 초기화
-            self.event_bus = get_event_bus()
             
             # 공유 봇 인스턴스 가져오기
             self.bot = await initialize_telegram_bot()
@@ -219,7 +224,7 @@ class TelegramCommander:
     # 프로세스 관리 메서드
     async def _send_process_command(self, command: str, process_name: str) -> dict:
         """
-        프로세스 관련 명령을 이벤트 버스를 통해 오케스트레이터로 전송
+        프로세스 관련 명령을 오케스트레이터로 직접 전송
         
         Args:
             command: 명령어 (start_process, stop_process, restart_process)
@@ -229,22 +234,43 @@ class TelegramCommander:
             dict: 명령 처리 결과
         """
         try:
-            if not self.event_bus:
-                self.event_bus = get_event_bus()
+            if not self.orchestrator:
+                self.logger.error("오케스트레이터가 설정되지 않았습니다. set_orchestrator()를 먼저 호출해야 합니다.")
+                return {"success": False, "error": "오케스트레이터가 설정되지 않았습니다."}
                 
-            # 명령 데이터 생성
-            command_data = {
-                "command": command,
-                "args": {"process_name": process_name},
-                "source": "telegram",
-                "request_id": str(uuid.uuid4())  # 고유 요청 ID
-            }
+            # 명령 처리 결과
+            result = {"success": False}
             
-            # 명령 이벤트 발행
-            await self.event_bus.publish(EventPaths.COMMAND, command_data)
+            # 명령에 따라 오케스트레이터 메서드 직접 호출
+            if command == "start_process":
+                success = await self.orchestrator.start_process(process_name)
+                result = {"success": success, "process_name": process_name}
+                
+            elif command == "stop_process":
+                success = await self.orchestrator.stop_process(process_name)
+                result = {"success": success, "process_name": process_name}
+                
+            elif command == "restart_process":
+                # 재시작 로직
+                await self.orchestrator.stop_process(process_name)
+                await asyncio.sleep(1)  # 종료 대기
+                success = await self.orchestrator.start_process(process_name)
+                result = {"success": success, "process_name": process_name}
+                
+            elif command == "get_process_status":
+                # 상태 조회 로직
+                if not self.orchestrator.is_process_registered(process_name):
+                    result = {"success": False, "error": f"프로세스 '{process_name}'이(가) 등록되지 않았습니다."}
+                else:
+                    is_running = self.orchestrator.is_process_running(process_name)
+                    result = {
+                        "success": True,
+                        "process_name": process_name,
+                        "status": "running" if is_running else "stopped"
+                    }
             
-            # 성공 응답
-            return {"success": True}
+            self.logger.info(f"프로세스 명령 '{command}', 프로세스: '{process_name}' 결과: {result}")
+            return result
             
         except Exception as e:
             self.logger.error(f"프로세스 명령 전송 중 오류: {str(e)}")
@@ -530,55 +556,49 @@ class TelegramCommander:
     
     async def _handle_system_info_request(self, query, callback_data):
         """시스템 정보 요청 처리"""
-        # 여기서는 알림 모듈로 요청을 전달합니다
         await query.edit_message_text(f"⏳ 정보 요청 처리 중...")
         
-        # 정보 요청 이벤트 발행
         try:
-            if not self.event_bus:
-                self.event_bus = get_event_bus()
-                
-            # 이벤트 데이터 생성
-            event_data = {
-                "request_type": callback_data,
-                "chat_id": query.message.chat_id,
-                "source": "telegram",
-                "request_id": str(uuid.uuid4())
-            }
+            # 오케스트레이터가 없으면 오류 메시지 표시
+            if not self.orchestrator:
+                await query.edit_message_text(f"❌ 오류: 오케스트레이터가 설정되지 않았습니다.")
+                return
             
-            # 요청 이벤트 발행
-            await self.event_bus.publish(EventPaths.INFO_REQUEST, event_data)
+            # 키보드 생성
+            keyboard = [[InlineKeyboardButton("🔙 돌아가기", callback_data="menu_system")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
-            # 요청 수락 메시지
-            await query.edit_message_text(f"✅ 정보 요청이 처리 중입니다. 결과가 곧 표시됩니다.")
+            # 결과 메시지 전송
+            await query.edit_message_text(
+                "✅ 시스템 정보:\n\n" + 
+                "시스템 정보 기능은 아직 개발 중입니다. 업데이트를 기다려주세요.",
+                reply_markup=reply_markup
+            )
             
         except Exception as e:
-            self.logger.error(f"정보 요청 처리 중 오류: {str(e)}")
-            await query.edit_message_text(f"❌ 오류: 정보 요청 처리 실패\n{str(e)}")
+            self.logger.error(f"시스템 정보 요청 처리 중 오류: {str(e)}")
+            await query.edit_message_text(f"❌ 오류: 시스템 정보 요청 처리 실패\n{str(e)}")
     
     async def _handle_account_info_request(self, query, callback_data):
         """계좌 정보 요청 처리"""
-        # 여기서는 알림 모듈로 요청을 전달합니다
         await query.edit_message_text(f"⏳ 계좌 정보 요청 처리 중...")
         
-        # 정보 요청 이벤트 발행
         try:
-            if not self.event_bus:
-                self.event_bus = get_event_bus()
-                
-            # 이벤트 데이터 생성
-            event_data = {
-                "request_type": callback_data,
-                "chat_id": query.message.chat_id,
-                "source": "telegram",
-                "request_id": str(uuid.uuid4())
-            }
+            # 오케스트레이터가 없으면 오류 메시지 표시
+            if not self.orchestrator:
+                await query.edit_message_text(f"❌ 오류: 오케스트레이터가 설정되지 않았습니다.")
+                return
             
-            # 요청 이벤트 발행
-            await self.event_bus.publish(EventPaths.INFO_REQUEST, event_data)
+            # 키보드 생성
+            keyboard = [[InlineKeyboardButton("🔙 돌아가기", callback_data="menu_account")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
-            # 요청 수락 메시지
-            await query.edit_message_text(f"✅ 계좌 정보 요청이 처리 중입니다. 결과가 곧 표시됩니다.")
+            # 결과 메시지 전송
+            await query.edit_message_text(
+                "✅ 계좌 정보:\n\n" + 
+                "계좌 정보 기능은 아직 개발 중입니다. 업데이트를 기다려주세요.",
+                reply_markup=reply_markup
+            )
             
         except Exception as e:
             self.logger.error(f"계좌 정보 요청 처리 중 오류: {str(e)}")
@@ -710,3 +730,6 @@ class TelegramCommander:
     async def _handle_telegram_error(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         """텔레그램 오류 처리"""
         self.logger.error(f"텔레그램 봇 오류: {context.error}")
+
+    # 이벤트 버스와 관련된 메서드들은 더 이상 필요하지 않으므로 삭제됨
+    # 필요한 기능은 추후 오케스트레이터를 직접 호출하는 방식으로 재구현 가능

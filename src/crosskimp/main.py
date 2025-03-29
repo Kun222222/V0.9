@@ -61,7 +61,7 @@ except ImportError as e:
 
 # 이벤트 버스 및 이벤트 타입
 from crosskimp.common.events.system_eventbus import get_event_bus
-from crosskimp.common.events.system_types import EventPaths, EventPriority
+from crosskimp.common.events.system_types import EventPaths
 
 # 서비스 레이어
 from crosskimp.services.orchestrator import Orchestrator
@@ -95,6 +95,17 @@ async def initialize() -> bool:
         # 오케스트레이터 초기화 (이벤트 버스 전달)
         orchestrator = Orchestrator(event_bus)
         await orchestrator.initialize()
+        
+        # 텔레그램 커맨더 초기화 및 시작
+        from crosskimp.telegram_bot.commander import get_telegram_commander
+        telegram = get_telegram_commander()
+        
+        # 오케스트레이터 인스턴스 설정 (의존성 주입)
+        telegram.set_orchestrator(orchestrator)
+        
+        # 텔레그램 커맨더 시작
+        await telegram.start()
+        _logger.info("텔레그램 커맨더 시작 완료")
         
         _logger.info("✅ 시스템 초기화 완료")
         return True

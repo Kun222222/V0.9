@@ -57,6 +57,9 @@ class OrderbookProcess(ProcessComponent):
         self.exchange_uptimes = {}  # 각 거래소별 연결 시작 시간
         self.connected_exchanges = set()  # 현재 연결된 거래소
         self.all_connected = False  # 모든 거래소 연결 여부
+        
+        # 모니터링 태스크 참조
+        self._monitoring_task = None
 
     async def _do_start(self) -> bool:
         """
@@ -67,18 +70,6 @@ class OrderbookProcess(ProcessComponent):
         """
         try:
             self.logger.info("오더북 프로세스 시작 중...")
-            
-            # 프로세스 시작 이벤트 발행
-            start_event_data = {
-                "message": "오더북 수집기 실행이 요청되었습니다. 거래소 연결을 시작합니다.",
-                "process_name": self.process_name,
-                "status": EventPaths.PROCESS_STATUS_STARTING,
-                "details": {
-                    "timestamp": time.time()
-                }
-            }
-            await self.event_bus.publish(EventPaths.OB_COLLECTOR_START, start_event_data)
-            self.logger.info("오더북 수집기 시작 요청 이벤트 발행 완료")
             
             # 1. 초기화 필요성 확인 및 수행
             if not self.collector.initialization_complete:
@@ -102,13 +93,18 @@ class OrderbookProcess(ProcessComponent):
                 self.logger.error("오더북 수집기 시작 실패")
                 return False
                 
-            # 상태 모니터링 태스크 시작 (백그라운드)
-            asyncio.create_task(self._monitor_collector_status())
+            # 3. 메트릭 수집 시작 (백그라운드에서, 실패해도 계속 진행)
+            try:
+                self.logger.info("메트릭 수집 시작")
+                self.metric_reporter = ObcMetricReporter(self.collector, self.metric_interval)
+                await self.metric_reporter.start()
+            except Exception as e:
+                self.logger.error(f"메트릭 수집 시작 실패: {str(e)}")
+                # 메트릭 실패는 치명적이지 않으므로 계속 진행
             
-            # 3. 메트릭 수집 시작 (백그라운드에서)
-            self.logger.info("메트릭 수집 시작")
-            self.metric_reporter = ObcMetricReporter(self.collector, self.metric_interval)
-            await self.metric_reporter.start()
+            # 4. 상태 모니터링 태스크 시작 (백그라운드)
+            self._monitoring_task = asyncio.create_task(self._monitor_collector_status())
+            self.add_task(self._monitoring_task)  # 부모 클래스의 태스크 추적 메서드 사용
             
             self.logger.info("오더북 프로세스가 성공적으로 시작되었습니다. (거래소 연결은 백그라운드에서 계속됩니다)")
             return True
@@ -172,6 +168,11 @@ class OrderbookProcess(ProcessComponent):
         # 상태 모니터링 루프
         while True:
             try:
+                # 프로세스가 시작 중이 아니거나 이미 실행 중인 경우 (상태가 변경된 경우) 모니터링 중단
+                if not self.is_starting() and not self.is_running():
+                    self.logger.info("프로세스가 시작 중 또는 실행 중 상태가 아니므로 모니터링 종료")
+                    break
+                
                 check_count += 1
                 current_time = time.time()
                 
@@ -229,7 +230,7 @@ class OrderbookProcess(ProcessComponent):
                     # 이벤트 데이터 준비
                     event_data = {
                         "process_name": self.process_name,
-                        "status": "exchange_status",
+                        "message": status_message,
                         "details": {
                             "exchanges": exchanges_info,
                             "connected_count": connected_count,
@@ -240,22 +241,28 @@ class OrderbookProcess(ProcessComponent):
                     
                     # 연결 상태에 따라 다른 이벤트 발행
                     if self.all_connected and not all_connected_event_sent:
-                        # 모든 거래소 처음 연결 완료 (구동 완료 이벤트)
+                        # 모든 거래소 연결 완료 - 컴포넌트 이벤트 발행 후 프로세스 상태 변경
                         all_connected_event_sent = True
+                        
                         # 헤더 메시지 추가
                         event_data["message"] = f"🚀 오더북 수집기 구동 완료\n{status_message}"
+                        
+                        # 1. 컴포넌트 이벤트 발행 (오더북 수집기 특화 이벤트)
                         await self.event_bus.publish(EventPaths.OB_COLLECTOR_RUNNING, event_data)
-                        self.logger.info("모든 거래소 연결 완료 이벤트 발행됨")
+                        
+                        # 2. 프로세스 상태 변경 (프로세스 생명주기 이벤트)
+                        await self._publish_status(EventPaths.PROCESS_STATUS_RUNNING)
+                        
+                        self.logger.info("모든 거래소 연결 완료, 프로세스 상태를 RUNNING으로 변경")
                         
                     elif prev_all_connected and not self.all_connected:
-                        # 연결 끊김 이벤트
+                        # 연결 끊김 이벤트 (컴포넌트 특화 이벤트)
                         event_data["message"] = f"⚠️ 오더북 수집기 연결 끊김\n{status_message}"
                         await self.event_bus.publish(EventPaths.OB_COLLECTOR_CONNECTION_LOST, event_data)
                         self.logger.info("거래소 연결 끊김 이벤트 발행됨")
                         
                     elif status_changed:
-                        # 일반 상태 변경 이벤트
-                        event_data["message"] = status_message
+                        # 일반 상태 변경 이벤트 (컴포넌트 특화 이벤트)
                         await self.event_bus.publish(EventPaths.OB_COLLECTOR_EXCHANGE_STATUS, event_data)
                         self.logger.info("거래소 상태 변경 이벤트 발행됨")
                 
@@ -266,6 +273,7 @@ class OrderbookProcess(ProcessComponent):
                 await asyncio.sleep(1)
                 
             except asyncio.CancelledError:
+                self.logger.info("오더북 수집기 상태 모니터링 태스크가 취소되었습니다.")
                 break
             except Exception as e:
                 self.logger.error(f"상태 모니터링 중 오류: {str(e)}")
@@ -344,38 +352,12 @@ class OrderbookProcess(ProcessComponent):
                 self.logger.error("오더북 수집기 중지 실패")
                 return False
             
-            # 3. 종료 완료 이벤트 발행
-            stop_event_data = {
-                "message": "🛑 오더북 수집기가 성공적으로 종료되었습니다.",
-                "process_name": self.process_name,
-                "status": EventPaths.PROCESS_STATUS_STOPPED,
-                "details": {
-                    "timestamp": time.time()
-                }
-            }
-            await self.event_bus.publish(EventPaths.OB_COLLECTOR_STOP, stop_event_data)
-            self.logger.info("오더북 수집기 종료 이벤트 발행 완료")
-            
             self.logger.info("오더북 프로세스가 성공적으로 중지되었습니다.")
             return True
             
         except Exception as e:
             self.logger.error(f"오더북 프로세스 중지 중 오류 발생: {str(e)}")
             return False
-            
-    def _publish_component_specific_event(self, status: str, event_data: Dict[str, Any]):
-        """
-        컴포넌트별 상태 이벤트 발행
-        
-        오더북 프로세스 상태에 따라 적절한 이벤트를 발행합니다.
-        
-        Args:
-            status: 상태
-            event_data: 이벤트 데이터
-        """
-        # 부모 클래스 메서드를 오버라이드하여 오더북 프로세스 특화 이벤트 발행
-        # 여기서는 특별히 추가 처리가 필요 없어서 부모 메서드 호출은 생략
-        pass
 
 # 싱글톤 인스턴스
 _instance = None

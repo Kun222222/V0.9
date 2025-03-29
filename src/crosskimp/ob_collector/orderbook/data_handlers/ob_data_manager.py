@@ -38,6 +38,7 @@ class OrderbookDataManager:
         self.orderbook_message_counts = {}  # 거래소별 오더북 메시지 수 집계
         self.total_messages = 0  # 전체 메시지 수
         self.start_time = time.time()  # 시작 시간
+        self.stats_interval = 20  # 통계 출력 주기 (초)
         
         self.logger.info("오더북 데이터 관리자 초기화")
     
@@ -199,7 +200,9 @@ class OrderbookDataManager:
         self.logger.info(f"초당 메시지: {stats['messages_per_second']:.2f}개/초")
         
         for exchange, ex_stats in stats["exchanges"].items():
-            self.logger.info(f"[{exchange}] 원시 메시지: {ex_stats['raw_messages']:,}개, "
+            # 거래소 이름을 한글로 변환
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            self.logger.info(f"{exchange_kr} 원시 메시지: {ex_stats['raw_messages']:,}개, "
                             f"오더북 메시지: {ex_stats['orderbook_messages']:,}개, "
                             f"초당 메시지: {ex_stats['messages_per_second']:.2f}개/초")
     

@@ -55,17 +55,23 @@ async def _initialize_notifier(notifier):
         if _telegram_bot_instance is not None:
             logger.info("🤖 텔레그램 봇 인스턴스 감지됨, 노티파이어에 설정")
             notifier.set_bot(_telegram_bot_instance)
+            notifier.set_allowed_chat_ids(get_allowed_chat_ids())
             
-            # 초기화 완료 후 테스트 메시지
-            logger.info("✅ 텔레그램 노티파이어 초기화 및 이벤트 구독 완료")
+            # 이벤트 구독자 초기화 - 지연 임포트
+            from crosskimp.telegram_bot.event_subscriber import get_event_subscriber
+            event_subscriber = get_event_subscriber(notifier)
+            
+            # 구독 설정
+            if event_subscriber:
+                setup_result = await notifier.setup_event_subscriber(event_subscriber)
+                logger.info(f"✅ 텔레그램 노티파이어 초기화 및 이벤트 구독 완료: {setup_result}")
+            else:
+                logger.warning("⚠️ 이벤트 구독자 초기화 실패")
         else:
             logger.warning("⚠️ 텔레그램 봇 인스턴스가 초기화되지 않음 (최대 대기시간 초과)")
     
     except Exception as e:
         logger.error(f"❌ 텔레그램 노티파이어 초기화 중 오류: {str(e)}", exc_info=True)
-
-# 핸들러 임포트 - 이 위치에서 임포트하여 순환참조 방지
-from crosskimp.telegram_bot.handlers import EventSubscriber
 
 class TelegramNotifier:
     """
@@ -111,42 +117,11 @@ class TelegramNotifier:
         self.logger.info(f"ℹ️ 기존 봇 상태: {old_bot is not None}")
         
         # 지연 임포트 - 순환참조 방지
-        from crosskimp.telegram_bot.commander import _telegram_bot_instance, get_allowed_chat_ids
+        from crosskimp.telegram_bot.commander import _telegram_bot_instance
         
         # 새 봇 설정
         self.bot = bot if bot is not None else _telegram_bot_instance
         self.logger.info(f"ℹ️ 새 봇 상태: {self.bot is not None}")
-        
-        # 이벤트 구독 관리자 초기화
-        if self.bot:
-            if not self.event_subscriber:
-                self.logger.info("📱 이벤트 구독 관리자 초기화 시작")
-                self.event_subscriber = EventSubscriber(self)
-                
-                # 구독 설정 시도
-                try:
-                    setup_result = self.event_subscriber.setup_subscriptions()
-                    self.logger.info(f"📱 이벤트 구독 설정 결과: {setup_result}")
-                    
-                    # 명시적으로 이벤트 핸들러 등록 여부 확인
-                    from crosskimp.common.events.system_eventbus import get_event_bus
-                    from crosskimp.common.events.system_types import EventPaths
-                    event_bus = get_event_bus()
-                    handlers = event_bus._handlers.get(EventPaths.OB_COLLECTOR_RUNNING, [])
-                    self.logger.info(f"📱 OB_COLLECTOR_RUNNING 핸들러 등록 여부: {len(handlers) > 0} (핸들러 수: {len(handlers)})")
-                except Exception as e:
-                    self.logger.error(f"❌ 이벤트 구독 설정 중 오류: {str(e)}", exc_info=True)
-            else:
-                self.logger.info("📱 이벤트 구독 관리자가 이미 초기화되어 있습니다.")
-        
-        # 채팅 ID 상태 확인
-        if not self.allowed_chat_ids:
-            self.logger.info("👥 허용된 채팅 ID 자동 설정 시도")
-            self.set_allowed_chat_ids(get_allowed_chat_ids())
-            self.logger.info(f"👥 허용된 채팅 ID: {self.allowed_chat_ids}")
-        else:
-            self.logger.info(f"👥 기존 허용된 채팅 ID: {self.allowed_chat_ids}")
-        
         self.logger.info("📱 텔레그램 봇 설정 완료")
     
     def set_allowed_chat_ids(self, chat_ids: List[int]) -> None:
@@ -157,6 +132,26 @@ class TelegramNotifier:
             chat_ids: 허용된 채팅 ID 목록
         """
         self.allowed_chat_ids = chat_ids
+        self.logger.info(f"👥 허용된 채팅 ID 설정됨: {self.allowed_chat_ids}")
+    
+    async def setup_event_subscriber(self, event_subscriber) -> bool:
+        """
+        이벤트 구독자 설정 및 구독 초기화
+        
+        Args:
+            event_subscriber: 이벤트 구독자 인스턴스
+            
+        Returns:
+            bool: 설정 성공 여부
+        """
+        try:
+            self.event_subscriber = event_subscriber
+            setup_result = self.event_subscriber.setup_subscriptions()
+            self.logger.info(f"📱 이벤트 구독 설정 결과: {setup_result}")
+            return setup_result
+        except Exception as e:
+            self.logger.error(f"❌ 이벤트 구독 설정 중 오류: {str(e)}", exc_info=True)
+            return False
     
     async def stop(self) -> bool:
         """

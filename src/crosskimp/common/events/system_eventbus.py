@@ -12,7 +12,7 @@ from enum import Enum
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
-from crosskimp.common.events.system_types import EventPaths, EventPriority
+from crosskimp.common.events.system_types import EventPaths
 
 # 로거 설정
 logger = get_unified_logger()
