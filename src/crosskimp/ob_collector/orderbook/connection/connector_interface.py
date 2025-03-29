@@ -167,14 +167,4 @@ class ExchangeConnectorInterface(ABC):
         Returns:
             Optional[websockets.WebSocketClientProtocol]: 웹소켓 객체
         """
-        pass
-        
-    @abstractmethod
-    async def reconnect(self) -> bool:
-        """
-        재연결 수행
-        
-        Returns:
-            bool: 재연결 성공 여부
-        """
         pass 

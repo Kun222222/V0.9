@@ -16,7 +16,7 @@ from crosskimp.common.events.system_types import EventPaths
 from crosskimp.ob_collector.metric.reporter import ObcMetricReporter
 
 # 오더북 수집기 임포트
-from crosskimp.ob_collector.ob_collector import ObCollector
+from crosskimp.ob_collector.orderbook._legacy.ob_collector import ObCollector
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)

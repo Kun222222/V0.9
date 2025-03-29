@@ -1,7 +1,7 @@
 """
-바이빗 선물 커넥터 모듈
+바이빗 현물 커넥터 모듈
 
-바이빗 선물 거래소에 대한 웹소켓 연결 및 데이터 처리를 담당하는 커넥터를 제공합니다.
+바이빗 현물 거래소에 대한 웹소켓 연결 및 데이터 처리를 담당하는 커넥터를 제공합니다.
 """
 
 import json
@@ -16,14 +16,14 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
 
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
-from crosskimp.ob_collector.orderbook.connection.strategies.bybit_f_strategie import BybitFutureConnectionStrategy
-from crosskimp.ob_collector.orderbook.data_handlers.bybit_f_handler import BybitFutureDataHandler
+from crosskimp.ob_collector.orderbook.connection.strategies.bybit_s_strategie import BybitSpotConnectionStrategy
+from crosskimp.ob_collector.orderbook.data_handlers.exchanges.bybit_s_handler import BybitSpotDataHandler
 
-class BybitFutureConnector(ExchangeConnectorInterface):
+class BybitSpotConnector(ExchangeConnectorInterface):
     """
-    바이빗 선물 커넥터 클래스
+    바이빗 현물 커넥터 클래스
     
-    바이빗 선물 거래소의 웹소켓 연결 및 데이터 처리를 담당합니다.
+    바이빗 현물 거래소의 웹소켓 연결 및 데이터 처리를 담당합니다.
     """
     
     def __init__(self, connection_manager=None):
@@ -40,15 +40,15 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         self.config = get_config()
         
         # 거래소 코드 및 한글 이름 설정
-        self.exchange_code = Exchange.BYBIT_FUTURE.value
+        self.exchange_code = Exchange.BYBIT_SPOT.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         
         # 연결 관리자 저장
         self.connection_manager = connection_manager
         
         # 연결 전략 및 데이터 핸들러 초기화
-        self.connection_strategy = BybitFutureConnectionStrategy()
-        self.data_handler = BybitFutureDataHandler()
+        self.connection_strategy = BybitSpotConnectionStrategy()
+        self.data_handler = BybitSpotDataHandler()
         
         # 웹소켓 연결 객체
         self.ws = None
@@ -61,7 +61,7 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         self._connected = False
         self._reconnecting = False
         self._stopping = False
-        self._max_reconnect_attempts = 10
+        self._max_reconnect_attempts = 0  # 0은 무제한 재시도를 의미
         self._reconnect_delay = 0.5  # 초기 재연결 대기 시간
         
         # 메시지 및 오더북 콜백
@@ -74,7 +74,10 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         # 메시지 처리 태스크
         self._message_handler_task = None
         
-        # self.logger.info(f"바이빗 선물 커넥터 초기화 완료")
+        # 메시지 핸들러 락 추가 - 동시 실행 방지
+        self._message_handler_lock = asyncio.Lock()
+        
+        # self.logger.info(f"{self.exchange_name_kr} 커넥터 초기화 완료")
     
     @property
     def is_connected(self) -> bool:
@@ -117,6 +120,15 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             
         try:
             # self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 시작")
+            
+            # 기존 메시지 처리 태스크 취소
+            if self._message_handler_task and not self._message_handler_task.done():
+                self._message_handler_task.cancel()
+                try:
+                    await self._message_handler_task
+                except asyncio.CancelledError:
+                    pass
+                self._message_handler_task = None
             
             # 웹소켓 연결 수립
             self.ws = await self.connection_strategy.connect()
@@ -170,6 +182,7 @@ class BybitFutureConnector(ExchangeConnectorInterface):
                     await self._message_handler_task
                 except asyncio.CancelledError:
                     pass
+                self._message_handler_task = None
                 
             # 웹소켓 연결 종료
             if self.ws:
@@ -182,7 +195,7 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             # 구독 목록 초기화
             self._subscribed_symbols.clear()
             
-            self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
+            # self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
             return True
             
         except Exception as e:
@@ -193,56 +206,63 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             
     async def _message_handler(self):
         """웹소켓 메시지 수신 및 처리 루프"""
-        self.logger.debug(f"{self.exchange_name_kr} 선물 메시지 핸들러 시작")
-        
-        while not self._stopping and self.is_connected and self.ws:
-            try:
-                # 메시지 수신
-                message = await self.ws.recv()
+        try:
+            # 락을 사용하여 동시에 여러 태스크가 메시지 핸들러를 실행하지 않도록 함
+            async with self._message_handler_lock:
+                self.logger.debug(f"{self.exchange_name_kr} 메시지 핸들러 시작")
                 
-                # 전처리
-                processed_message = self.connection_strategy.preprocess_message(message)
-                
-                # 메시지 타입 확인
-                msg_type = processed_message.get("type", "unknown")
-                
-                # 핑퐁 메시지 처리
-                if msg_type == "pong":
-                    self.logger.debug(f"{self.exchange_name_kr} 선물 핑퐁 메시지 수신")
-                    continue
-                    
-                # 구독 응답 처리
-                elif msg_type == "subscription_response":
-                    self.logger.info(f"{self.exchange_name_kr} 선물 구독 응답: {processed_message['data']}")
-                    continue
-                    
-                # 오더북 데이터 처리 - snapshot, delta 타입도 처리하도록 추가
-                elif msg_type in ["depth_update", "snapshot", "delta"]:
-                    self._on_message(processed_message)
-                    
-                # 기타 메시지
-                else:
-                    self.logger.debug(f"{self.exchange_name_kr} 선물 기타 메시지: {msg_type}, 내용: {json.dumps(processed_message['data'], ensure_ascii=False)[:200]}")
-                
-            except websockets.exceptions.ConnectionClosed as e:
-                self.logger.warning(f"{self.exchange_name_kr} 선물 웹소켓 연결 끊김: {str(e)}")
-                self.is_connected = False
-                
-                # 재연결 시도
-                if not self._stopping:
-                    asyncio.create_task(self._reconnect())
-                break
-                
-            except asyncio.CancelledError:
-                self.logger.info(f"{self.exchange_name_kr} 선물 메시지 핸들러 태스크 취소됨")
-                break
-                
-            except Exception as e:
-                self.logger.error(f"{self.exchange_name_kr} 선물 메시지 처리 중 오류: {str(e)}")
-                if not self._stopping:
-                    await asyncio.sleep(0.1)  # 짧은 대기 후 계속
-                    
-        self.logger.debug(f"{self.exchange_name_kr} 선물 메시지 핸들러 종료")
+                while not self._stopping and self.is_connected and self.ws:
+                    try:
+                        # 메시지 수신
+                        message = await self.ws.recv()
+                        
+                        # 전처리
+                        processed_message = self.connection_strategy.preprocess_message(message)
+                        
+                        # 메시지 타입 확인
+                        msg_type = processed_message.get("type", "unknown")
+                        
+                        # 핑퐁 메시지 처리
+                        if msg_type == "pong":
+                            self.logger.debug(f"{self.exchange_name_kr} 핑퐁 메시지 수신")
+                            continue
+                            
+                        # 구독 응답 처리
+                        elif msg_type == "subscription_response":
+                            self.logger.info(f"{self.exchange_name_kr} 구독 응답: {processed_message['data']}")
+                            continue
+                            
+                        # 오더북 데이터 처리 (스냅샷 또는 델타)
+                        elif msg_type in ["snapshot", "delta"]:
+                            self._on_message(processed_message)
+                            
+                        # 기타 메시지
+                        elif msg_type == "unknown":
+                            self.logger.debug(f"{self.exchange_name_kr} 기타 메시지: {msg_type}, 내용: {json.dumps(processed_message['data'], ensure_ascii=False)[:200]}")
+                            
+                    except websockets.exceptions.ConnectionClosed as e:
+                        self.logger.warning(f"{self.exchange_name_kr} 웹소켓 연결 끊김: {str(e)}")
+                        self.is_connected = False
+                        
+                        # 종료 명령이 아니면 재연결 시도
+                        if not self._stopping:
+                            asyncio.create_task(self._reconnect())
+                        break
+                        
+                    except asyncio.CancelledError:
+                        self.logger.info(f"{self.exchange_name_kr} 메시지 핸들러 태스크 취소됨")
+                        break
+                        
+                    except Exception as e:
+                        self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
+                        await asyncio.sleep(1)
+                        
+                self.logger.debug(f"{self.exchange_name_kr} 메시지 핸들러 종료")
+        except asyncio.CancelledError:
+            self.logger.info(f"{self.exchange_name_kr} 메시지 핸들러 태스크 취소됨")
+        except Exception as e:
+            self.logger.error(f"{self.exchange_name_kr} 메시지 핸들러 태스크 오류: {str(e)}")
+            self.is_connected = False
                 
     async def _reconnect(self):
         """재연결 수행"""
@@ -261,6 +281,23 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             
             try:
                 self.logger.info(f"{self.exchange_name_kr} 재연결 시도 {attempt}/{max_attempts if max_attempts > 0 else '무제한'}")
+                
+                # 기존 연결 정리
+                if self.ws:
+                    try:
+                        await self.ws.close()
+                    except:
+                        pass
+                    self.ws = None
+                
+                # 기존 메시지 처리 태스크 취소
+                if self._message_handler_task and not self._message_handler_task.done():
+                    self._message_handler_task.cancel()
+                    try:
+                        await self._message_handler_task
+                    except asyncio.CancelledError:
+                        pass
+                    self._message_handler_task = None
                 
                 # 연결
                 success = await self.connect()
@@ -314,14 +351,14 @@ class BybitFutureConnector(ExchangeConnectorInterface):
                 for symbol in symbols_to_subscribe:
                     self._subscribed_symbols.add(symbol)
                     
-                self.logger.info(f"{self.exchange_name_kr} 선물 구독 성공: {len(symbols_to_subscribe)}개 심볼")
+                # self.logger.info(f"{self.exchange_name_kr} 구독 성공: {len(symbols_to_subscribe)}개 심볼")
                 return True
             else:
-                self.logger.error(f"{self.exchange_name_kr} 선물 구독 실패")
+                self.logger.error(f"{self.exchange_name_kr} 구독 실패")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 선물 구독 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} 구독 중 오류: {str(e)}")
             return False
             
     async def unsubscribe(self, symbols: List[str]) -> bool:
@@ -355,14 +392,14 @@ class BybitFutureConnector(ExchangeConnectorInterface):
                     if symbol in self._subscribed_symbols:
                         self._subscribed_symbols.remove(symbol)
                         
-                self.logger.info(f"{self.exchange_name_kr} 선물 구독 해제 성공: {len(symbols)}개 심볼")
+                # self.logger.info(f"{self.exchange_name_kr} 구독 해제 성공: {len(symbols)}개 심볼")
                 return True
             else:
-                self.logger.error(f"{self.exchange_name_kr} 선물 구독 해제 실패")
+                self.logger.error(f"{self.exchange_name_kr} 구독 해제 실패")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 선물 구독 해제 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} 구독 해제 중 오류: {str(e)}")
             return False
             
     async def send_message(self, message: Union[str, Dict, List]) -> bool:
@@ -390,7 +427,7 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             return True
             
         except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 선물 메시지 전송 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} 메시지 전송 중 오류: {str(e)}")
             # 연결 문제 감지 시 재연결 수행
             if not self._reconnecting and not self._stopping:
                 asyncio.create_task(self._reconnect())
@@ -446,6 +483,23 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             return True
         return False
     
+    async def _initialize_orderbook(self, symbol: str) -> None:
+        """
+        특정 심볼의 오더북 초기화
+        
+        웹소켓으로 스냅샷이 전송되므로 별도의 작업은 없습니다.
+        
+        Args:
+            symbol: 초기화할 심볼
+        """
+        try:
+            # 웹소켓을 통한 스냅샷 수신을 기다림
+            # self.logger.info(f"[{symbol}] 바이빗 현물 오더북 초기화 - 웹소켓 스냅샷 대기 중")
+            pass
+            
+        except Exception as e:
+            self.logger.error(f"[{symbol}] {self.exchange_name_kr} 오더북 초기화 중 오류: {str(e)}")
+                
     def _on_message(self, message: Dict[str, Any]) -> None:
         """
         메시지 수신 처리
@@ -457,30 +511,42 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             # 메시지 타입 확인
             msg_type = message.get("type", "unknown")
             
-            # 오더북 업데이트 메시지 처리
-            if msg_type in ["depth_update", "snapshot", "delta"]:
+            # 오더북 업데이트 메시지 처리 (스냅샷 또는 델타)
+            if msg_type in ["snapshot", "delta"]:
                 # 심볼 확인
                 symbol = message.get("symbol", "").replace("usdt", "").lower()
                 
+                # 오더북 초기화 필요 여부 확인
+                if symbol not in self.data_handler.orderbooks:
+                    # 초기화 태스크 시작
+                    asyncio.create_task(self._initialize_orderbook(symbol))
+                
                 # 데이터 핸들러에서 처리
-                orderbook_data = self.data_handler.process_orderbook_update(message)
+                self.data_handler.process_orderbook_update(message)
                 
-                # 완전한 오더북 데이터 조회
-                current_orderbook = self.data_handler.get_orderbook(symbol)
+                # 스냅샷인 경우 로깅
+                if msg_type == "snapshot":
+                    # self.logger.info(f"[{symbol}] 스냅샷 수신 - 데이터 핸들러에서 처리 중")
+                    pass
                 
-                if current_orderbook:
-                    # 콜백 호출
-                    for callback in self.orderbook_callbacks:
-                        try:
-                            callback({
-                                "exchange": self.exchange_code,
-                                "symbol": symbol,
-                                "timestamp": time.time() * 1000,
-                                "current_orderbook": current_orderbook
-                            })
-                        except Exception as cb_error:
-                            self.logger.error(f"{self.exchange_name_kr} 오더북 콜백 호출 중 오류: {str(cb_error)}")
-                
+                # 오더북이 완전히 초기화된 경우에만 완전한 오더북 데이터 반환
+                if symbol in self.data_handler.orderbooks:
+                    # 완전한 오더북 데이터 조회
+                    current_orderbook = self.data_handler.get_orderbook(symbol)
+                    
+                    if current_orderbook:
+                        # 콜백 호출
+                        for callback in self.orderbook_callbacks:
+                            try:
+                                callback({
+                                    "exchange": self.exchange_code,
+                                    "symbol": symbol,
+                                    "timestamp": time.time() * 1000,
+                                    "current_orderbook": current_orderbook
+                                })
+                            except Exception as cb_error:
+                                self.logger.error(f"{self.exchange_name_kr} 오더북 콜백 호출 중 오류: {str(cb_error)}")
+            
             # 일반 메시지 콜백 호출
             for callback in self.message_callbacks:
                 try:
@@ -489,7 +555,7 @@ class BybitFutureConnector(ExchangeConnectorInterface):
                     self.logger.error(f"{self.exchange_name_kr} 메시지 콜백 호출 중 오류: {str(cb_error)}")
                     
         except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 선물 메시지 처리 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
             
     async def refresh_snapshots(self, symbols: List[str] = None) -> None:
         """
@@ -601,7 +667,8 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         특정 심볼의 오더북 스냅샷 조회
         
         현재 메모리에 있는 오더북 데이터를 반환합니다.
-        웹소켓을 통해 스냅샷을 받으려면 구독을 통해 시작해야 합니다.
+        초기화되지 않은 오더북인 경우, 웹소켓 구독을 통해 스냅샷을
+        수신하도록 대기 상태를 설정합니다.
         
         Args:
             symbol: 조회할 심볼
@@ -612,8 +679,10 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         # 현재 메모리에 있는 오더북 데이터 반환
         snapshot = self.data_handler.get_orderbook(symbol)
         
-        # 스냅샷이 없으면 로그 남기고 None 반환
+        # 오더북이 초기화되지 않은 경우 초기화 요청
         if not snapshot:
-            self.logger.info(f"[{symbol}] 스냅샷 데이터 없음. 구독을 통해 스냅샷을 받아야 합니다.")
+            # 웹소켓을 통한 스냅샷 초기화 요청
+            await self._initialize_orderbook(symbol)
+            self.logger.info(f"[{symbol}] 스냅샷 요청: {self.exchange_name_kr} 웹소켓을 통한 스냅샷 대기 중")
             
         return snapshot 

@@ -16,7 +16,7 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
 
 from crosskimp.ob_collector.orderbook.connection.strategies.binance_f_strategie import BinanceFutureConnectionStrategy
-from crosskimp.ob_collector.orderbook.data_handlers.binance_f_handler import BinanceFutureDataHandler
+from crosskimp.ob_collector.orderbook.data_handlers.exchanges.binance_f_handler import BinanceFutureDataHandler
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
 
 class BinanceFutureConnector(ExchangeConnectorInterface):
@@ -69,6 +69,12 @@ class BinanceFutureConnector(ExchangeConnectorInterface):
         
         # 연결 상태
         self._is_connected = False
+        
+        # 메시지 핸들러 락 추가 - 동시 실행 방지
+        self._message_handler_lock = asyncio.Lock()
+        
+        # 최대 재연결 시도 횟수 (0은 무제한)
+        self.max_reconnect_attempts = 0
         
         # 메시지 콜백 등록
         self.add_message_callback(self._on_message)
@@ -181,27 +187,37 @@ class BinanceFutureConnector(ExchangeConnectorInterface):
             return
             
         try:
-            async for message in self.ws:
-                try:
-                    self.last_message_time = time.time()
-                    
-                    # 거래소별 전략으로 메시지 전처리
-                    processed_message = self.connection_strategy.preprocess_message(message)
-                    
-                    # 콜백 실행
-                    for callback in self.message_callbacks:
-                        try:
-                            callback(processed_message)
-                        except Exception as cb_error:
-                            self.logger.error(f"{self.name} 콜백 처리 중 오류: {str(cb_error)}")
-                            
-                except Exception as msg_error:
-                    self.logger.error(f"{self.name} 메시지 처리 중 오류: {str(msg_error)}")
+            # 락을 사용하여 한 번에 하나의 인스턴스만 실행되도록 함
+            async with self._message_handler_lock:
+                async for message in self.ws:
+                    try:
+                        self.last_message_time = time.time()
+                        
+                        # 거래소별 전략으로 메시지 전처리
+                        processed_message = self.connection_strategy.preprocess_message(message)
+                        
+                        # 콜백 실행
+                        for callback in self.message_callbacks:
+                            try:
+                                callback(processed_message)
+                            except Exception as cb_error:
+                                self.logger.error(f"{self.name} 콜백 처리 중 오류: {str(cb_error)}")
+                                
+                    except Exception as msg_error:
+                        self.logger.error(f"{self.name} 메시지 처리 중 오류: {str(msg_error)}")
+                        await asyncio.sleep(1)  # 오류 발생 시 1초 대기 (0.1초에서 증가)
                     
         except websockets.exceptions.ConnectionClosed as e:
             if not self.is_shutting_down:
                 self.logger.warning(f"{self.name} 연결 종료됨: {e.code} {e.reason}")
                 self.is_connected = False
+                
+                # 기존 메시지 핸들러 태스크 취소
+                if self.message_task and not self.message_task.done():
+                    self.message_task.cancel()
+                    self.logger.info(f"{self.name} 메시지 핸들러 작업 취소됨")
+                
+                # 새 태스크로 재연결 시작
                 asyncio.create_task(self._reconnect())
                 
         except asyncio.CancelledError:
@@ -211,6 +227,13 @@ class BinanceFutureConnector(ExchangeConnectorInterface):
             if not self.is_shutting_down:
                 self.logger.error(f"{self.name} 메시지 핸들러 오류: {str(e)}")
                 self.is_connected = False
+                
+                # 기존 메시지 핸들러 태스크 취소
+                if self.message_task and not self.message_task.done():
+                    self.message_task.cancel()
+                    self.logger.info(f"{self.name} 메시지 핸들러 작업 취소됨")
+                
+                # 새 태스크로 재연결 시작
                 asyncio.create_task(self._reconnect())
                 
     async def _reconnect(self):
@@ -228,7 +251,10 @@ class BinanceFutureConnector(ExchangeConnectorInterface):
         
         # 재연결 후 구독 복원
         if self.is_connected and self.subscribed_symbols:
+            self.logger.info(f"{self.name} 재연결 후 {len(self.subscribed_symbols)}개 심볼 재구독 시도...")
             await self.subscribe(self.subscribed_symbols)
+            # 재연결 후 스냅샷 갱신
+            await self.refresh_snapshots()
             
     async def subscribe(self, symbols: List[str]) -> bool:
         """

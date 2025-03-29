@@ -18,8 +18,8 @@ from crosskimp.common.config.app_config import get_config
 # 기존 컴포넌트 임포트
 from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
-from crosskimp.ob_collector.connection_manager import ConnectionManager
-from crosskimp.ob_collector.orderbook.exchange.factory import get_factory, ExchangeConnectorFactory
+from crosskimp.ob_collector.orderbook.connection.connector_manager import ConnectionManager
+from crosskimp.ob_collector.orderbook.connection.factory import get_factory, ExchangeConnectorFactory
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
 from crosskimp.ob_collector.orderbook.data_handlers.ob_data_manager import get_orderbook_data_manager
 
@@ -99,6 +99,10 @@ class OrderbookCollectorManager:
                 
             self.logger.info(f"심볼 필터링 완료: {len(self.filtered_symbols)}개 거래소")
             
+            # 1.5 ConnectionManager에 재연결 콜백 등록
+            self.connection_manager.set_reconnect_callback(self._connect_and_subscribe)
+            self.logger.info("재연결 콜백 등록 완료")
+            
             # 2. 거래소 커넥터 생성 및 등록
             supported_exchanges = self.factory.get_supported_exchanges()
             for exchange_code in supported_exchanges:
@@ -148,11 +152,11 @@ class OrderbookCollectorManager:
             usdtkrw_task = asyncio.create_task(self.usdtkrw_monitor.start())
             self.logger.info("USDT/KRW 모니터링 시작됨")
             
-            # 2. 모니터링 시작
-            self.connection_manager.start_monitoring()
-            
-            # 3. 거래소 연결 및 구독
+            # 2. 거래소 연결 및 구독 (모니터링 전에 먼저 연결)
             await self._connect_and_subscribe_all()
+            
+            # 3. 연결이 완료된 후 모니터링 시작
+            self.connection_manager.start_monitoring()
             
             # 통계 출력 태스크 시작
             self.stats_task = asyncio.create_task(self._print_stats_periodically())

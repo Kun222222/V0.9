@@ -17,7 +17,7 @@ from crosskimp.common.config.common_constants import SystemComponent, Exchange, 
 
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
 from crosskimp.ob_collector.orderbook.connection.strategies.binance_s_strategie import BinanceSpotConnectionStrategy
-from crosskimp.ob_collector.orderbook.data_handlers.binance_s_handler import BinanceSpotDataHandler
+from crosskimp.ob_collector.orderbook.data_handlers.exchanges.binance_s_handler import BinanceSpotDataHandler
 
 class BinanceSpotConnector(ExchangeConnectorInterface):
     """
@@ -59,7 +59,7 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         
         # 연결 재시도 설정
         self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10
+        self.max_reconnect_attempts = 0  # 0은 무제한 재시도를 의미
         self.reconnect_delay = 1.0  # 초기 재연결 지연 시간
         
         # 연결 설정
@@ -67,6 +67,9 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         
         # 구독 상태
         self.subscribed_symbols = []
+        
+        # 메시지 핸들러 락 추가 - 동시 실행 방지
+        self._message_handler_lock = asyncio.Lock()
         
         # self.logger.info("바이낸스 현물 커넥터 초기화 완료")
         
@@ -183,49 +186,51 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         ping_interval = 30  # 30초 간격으로 ping 전송
         
         try:
-            while not self.stop_event.is_set() and self.ws:
-                try:
-                    # 메시지 수신 (0.1초 타임아웃)
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
-                    
-                    # 메시지 전처리
-                    processed = self.connection_strategy.preprocess_message(message)
-                    
-                    # 메시지 콜백 호출
-                    for callback in self.message_callbacks:
-                        try:
-                            callback(processed)
-                        except Exception as callback_error:
-                            self.logger.error(f"메시지 콜백 실행 중 오류: {str(callback_error)}")
-                    
-                    # 오더북 업데이트 메시지인 경우 데이터 핸들러로 처리
-                    if processed.get("type") == "depth_update":
-                        # 데이터 핸들러 처리
-                        orderbook_data = self.data_handler.process_orderbook_update(processed)
+            # 락을 사용하여 동시에 여러 태스크가 메시지 핸들러를 실행하지 않도록 함
+            async with self._message_handler_lock:
+                while not self.stop_event.is_set() and self.ws:
+                    try:
+                        # 메시지 수신 (0.1초 타임아웃)
+                        message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
                         
-                        # 오더북 콜백 호출
-                        for callback in self.orderbook_callbacks:
+                        # 메시지 전처리
+                        processed = self.connection_strategy.preprocess_message(message)
+                        
+                        # 메시지 콜백 호출
+                        for callback in self.message_callbacks:
                             try:
-                                callback(orderbook_data)
+                                callback(processed)
                             except Exception as callback_error:
-                                self.logger.error(f"오더북 콜백 실행 중 오류: {str(callback_error)}")
+                                self.logger.error(f"메시지 콜백 실행 중 오류: {str(callback_error)}")
+                        
+                        # 오더북 업데이트 메시지인 경우 데이터 핸들러로 처리
+                        if processed.get("type") == "depth_update":
+                            # 데이터 핸들러 처리
+                            orderbook_data = self.data_handler.process_orderbook_update(processed)
+                            
+                            # 오더북 콜백 호출
+                            for callback in self.orderbook_callbacks:
+                                try:
+                                    callback(orderbook_data)
+                                except Exception as callback_error:
+                                    self.logger.error(f"오더북 콜백 실행 중 오류: {str(callback_error)}")
                 
-                except asyncio.TimeoutError:
-                    # 주기적으로 ping 전송 (필요한 경우)
-                    current_time = time.time()
-                    if self.connection_strategy.requires_ping() and (current_time - last_ping_time) >= ping_interval:
-                        await self.connection_strategy.send_ping(self.ws)
-                        last_ping_time = current_time
-                    continue
-                
-                except websockets.exceptions.ConnectionClosed as e:
-                    self.logger.warning(f"{self.exchange_name_kr} 연결 닫힘: {e.code} {e.reason}")
-                    self.is_connected = False
-                    await self._reconnect()
-                    break
-                
-                except Exception as e:
-                    self.logger.error(f"{self.exchange_name_kr} 메시지 수신 중 오류: {str(e)}")
+                    except asyncio.TimeoutError:
+                        # 주기적으로 ping 전송 (필요한 경우)
+                        current_time = time.time()
+                        if self.connection_strategy.requires_ping() and (current_time - last_ping_time) >= ping_interval:
+                            await self.connection_strategy.send_ping(self.ws)
+                            last_ping_time = current_time
+                        continue
+                    
+                    except websockets.exceptions.ConnectionClosed as e:
+                        self.logger.warning(f"{self.exchange_name_kr} 연결 닫힘: {e.code} {e.reason}")
+                        self.is_connected = False
+                        await self._reconnect()
+                        break
+                    
+                    except Exception as e:
+                        self.logger.error(f"{self.exchange_name_kr} 메시지 수신 중 오류: {str(e)}")
                     
         except asyncio.CancelledError:
             self.logger.info(f"{self.exchange_name_kr} 메시지 수신 루프 취소됨")
@@ -243,19 +248,21 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         if self.stop_event.is_set():
             return
             
-        if self.reconnect_attempts >= self.max_reconnect_attempts:
+        # 무제한 재시도를 위해 max_reconnect_attempts가 0인 경우 항상 재연결 시도
+        if self.max_reconnect_attempts > 0 and self.reconnect_attempts >= self.max_reconnect_attempts:
             self.logger.error(f"{self.exchange_name_kr} 최대 재연결 시도 횟수 초과 ({self.max_reconnect_attempts})")
             return
             
         self.reconnect_attempts += 1
         delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), 60)
         
-        self.logger.info(f"{self.exchange_name_kr} {delay:.1f}초 후 재연결 시도 ({self.reconnect_attempts}/{self.max_reconnect_attempts})")
+        self.logger.info(f"{self.exchange_name_kr} {delay:.1f}초 후 재연결 시도 ({self.reconnect_attempts}/{self.max_reconnect_attempts if self.max_reconnect_attempts > 0 else '무제한'})")
         await asyncio.sleep(delay)
         
         success = await self.connect()
         if success and self.subscribed_symbols:
             # 재연결 성공 시 기존 구독 심볼 복구
+            self.logger.info(f"{self.exchange_name_kr} 재연결 성공, {len(self.subscribed_symbols)}개 심볼 재구독 및 스냅샷 요청 중...")
             await self.subscribe(self.subscribed_symbols)
     
     async def subscribe(self, symbols: List[str]) -> bool:

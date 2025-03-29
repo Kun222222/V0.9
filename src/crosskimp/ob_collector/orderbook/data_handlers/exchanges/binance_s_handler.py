@@ -1,7 +1,7 @@
 """
-바이낸스 선물 데이터 핸들러 모듈
+바이낸스 현물 데이터 핸들러 모듈
 
-바이낸스 선물 거래소의 데이터 처리를 담당합니다.
+바이낸스 현물 거래소의 데이터 처리를 담당합니다.
 오더북 스냅샷 조회, 메시지 처리 등을 제공합니다.
 """
 
@@ -16,25 +16,25 @@ import datetime
 from crosskimp.common.config.app_config import get_config
 from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
-from crosskimp.ob_collector.orderbook.subscription.validators import BaseOrderBookValidator
+from crosskimp.ob_collector.orderbook.data_handlers.validators import BaseOrderBookValidator
 from crosskimp.ob_collector.orderbook.data_handlers.ob_data_manager import get_orderbook_data_manager
 
-class BinanceFutureDataHandler:
+class BinanceSpotDataHandler:
     """
-    바이낸스 선물 데이터 핸들러 클래스
+    바이낸스 현물 데이터 핸들러 클래스
     
-    바이낸스 선물 거래소의 데이터 처리를 담당합니다.
+    바이낸스 현물 거래소의 데이터 처리를 담당합니다.
     """
     
     # 상수 정의
-    REST_API_ENDPOINT = "https://fapi.binance.com"
-    ORDERBOOK_SNAPSHOT_ENDPOINT = "/fapi/v1/depth"
+    REST_API_ENDPOINT = "https://api.binance.com"
+    ORDERBOOK_SNAPSHOT_ENDPOINT = "/api/v3/depth"
     DEFAULT_LIMIT = 50  # 오더북 스냅샷 요청 시 기본 깊이 (100에서 50으로 변경)
     
     def __init__(self):
         """초기화"""
         self.logger = get_unified_logger(SystemComponent.OB_COLLECTOR.value)
-        self.exchange_code = Exchange.BINANCE_FUTURE.value
+        self.exchange_code = Exchange.BINANCE_SPOT.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         # 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
@@ -61,14 +61,14 @@ class BinanceFutureDataHandler:
         self.last_api_call_time = 0  # 마지막 API 호출 시간 (전체)
         self.snapshot_request_count = 0  # 누적 스냅샷 요청 횟수
         self.snapshot_request_time = time.time()  # 스냅샷 요청 시간 측정 시작
-        self.max_requests_per_minute = 1000  # 분당 최대 요청 횟수 (Binance 제한은 2400이지만 안전하게 설정)
+        self.max_requests_per_minute = 1000  # 분당 최대 요청 횟수 (Binance 제한은 1200이지만 안전하게 설정)
         
         # 시퀀스 갭 관련 설정
-        self.gap_threshold = 50000  # 시퀀스 갭 임계값 (이전 10000에서 50000으로 증가)
+        self.gap_threshold = 50000  # 시퀀스 갭 임계값
         self.snapshot_cooldown = {}  # 심볼별 스냅샷 재요청 쿨다운 시간
         self.min_snapshot_interval = 10.0  # 각 심볼별 스냅샷 요청 최소 간격 (초)
         
-        # self.logger.info("바이낸스 선물 데이터 핸들러 초기화")
+        # self.logger.info("바이낸스 현물 데이터 핸들러 초기화")
         
     async def get_orderbook_snapshot(self, symbol: str, limit: int = None) -> Dict[str, Any]:
         """
@@ -76,7 +76,7 @@ class BinanceFutureDataHandler:
         
         Args:
             symbol: 심볼 (예: "BTC")
-            limit: 오더북 깊이 (최대 1000)
+            limit: 오더북 깊이 (최대 5000)
             
         Returns:
             Dict[str, Any]: 오더북 스냅샷 데이터
@@ -112,7 +112,7 @@ class BinanceFutureDataHandler:
             self.snapshot_request_count = 1
             self.snapshot_request_time = time.time()
         
-        # 3. 심볼별 요청 간격 관리 (이전 0.1초에서 1초로 증가)
+        # 3. 심볼별 요청 간격 관리
         if normalized_symbol in self.last_snapshot_time:
             elapsed = now - self.last_snapshot_time[normalized_symbol]
             if elapsed < 1.0:  # 각 심볼별 최소 1초 간격
@@ -226,22 +226,22 @@ class BinanceFutureDataHandler:
             if orderbook:
                 bids_count = len(orderbook.get("bids", []))
                 asks_count = len(orderbook.get("asks", []))
-                # self.logger.info(f"바이낸스 선물 {symbol} 스냅샷 초기화 완료 | lastUpdateId: {last_update_id}, 매수: {bids_count}건, 매도: {asks_count}건")
+                # self.logger.info(f"바이낸스 현물 {symbol} 스냅샷 초기화 완료 | lastUpdateId: {last_update_id}, 매수: {bids_count}건, 매도: {asks_count}건")
                 
                 # 최상위 호가 정보 로깅 (디버그용)
                 if bids_count > 0 and asks_count > 0:
                     best_bid = orderbook["bids"][0]
                     best_ask = orderbook["asks"][0]
-                    # self.logger.debug(f"바이낸스 선물 {symbol} 최상위 호가 - 매수: {best_bid[0]} / 매도: {best_ask[0]} (스프레드: {best_ask[0] - best_bid[0]})")
+                    # self.logger.debug(f"바이낸스 현물 {symbol} 최상위 호가 - 매수: {best_bid[0]} / 매도: {best_ask[0]} (스프레드: {best_ask[0] - best_bid[0]})")
                     
                     # 전체 오더북 구조 출력 (디버그 레벨로)
-                    # self.logger.debug(f"바이낸스 선물 {symbol} 전체 오더북: 매수 {bids_count}건, 매도 {asks_count}건")
+                    # self.logger.debug(f"바이낸스 현물 {symbol} 전체 오더북: 매수 {bids_count}건, 매도 {asks_count}건")
             
             # 버퍼된 메시지 처리
             await self._process_buffered_messages(symbol)
             
         except Exception as e:
-            self.logger.error(f"바이낸스 선물 {symbol} 스냅샷 처리 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} {symbol} 스냅샷 처리 중 오류: {str(e)}")
             
     async def _process_buffered_messages(self, symbol: str) -> None:
         """
@@ -254,7 +254,7 @@ class BinanceFutureDataHandler:
             return
             
         buffered = self.buffered_messages[symbol]
-        # self.logger.info(f"바이낸스 선물 {symbol} 버퍼된 메시지 처리 시작: {len(buffered)}개")
+        # self.logger.info(f"바이낸스 현물 {symbol} 버퍼된 메시지 처리 시작: {len(buffered)}개")
         
         # 버퍼 클리어
         self.buffered_messages[symbol] = []
@@ -266,14 +266,14 @@ class BinanceFutureDataHandler:
         for message in sorted_messages:
             await self.process_delta_update(symbol, message)
             
-        # self.logger.info(f"바이낸스 선물 {symbol} 버퍼된 메시지 처리 완료")
+        # self.logger.info(f"바이낸스 현물 {symbol} 버퍼된 메시지 처리 완료")
         
         # 업데이트 후 오더북 상태 로깅
         orderbook = self.validator.get_orderbook(symbol)
         if orderbook:
             bids_count = len(orderbook.get("bids", []))
             asks_count = len(orderbook.get("asks", []))
-            # self.logger.debug(f"바이낸스 선물 {symbol} 버퍼 처리 후 오더북 상태 - 매수: {bids_count}건, 매도: {asks_count}건")
+            # self.logger.debug(f"바이낸스 현물 {symbol} 버퍼 처리 후 오더북 상태 - 매수: {bids_count}건, 매도: {asks_count}건")
             
     async def get_exchange_info(self) -> Dict[str, Any]:
         """
@@ -282,7 +282,7 @@ class BinanceFutureDataHandler:
         Returns:
             Dict[str, Any]: 거래소 정보
         """
-        url = f"{self.REST_API_ENDPOINT}/fapi/v1/exchangeInfo"
+        url = f"{self.REST_API_ENDPOINT}/api/v3/exchangeInfo"
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -295,11 +295,11 @@ class BinanceFutureDataHandler:
                             symbol = symbol_info.get("symbol", "").lower()
                             self.symbol_infos[symbol] = symbol_info
                             
-                        # self.logger.info(f"바이낸스 선물 거래소 정보 수신: {len(self.symbol_infos)}개 심볼")
+                        # self.logger.info(f"{self.exchange_name_kr} 거래소 정보 수신: {len(self.symbol_infos)}개 심볼")
                         return data
                     else:
                         error_data = await response.text()
-                        self.logger.error(f"바이낸스 선물 거래소 정보 요청 실패: {response.status} - {error_data}")
+                        self.logger.error(f"{self.exchange_name_kr} 거래소 정보 요청 실패: {response.status} - {error_data}")
                         return {
                             "error": True,
                             "status_code": response.status,
@@ -307,7 +307,7 @@ class BinanceFutureDataHandler:
                         }
                         
         except Exception as e:
-            self.logger.error(f"바이낸스 선물 거래소 정보 요청 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} 거래소 정보 요청 중 오류: {str(e)}")
             return {
                 "error": True,
                 "message": str(e)
@@ -333,7 +333,7 @@ class BinanceFutureDataHandler:
         original_symbol = message.get("symbol", "").lower()
         normalized_symbol = self.normalize_symbol(original_symbol)
         
-        # 바이낸스 선물 오더북 업데이트 데이터 형식 변환
+        # 바이낸스 스팟 오더북 업데이트 데이터 형식 변환
         result = {
             "exchange": self.exchange_code,
             "symbol": normalized_symbol,  # 정규화된 심볼 사용
@@ -392,7 +392,7 @@ class BinanceFutureDataHandler:
             
             # 검증기에 오더북이 없거나 last_update_ids에 심볼이 없으면 스냅샷 필요
             if symbol not in self.last_update_ids:
-                # self.logger.debug(f"바이낸스 선물 {symbol} 오더북 초기화 필요, 버퍼에 메시지 저장")
+                # self.logger.debug(f"{self.exchange_name_kr} {symbol} 오더북 초기화 필요, 버퍼에 메시지 저장")
                 if symbol not in self.buffered_messages:
                     self.buffered_messages[symbol] = []
                 self.buffered_messages[symbol].append(data)
@@ -404,17 +404,17 @@ class BinanceFutureDataHandler:
                     self.snapshot_cooldown[symbol] = now
                     await self.get_orderbook_snapshot(symbol)
                 else:
-                    # self.logger.debug(f"바이낸스 선물 {symbol} 스냅샷 요청 쿨다운 중, 요청 보류")
+                    # self.logger.debug(f"{self.exchange_name_kr} {symbol} 스냅샷 요청 쿨다운 중, 요청 보류")
                     pass
                 return
             
-            # 바이낸스 선물 데이터 검증 로직 적용
+            # 바이낸스 현물 데이터 검증 로직 적용 (현물 정합성 규칙)
             last_update_id = self.last_update_ids.get(symbol, 0)
             
             # 시퀀스 역전 확인(final_update_id가 last_update_id보다 작은 경우)만 검증
             if final_update_id <= last_update_id:
                 # 역전된 경우 로깅하고 무시
-                # self.logger.debug(f"바이낸스 선물 {symbol} 시퀀스 역전 감지 (무시됨): final_id={final_update_id}, last_id={last_update_id}")
+                # self.logger.debug(f"{self.exchange_name_kr} {symbol} 시퀀스 역전 감지 (무시됨): final_id={final_update_id}, last_id={last_update_id}")
                 return
                 
             # 검증기를 통한 델타 업데이트
@@ -446,10 +446,10 @@ class BinanceFutureDataHandler:
                     if bids_count > 0 and asks_count > 0:
                         best_bid = orderbook["bids"][0]
                         best_ask = orderbook["asks"][0]
-                        # self.logger.debug(f"바이낸스 선물 {symbol} 델타 업데이트 후 오더북 상태 - 매수: {bids_count}건, 매도: {asks_count}건, 최상위 매수: {best_bid[0]}, 최상위 매도: {best_ask[0]}")
+                        # self.logger.debug(f"{self.exchange_name_kr} {symbol} 델타 업데이트 후 오더북 상태 - 매수: {bids_count}건, 매도: {asks_count}건, 최상위 매수: {best_bid[0]}, 최상위 매도: {best_ask[0]}")
             
         except Exception as e:
-            self.logger.error(f"바이낸스 선물 {symbol} 델타 처리 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} {symbol} 델타 처리 중 오류: {str(e)}")
         
     def create_subscription_message(self, symbols: List[str]) -> Dict[str, Any]:
         """
@@ -464,7 +464,7 @@ class BinanceFutureDataHandler:
         # 심볼 형식 변환 (모두 소문자로 + usdt 추가)
         formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
         
-        # 바이낸스 선물 구독 메시지 형식
+        # 바이낸스 현물 구독 메시지 형식
         params = [f"{symbol}@depth@100ms" for symbol in formatted_symbols]
         
         return {
@@ -513,4 +513,4 @@ class BinanceFutureDataHandler:
             if not orderbook.get("sequence"):
                 orderbook["sequence"] = self.last_update_ids[symbol]
                 
-        return orderbook 
+        return orderbook

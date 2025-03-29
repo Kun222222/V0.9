@@ -17,7 +17,7 @@ from crosskimp.common.config.app_config import get_config
 
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
 from crosskimp.ob_collector.orderbook.connection.strategies.bithumb_s_strategie import BithumbSpotConnectionStrategy
-from crosskimp.ob_collector.orderbook.data_handlers.bithumb_s_handler import BithumbSpotDataHandler
+from crosskimp.ob_collector.orderbook.data_handlers.exchanges.bithumb_s_handler import BithumbSpotDataHandler
 from crosskimp.ob_collector.orderbook.data_handlers.ob_data_manager import get_orderbook_data_manager
 
 class BithumbSpotConnector(ExchangeConnectorInterface):
@@ -73,8 +73,8 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         # 구독 중인 심볼 목록
         self._subscribed_symbols = set()
         
-        # 메시지 처리 태스크
-        self._message_handler_task = None
+        # 메시지 처리 태스크 관리를 위한 추가 속성
+        self._message_handler_lock = asyncio.Lock()  # 동시 실행 방지용 락
         
         # self.logger.info(f"빗썸 현물 커넥터 초기화 완료")
         
@@ -125,6 +125,15 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             self.connecting = True
             self.stop_event.clear()
             
+            # 기존 메시지 처리 태스크 취소
+            if self.message_task and not self.message_task.done():
+                self.message_task.cancel()
+                try:
+                    await self.message_task
+                except asyncio.CancelledError:
+                    pass
+                self.message_task = None
+            
             # 연결 전략을 통해 웹소켓 연결
             self.ws = await self.connection_strategy.connect()
             
@@ -164,6 +173,7 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
                     await self.message_task
                 except asyncio.CancelledError:
                     pass
+                self.message_task = None
             
             # 웹소켓 종료
             if self.ws:
@@ -186,98 +196,58 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
     async def _message_handler(self):
         """메시지 수신 및 처리 태스크"""
         try:
-            while not self.stop_event.is_set() and self.ws:
-                try:
-                    # 메시지 수신
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=60)
-                    
-                    # 메시지 처리
-                    self._on_message(message)
-                    
-                except asyncio.TimeoutError:
-                    # 타임아웃 발생 - 연결 확인
-                    self.logger.warning(f"{self.exchange_name_kr} 메시지 수신 타임아웃, 연결 확인 중...")
+            # 락을 사용하여 동시에 여러 태스크가 메시지 핸들러를 실행하지 않도록 함
+            async with self._message_handler_lock:
+                self.logger.debug(f"{self.exchange_name_kr} 메시지 핸들러 시작")
+                
+                while not self.stop_event.is_set() and self.ws:
                     try:
-                        # 웹소켓 확인
-                        if self.ws and self.ws.open:
-                            continue
-                        else:
-                            self.logger.error(f"{self.exchange_name_kr} 웹소켓 닫힘 감지, 재연결 시도...")
-                            await self._reconnect()
+                        # 메시지 수신
+                        message = await asyncio.wait_for(self.ws.recv(), timeout=60)
+                        
+                        # 메시지 처리
+                        self._on_message(message)
+                        
+                    except asyncio.TimeoutError:
+                        # 타임아웃 발생 - 연결 확인
+                        self.logger.warning(f"{self.exchange_name_kr} 메시지 수신 타임아웃, 연결 확인 중...")
+                        try:
+                            # 웹소켓 확인
+                            if self.ws and self.ws.open:
+                                # 웹소켓이 열려있어도 실제 데이터를 수신하지 못하는 상태일 수 있음
+                                # ConnectionManager가 재연결 여부를 판단하도록 상태만 업데이트
+                                self.is_connected = False
+                                self.logger.warning(f"{self.exchange_name_kr} 웹소켓이 열려있지만 데이터가 수신되지 않음")
+                                # 연결관리자가 재연결 하도록 함
+                                break
+                            else:
+                                self.logger.error(f"{self.exchange_name_kr} 웹소켓 닫힘 감지")
+                                self.is_connected = False
+                                break
+                        except Exception as check_e:
+                            self.logger.error(f"{self.exchange_name_kr} 연결 확인 중 오류: {str(check_e)}")
+                            self.is_connected = False
                             break
-                    except Exception as check_e:
-                        self.logger.error(f"{self.exchange_name_kr} 연결 확인 중 오류: {str(check_e)}")
-                        await self._reconnect()
+                            
+                    except websockets.exceptions.ConnectionClosed as cc:
+                        # 연결 종료 처리
+                        self.logger.warning(f"{self.exchange_name_kr} 연결 종료됨 (코드: {cc.code}, 사유: {cc.reason})")
+                        self.is_connected = False
                         break
                         
-                except websockets.exceptions.ConnectionClosed as cc:
-                    # 연결 종료 처리
-                    self.logger.warning(f"{self.exchange_name_kr} 연결 종료됨 (코드: {cc.code}, 사유: {cc.reason}), 재연결 시도...")
-                    await self._reconnect()
-                    break
-                    
-                except Exception as e:
-                    # 기타 예외 처리
-                    self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
-                    await asyncio.sleep(1)
-                    
+                    except Exception as e:
+                        # 기타 예외 처리
+                        self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
+                        await asyncio.sleep(1)
+                        
+                self.logger.debug(f"{self.exchange_name_kr} 메시지 핸들러 종료")
+                        
         except asyncio.CancelledError:
             self.logger.info(f"{self.exchange_name_kr} 메시지 처리 태스크 취소됨")
             
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 메시지 처리 태스크 오류: {str(e)}")
             self.is_connected = False
-            
-    async def _reconnect(self):
-        """재연결 수행"""
-        if self.connecting:
-            self.logger.warning(f"{self.exchange_name_kr} 이미 재연결 중...")
-            return
-            
-        try:
-            # 상태 업데이트
-            self.is_connected = False
-            self.connecting = True
-            
-            # 이전 웹소켓 정리
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except:
-                    pass
-                self.ws = None
-                
-            # 잠시 대기 후 재연결
-            self.logger.info(f"{self.exchange_name_kr} 재연결 시도 중...")
-            await asyncio.sleep(0.5)  # 0.5초 대기
-            
-            # 재연결
-            self.ws = await self.connection_strategy.connect()
-            
-            # 상태 업데이트
-            self.is_connected = True
-            self.connecting = False
-            
-            # 메시지 처리 태스크 재시작
-            self.message_task = asyncio.create_task(self._message_handler())
-            
-            # 기존 구독 복원
-            if self.subscribed_symbols:
-                symbols = list(self.subscribed_symbols)
-                self.logger.info(f"{self.exchange_name_kr} {len(symbols)}개 심볼 재구독 중...")
-                await self.connection_strategy.subscribe(self.ws, symbols)
-                
-            self.logger.info(f"{self.exchange_name_kr} 재연결 완료")
-            
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 재연결 실패: {str(e)}")
-            self.is_connected = False
-            self.connecting = False
-            
-            # 잠시 후 다시 시도
-            self.logger.info(f"{self.exchange_name_kr} 1초 후 재연결 재시도...")
-            await asyncio.sleep(1)
-            asyncio.create_task(self._reconnect())
             
     async def subscribe(self, symbols: List[str]) -> bool:
         """
@@ -499,9 +469,11 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         Args:
             symbols: 갱신할 심볼 목록 (None이면 모든 구독 중인 심볼)
         """
-        # 필요한 경우 재연결을 통해 스냅샷 갱신
-        if self.is_connected:
-            await self.reconnect()
+        # 빗썸은 웹소켓 재연결 시 최신 오더북을 자동으로 제공하므로 필요 없음
+        self.logger.info(f"{self.exchange_name_kr} 스냅샷 갱신 요청 (재연결로 대체)")
+        
+        # 연결 관리자가 재연결을 처리하므로 별도 로직 불필요
+        pass
             
     async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
         """
@@ -532,16 +504,4 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         Returns:
             Optional[websockets.WebSocketClientProtocol]: 웹소켓 객체
         """
-        return self.ws
-            
-    async def reconnect(self) -> bool:
-        """
-        재연결 수행
-        
-        Returns:
-            bool: 재연결 성공 여부
-        """
-        self.logger.info(f"{self.exchange_name_kr} 수동 재연결 시작")
-        await self.disconnect()
-        await asyncio.sleep(0.5)
-        return await self.connect() 
+        return self.ws 
