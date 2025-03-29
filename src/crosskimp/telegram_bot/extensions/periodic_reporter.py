@@ -49,7 +49,7 @@ class PeriodicReporter:
         # 보고서 스케줄 설정
         self.report_schedule = {
             'system_metrics': {
-                'interval': 3600,  # 1시간마다
+                'interval': 60,  # 1분마다 (테스트용)
                 'last_run': 0,
                 'enabled': True,
                 'description': '시스템 메트릭 보고서'
@@ -146,8 +146,8 @@ class PeriodicReporter:
                         # 마지막 실행 시간 업데이트
                         self.report_schedule[report_type]['last_run'] = current_time
                         
-                # 1분마다 스케줄 체크
-                await asyncio.sleep(60)
+                # 10초마다 스케줄 체크 (테스트용)
+                await asyncio.sleep(10)
                 
         except asyncio.CancelledError:
             self.logger.info("주기적 보고서 루프가 취소되었습니다.")

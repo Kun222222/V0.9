@@ -13,7 +13,7 @@ import logging
 
 from crosskimp.common.config.app_config import get_config
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.common_constants import SystemComponent, Exchange
+from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
 
 class BinanceFutureConnectionStrategy:
     """
@@ -26,6 +26,7 @@ class BinanceFutureConnectionStrategy:
     BASE_WS_URL = "wss://fstream.binance.com/ws"
     BASE_REST_URL = "https://fapi.binance.com"
     DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    EXCHANGE_CODE = Exchange.BINANCE_FUTURE.value
     
     def __init__(self):
         """초기화"""
@@ -33,7 +34,8 @@ class BinanceFutureConnectionStrategy:
         self.config = get_config()
         self.subscriptions = []
         self.id_counter = 1  # 요청 ID 카운터
-        # self.logger.info(f"바이낸스 선물 연결 전략 초기화")
+        self.exchange_name = EXCHANGE_NAMES_KR.get(self.EXCHANGE_CODE, "바이낸스 선물")
+        # self.logger.info(f"{self.exchange_name} 연결 전략 초기화")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""
@@ -57,7 +59,7 @@ class BinanceFutureConnectionStrategy:
         Returns:
             websockets.WebSocketClientProtocol: 웹소켓 연결 객체
         """
-        # self.logger.info(f"바이낸스 선물 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
+        # self.logger.info(f"{self.exchange_name} 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
         
         try:
             # 웹소켓 연결 (websockets 버전에 따라 헤더 설정 방식이 다름)
@@ -72,15 +74,15 @@ class BinanceFutureConnectionStrategy:
                 timeout=timeout
             )
             
-            # self.logger.info("바이낸스 선물 웹소켓 연결 성공")
+            self.logger.info(f"{self.exchange_name} 웹소켓 연결 성공")
             return ws
             
         except asyncio.TimeoutError:
-            self.logger.error(f"바이낸스 선물 웹소켓 연결 타임아웃 ({timeout}초)")
+            self.logger.error(f"{self.exchange_name} 웹소켓 연결 타임아웃 ({timeout}초)")
             raise
             
         except Exception as e:
-            self.logger.error(f"바이낸스 선물 웹소켓 연결 실패: {str(e)}")
+            self.logger.error(f"{self.exchange_name} 웹소켓 연결 실패: {str(e)}")
             raise
             
     async def disconnect(self, ws: websockets.WebSocketClientProtocol) -> None:
@@ -93,9 +95,9 @@ class BinanceFutureConnectionStrategy:
         if ws:
             try:
                 await ws.close()
-                self.logger.info("바이낸스 선물 웹소켓 연결 종료됨")
+                self.logger.info(f"{self.exchange_name} 웹소켓 연결 종료됨")
             except Exception as e:
-                self.logger.error(f"바이낸스 선물 웹소켓 연결 종료 중 오류: {str(e)}")
+                self.logger.error(f"{self.exchange_name} 웹소켓 연결 종료 중 오류: {str(e)}")
                 
     async def on_connected(self, ws: websockets.WebSocketClientProtocol) -> None:
         """
@@ -120,11 +122,11 @@ class BinanceFutureConnectionStrategy:
             bool: 구독 성공 여부
         """
         if not ws:
-            self.logger.error("바이낸스 선물 심볼 구독 실패: 웹소켓 연결 없음")
+            self.logger.error(f"{self.exchange_name} 심볼 구독 실패: 웹소켓 연결 없음")
             return False
             
         try:
-            # 심볼 형식 변환 (모두 소문자로)
+            # 심볼 형식 변환 (소문자로 변경하고 usdt 추가)
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
             # 심볼별로 depth 스트림 구독
@@ -139,8 +141,8 @@ class BinanceFutureConnectionStrategy:
             }
             
             # 구독 요청 전송
-            self.logger.info(f"바이낸스 선물 구독 요청: {len(params)}개 심볼")
-            self.logger.debug(f"바이낸스 선물 구독 요청 상세: {subscribe_msg}")
+            self.logger.info(f"{self.exchange_name} 구독 요청: {len(params)}개 심볼")
+            self.logger.debug(f"{self.exchange_name} 구독 요청 상세: {subscribe_msg}")
             
             await ws.send(json.dumps(subscribe_msg))
             
@@ -150,7 +152,7 @@ class BinanceFutureConnectionStrategy:
             return True
             
         except Exception as e:
-            self.logger.error(f"바이낸스 선물 구독 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name} 구독 중 오류: {str(e)}")
             return False
             
     async def unsubscribe(self, ws: websockets.WebSocketClientProtocol, symbols: List[str]) -> bool:
@@ -165,11 +167,11 @@ class BinanceFutureConnectionStrategy:
             bool: 구독 해제 성공 여부
         """
         if not ws:
-            self.logger.error("바이낸스 선물 구독 해제 실패: 웹소켓 연결 없음")
+            self.logger.error(f"{self.exchange_name} 구독 해제 실패: 웹소켓 연결 없음")
             return False
             
         try:
-            # 심볼 형식 변환 (모두 소문자로)
+            # 심볼 형식 변환 (소문자로 변경하고 usdt 추가)
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
             # 심볼별로 depth 스트림 구독 해제
@@ -184,8 +186,8 @@ class BinanceFutureConnectionStrategy:
             }
             
             # 구독 해제 요청 전송
-            self.logger.info(f"바이낸스 선물 구독 해제 요청: {len(params)}개 심볼")
-            self.logger.debug(f"바이낸스 선물 구독 해제 요청 상세: {unsubscribe_msg}")
+            self.logger.info(f"{self.exchange_name} 구독 해제 요청: {len(params)}개 심볼")
+            self.logger.debug(f"{self.exchange_name} 구독 해제 요청 상세: {unsubscribe_msg}")
             
             await ws.send(json.dumps(unsubscribe_msg))
             
@@ -195,7 +197,7 @@ class BinanceFutureConnectionStrategy:
             return True
             
         except Exception as e:
-            self.logger.error(f"바이낸스 선물 구독 해제 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name} 구독 해제 중 오류: {str(e)}")
             return False
     
     async def send_ping(self, ws: websockets.WebSocketClientProtocol) -> bool:

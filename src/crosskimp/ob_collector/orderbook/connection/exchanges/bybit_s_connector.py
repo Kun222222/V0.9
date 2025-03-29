@@ -136,10 +136,6 @@ class BybitSpotConnector(ExchangeConnectorInterface):
             # 연결 상태 업데이트
             self.is_connected = True
             
-            # 연결 관리자에 상태 알림
-            if self.connection_manager:
-                self.connection_manager.update_exchange_status(self.exchange_code, True)
-                
             # 연결 후 설정
             await self.connection_strategy.on_connected(self.ws)
             

@@ -12,7 +12,7 @@ from typing import Dict, List, Any, Optional, Union
 
 from crosskimp.common.config.app_config import get_config
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.common_constants import SystemComponent, Exchange
+from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
 
 class BithumbSpotConnectionStrategy:
     """
@@ -23,6 +23,7 @@ class BithumbSpotConnectionStrategy:
     
     # 상수 정의
     BASE_WS_URL = "wss://ws-api.bithumb.com/websocket/v1"
+    EXCHANGE_CODE = Exchange.BITHUMB.value
     
     def __init__(self):
         """초기화"""
@@ -30,7 +31,8 @@ class BithumbSpotConnectionStrategy:
         self.config = get_config()
         self.subscriptions = []
         self.id_counter = 1  # 요청 ID 카운터
-        # self.logger.info(f"빗썸 현물 연결 전략 초기화")
+        self.exchange_name = EXCHANGE_NAMES_KR.get(self.EXCHANGE_CODE, "[빗썸]")
+        # self.logger.info(f"{self.exchange_name} 연결 전략 초기화")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""
@@ -50,7 +52,7 @@ class BithumbSpotConnectionStrategy:
         Returns:
             websockets.WebSocketClientProtocol: 웹소켓 연결 객체
         """
-        # self.logger.info(f"빗썸 현물 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
+        # self.logger.info(f"{self.exchange_name} 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
         
         retry_count = 0
         while True:
@@ -65,15 +67,15 @@ class BithumbSpotConnectionStrategy:
                     timeout=timeout
                 )
                 
-                # self.logger.info("빗썸 현물 웹소켓 연결 성공")
+                self.logger.info(f"{self.exchange_name} 웹소켓 연결 성공")
                 return ws
             
             except asyncio.TimeoutError:
-                self.logger.warning(f"빗썸 현물 웹소켓 연결 타임아웃 ({retry_count}번째 시도), 재시도 중...")
+                self.logger.warning(f"{self.exchange_name} 웹소켓 연결 타임아웃 ({retry_count}번째 시도), 재시도 중...")
                 await asyncio.sleep(0.5)  # 0.5초 대기 후 재시도
                 
             except Exception as e:
-                self.logger.error(f"빗썸 현물 웹소켓 연결 실패 ({retry_count}번째 시도): {str(e)}")
+                self.logger.error(f"{self.exchange_name} 웹소켓 연결 실패 ({retry_count}번째 시도): {str(e)}")
                 await asyncio.sleep(0.5)  # 0.5초 대기 후 재시도
                 
     async def disconnect(self, ws: websockets.WebSocketClientProtocol) -> None:
@@ -86,9 +88,9 @@ class BithumbSpotConnectionStrategy:
         if ws:
             try:
                 await ws.close()
-                self.logger.info("빗썸 현물 웹소켓 연결 종료됨")
+                self.logger.info(f"{self.exchange_name} 웹소켓 연결 종료됨")
             except Exception as e:
-                self.logger.error(f"빗썸 현물 웹소켓 연결 종료 중 오류: {str(e)}")
+                self.logger.error(f"{self.exchange_name} 웹소켓 연결 종료 중 오류: {str(e)}")
                 
     async def on_connected(self, ws: websockets.WebSocketClientProtocol) -> None:
         """
@@ -113,7 +115,7 @@ class BithumbSpotConnectionStrategy:
             bool: 구독 성공 여부
         """
         if not ws:
-            self.logger.error("빗썸 현물 심볼 구독 실패: 웹소켓 연결 없음")
+            self.logger.error(f"{self.exchange_name} 심볼 구독 실패: 웹소켓 연결 없음")
             return False
             
         try:
@@ -134,8 +136,8 @@ class BithumbSpotConnectionStrategy:
             ]
             
             # 구독 요청 전송
-            self.logger.info(f"빗썸 현물 구독 요청: {len(formatted_symbols)}개 심볼")
-            self.logger.debug(f"빗썸 현물 구독 요청 상세: {subscribe_msg}")
+            self.logger.info(f"{self.exchange_name} 구독 요청: {len(formatted_symbols)}개 심볼")
+            self.logger.debug(f"{self.exchange_name} 구독 요청 상세: {subscribe_msg}")
             
             await ws.send(json.dumps(subscribe_msg))
             
@@ -145,7 +147,7 @@ class BithumbSpotConnectionStrategy:
             return True
             
         except Exception as e:
-            self.logger.error(f"빗썸 현물 구독 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name} 구독 중 오류: {str(e)}")
             return False
             
     async def unsubscribe(self, ws: websockets.WebSocketClientProtocol, symbols: List[str]) -> bool:
@@ -161,7 +163,7 @@ class BithumbSpotConnectionStrategy:
         """
         # 빗썸은 별도의 구독 해제 메시지가 없으므로 구독 목록에서만 제거
         self.subscriptions = [s for s in self.subscriptions if s not in symbols]
-        self.logger.info(f"빗썸 현물 {len(symbols)}개 심볼 구독 해제 (내부적으로만 처리됨)")
+        self.logger.info(f"{self.exchange_name} {len(symbols)}개 심볼 구독 해제 (내부적으로만 처리됨)")
         return True
             
     async def send_ping(self, ws: websockets.WebSocketClientProtocol) -> bool:
@@ -204,7 +206,7 @@ class BithumbSpotConnectionStrategy:
                 result = {
                     "type": "orderbook",
                     "subtype": stream_type.lower(),  # 스트림 타입 소문자로 변환
-                    "exchange": Exchange.BITHUMB.value,
+                    "exchange": self.EXCHANGE_CODE,
                     "symbol": symbol,
                     "event_time": data.get("timestamp", 0),
                     "bids": [],
@@ -242,7 +244,7 @@ class BithumbSpotConnectionStrategy:
             }
             
         except json.JSONDecodeError as e:
-            self.logger.error(f"빗썸 현물 메시지 JSON 파싱 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name} 메시지 JSON 파싱 오류: {str(e)}")
             return {
                 "type": "error",
                 "error": "json_decode_error",
@@ -251,7 +253,7 @@ class BithumbSpotConnectionStrategy:
             }
             
         except Exception as e:
-            self.logger.error(f"빗썸 현물 메시지 처리 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name} 메시지 처리 중 오류: {str(e)}")
             return {
                 "type": "error",
                 "error": "preprocessing_error",

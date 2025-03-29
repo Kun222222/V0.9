@@ -92,8 +92,8 @@ async def initialize() -> bool:
         event_bus = get_event_bus()
         await event_bus.initialize()
         
-        # 오케스트레이터 초기화
-        orchestrator = Orchestrator()
+        # 오케스트레이터 초기화 (이벤트 버스 전달)
+        orchestrator = Orchestrator(event_bus)
         await orchestrator.initialize()
         
         _logger.info("✅ 시스템 초기화 완료")
@@ -148,7 +148,7 @@ async def shutdown_system() -> None:
         if orchestrator and orchestrator.is_initialized():
             await orchestrator.shutdown_system()
         
-        # 이벤트 버스 종료
+        # 이벤트 버스 종료는 오케스트레이터에서 책임지지 않음
         event_bus = get_event_bus()
         await event_bus.shutdown()
         

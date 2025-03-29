@@ -12,7 +12,7 @@ from typing import Dict, List, Any, Optional, Union
 
 from crosskimp.common.config.app_config import get_config
 from crosskimp.common.logger.logger import get_unified_logger
-from crosskimp.common.config.common_constants import SystemComponent, Exchange
+from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
 
 class UpbitSpotConnectionStrategy:
     """
@@ -24,6 +24,7 @@ class UpbitSpotConnectionStrategy:
     # 상수 정의
     BASE_WS_URL = "wss://api.upbit.com/websocket/v1"
     DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    EXCHANGE_CODE = Exchange.UPBIT.value
     
     def __init__(self):
         """초기화"""
@@ -31,7 +32,8 @@ class UpbitSpotConnectionStrategy:
         self.config = get_config()
         self.subscriptions = []
         self.id_counter = 1  # 요청 ID 카운터
-        # self.logger.info(f"업비트 현물 연결 전략 초기화")
+        self.exchange_name = EXCHANGE_NAMES_KR.get(self.EXCHANGE_CODE, "업비트")
+        # self.logger.info(f"{self.exchange_name} 연결 전략 초기화")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""
@@ -55,7 +57,7 @@ class UpbitSpotConnectionStrategy:
         Returns:
             websockets.WebSocketClientProtocol: 웹소켓 연결 객체
         """
-        # self.logger.info(f"업비트 현물 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
+        # self.logger.info(f"{self.exchange_name} 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
         
         retry_count = 0
         while True:
@@ -70,15 +72,15 @@ class UpbitSpotConnectionStrategy:
                     timeout=timeout
                 )
                 
-                # self.logger.info("업비트 현물 웹소켓 연결 성공")
+                # self.logger.info(f"{self.exchange_name} 웹소켓 연결 성공")
                 return ws
                 
             except asyncio.TimeoutError:
-                self.logger.warning(f"업비트 현물 웹소켓 연결 타임아웃 ({retry_count}번째 시도), 재시도 중...")
+                self.logger.warning(f"{self.exchange_name} 웹소켓 연결 타임아웃 ({retry_count}번째 시도), 재시도 중...")
                 await asyncio.sleep(0.5)  # 0.5초 대기 후 재시도
                 
             except Exception as e:
-                self.logger.error(f"업비트 현물 웹소켓 연결 실패 ({retry_count}번째 시도): {str(e)}")
+                self.logger.error(f"{self.exchange_name} 웹소켓 연결 실패 ({retry_count}번째 시도): {str(e)}")
                 await asyncio.sleep(0.5)  # 0.5초 대기 후 재시도
             
     async def disconnect(self, ws: websockets.WebSocketClientProtocol) -> None:
@@ -91,9 +93,9 @@ class UpbitSpotConnectionStrategy:
         if ws:
             try:
                 await ws.close()
-                self.logger.info("업비트 현물 웹소켓 연결 종료됨")
+                self.logger.info(f"{self.exchange_name} 웹소켓 연결 종료됨")
             except Exception as e:
-                self.logger.error(f"업비트 현물 웹소켓 연결 종료 중 오류: {str(e)}")
+                self.logger.error(f"{self.exchange_name} 웹소켓 연결 종료 중 오류: {str(e)}")
                 
     async def on_connected(self, ws: websockets.WebSocketClientProtocol) -> None:
         """
@@ -118,7 +120,7 @@ class UpbitSpotConnectionStrategy:
             bool: 구독 성공 여부
         """
         if not ws:
-            self.logger.error("업비트 현물 심볼 구독 실패: 웹소켓 연결 없음")
+            self.logger.error(f"{self.exchange_name} 심볼 구독 실패: 웹소켓 연결 없음")
             return False
             
         try:
@@ -142,8 +144,8 @@ class UpbitSpotConnectionStrategy:
             ]
             
             # 구독 요청 전송
-            self.logger.info(f"업비트 현물 구독 요청: {len(formatted_symbols)}개 심볼")
-            self.logger.debug(f"업비트 현물 구독 요청 상세: {subscribe_msg}")
+            self.logger.info(f"{self.exchange_name} 구독 요청: {len(formatted_symbols)}개 심볼")
+            self.logger.debug(f"{self.exchange_name} 구독 요청 상세: {subscribe_msg}")
             
             await ws.send(json.dumps(subscribe_msg))
             
@@ -153,7 +155,7 @@ class UpbitSpotConnectionStrategy:
             return True
             
         except Exception as e:
-            self.logger.error(f"업비트 현물 구독 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name} 구독 중 오류: {str(e)}")
             return False
             
     async def unsubscribe(self, ws: websockets.WebSocketClientProtocol, symbols: List[str]) -> bool:
@@ -169,7 +171,7 @@ class UpbitSpotConnectionStrategy:
         """
         # 업비트는 별도의 구독 해제 메시지가 없으므로 구독 목록에서만 제거
         self.subscriptions = [s for s in self.subscriptions if s not in symbols]
-        self.logger.info(f"업비트 현물 {len(symbols)}개 심볼 구독 해제 (내부적으로만 처리됨)")
+        self.logger.info(f"{self.exchange_name} {len(symbols)}개 심볼 구독 해제 (내부적으로만 처리됨)")
         return True
             
     async def send_ping(self, ws: websockets.WebSocketClientProtocol) -> bool:

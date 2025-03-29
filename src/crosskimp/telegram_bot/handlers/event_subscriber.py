@@ -53,34 +53,41 @@ class EventSubscriber:
             # 이벤트 경로 상수 사용
             from crosskimp.common.events.system_types import EventPaths
             
-            # 오더북 수집기 구동 완료 이벤트 구독 추가 (상세 로깅)
-            event_path = EventPaths.OB_COLLECTOR_RUNNING
-            self.logger.info(f"📢 오더북 수집기 구동 완료 이벤트 구독 등록 시작: {event_path}")
+            # 오더북 수집기 구독 이벤트들
+            subscriptions = [
+                (EventPaths.OB_COLLECTOR_START, self.handle_OB_COLLECTOR_START),
+                (EventPaths.OB_COLLECTOR_RUNNING, self.handle_OB_COLLECTOR_RUNNING),
+                (EventPaths.OB_COLLECTOR_CONNECTION_LOST, self.handle_OB_COLLECTOR_CONNECTION_LOST),
+                (EventPaths.OB_COLLECTOR_STOP, self.handle_OB_COLLECTOR_STOP)
+            ]
             
-            # 핸들러 참조 저장 (디버깅 용이성)
-            handler = self.handle_OB_COLLECTOR_RUNNING
-            handler_id = id(handler)
-            self.logger.info(f"🧩 핸들러 정보: {handler.__qualname__} (ID: {handler_id})")
-            
-            # 등록 전 이벤트 버스 상태 확인
-            pre_handlers = self.event_bus._handlers.get(event_path, [])
-            self.logger.info(f"⏱️ 등록 전 핸들러 수: {len(pre_handlers)}")
-            
-            # 핸들러 등록
-            self.event_bus.register_handler(event_path, handler)
-            
-            # 등록 후 이벤트 버스 상태 확인
-            post_handlers = self.event_bus._handlers.get(event_path, [])
-            self.logger.info(f"⏱️ 등록 후 핸들러 수: {len(post_handlers)}")
-            
-            # 변화 있는지 확인
-            if len(post_handlers) > len(pre_handlers):
-                self.logger.info(f"✅ 핸들러 등록 성공: {event_path}")
-            else:
-                self.logger.warning(f"⚠️ 핸들러 등록에 변화가 없습니다: {event_path}")
-            
-            # 구독 목록에 추가
-            self.subscriptions.append((event_path, handler))
+            # 각 이벤트 핸들러 등록
+            for event_path, handler in subscriptions:
+                self.logger.info(f"📢 이벤트 구독 등록 시작: {event_path}")
+                
+                # 핸들러 참조 저장 (디버깅 용이성)
+                handler_id = id(handler)
+                self.logger.info(f"🧩 핸들러 정보: {handler.__qualname__} (ID: {handler_id})")
+                
+                # 등록 전 이벤트 버스 상태 확인
+                pre_handlers = self.event_bus._handlers.get(event_path, [])
+                self.logger.info(f"⏱️ 등록 전 핸들러 수: {len(pre_handlers)}")
+                
+                # 핸들러 등록
+                self.event_bus.register_handler(event_path, handler)
+                
+                # 등록 후 이벤트 버스 상태 확인
+                post_handlers = self.event_bus._handlers.get(event_path, [])
+                self.logger.info(f"⏱️ 등록 후 핸들러 수: {len(post_handlers)}")
+                
+                # 변화 있는지 확인
+                if len(post_handlers) > len(pre_handlers):
+                    self.logger.info(f"✅ 핸들러 등록 성공: {event_path}")
+                else:
+                    self.logger.warning(f"⚠️ 핸들러 등록에 변화가 없습니다: {event_path}")
+                
+                # 구독 목록에 추가
+                self.subscriptions.append((event_path, handler))
             
             # 구독 설정 완료 로그
             self.logger.info(f"⚙️ 텔레그램 알림 이벤트 구독 설정 완료 (총 {len(self.subscriptions)}개 이벤트 등록)")
@@ -93,6 +100,32 @@ class EventSubscriber:
             self.logger.error(f"🔍 스택 트레이스: {traceback.format_exc()}")
             return False
     
+    async def handle_OB_COLLECTOR_START(self, data):
+        """오더북 수집기 시작 이벤트 처리"""
+        try:
+            self.logger.info(f"📩 오더북 수집기 시작 이벤트 수신: {data}")
+            
+            # 텔레그램 알림 전송
+            message = data.get("message", "🚀 오더북 수집기 실행이 요청되었습니다.")
+            
+            # INFO 레벨로 전송
+            result = await self.notifier.send_notification(
+                message,
+                level=self.notifier.NotificationLevel.INFO,
+                timeout=5.0
+            )
+            
+            # 결과 로깅
+            if result:
+                self.logger.info("✅ 오더북 수집기 시작 알림이 성공적으로 전송되었습니다.")
+            else:
+                self.logger.warning("⚠️ 오더북 수집기 시작 알림 전송이 실패했습니다.")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 오더북 시작 알림 처리 중 오류: {str(e)}", exc_info=True)
+            import traceback
+            self.logger.error(f"🔍 스택 트레이스: {traceback.format_exc()}")
+    
     async def handle_OB_COLLECTOR_RUNNING(self, data):
         """오더북 수집기 구동 완료 이벤트 처리"""
         try:
@@ -103,14 +136,14 @@ class EventSubscriber:
             self.logger.info(f"👥 허용된 채팅 ID: {self.notifier.allowed_chat_ids}")
             
             # 텔레그램 알림 전송
-            message = data.get("message", "오더북 수집기가 성공적으로 구동되었습니다.")
+            message = data.get("message", "✅ 오더북 수집기가 성공적으로 구동되었습니다.")
             self.logger.info(f"📱 텔레그램 알림 전송 시작: '{message}'")
             
-            # SUCCESS 레벨로 전송 (✅ 접두어 사용)
+            # SUCCESS 레벨로 전송
             result = await self.notifier.send_notification(
                 message,
                 level=self.notifier.NotificationLevel.SUCCESS,
-                timeout=5.0  # 5초 타임아웃 (빠른 피드백을 위해)
+                timeout=5.0
             )
             
             # 결과 로깅
@@ -121,7 +154,58 @@ class EventSubscriber:
                 
         except Exception as e:
             self.logger.error(f"❌ 오더북 구동 완료 알림 처리 중 오류: {str(e)}", exc_info=True)
-            # 스택 트레이스 출력
+            import traceback
+            self.logger.error(f"🔍 스택 트레이스: {traceback.format_exc()}")
+    
+    async def handle_OB_COLLECTOR_CONNECTION_LOST(self, data):
+        """오더북 수집기 연결 끊김 이벤트 처리"""
+        try:
+            self.logger.info(f"📩 오더북 수집기 연결 끊김 이벤트 수신: {data}")
+            
+            # 텔레그램 알림 전송
+            message = data.get("message", "⚠️ 오더북 수집기 거래소 연결 끊김 감지!")
+            
+            # WARNING 레벨로 전송
+            result = await self.notifier.send_notification(
+                message,
+                level=self.notifier.NotificationLevel.WARNING,
+                timeout=5.0
+            )
+            
+            # 결과 로깅
+            if result:
+                self.logger.info("✅ 오더북 수집기 연결 끊김 알림이 성공적으로 전송되었습니다.")
+            else:
+                self.logger.warning("⚠️ 오더북 수집기 연결 끊김 알림 전송이 실패했습니다.")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 오더북 연결 끊김 알림 처리 중 오류: {str(e)}", exc_info=True)
+            import traceback
+            self.logger.error(f"🔍 스택 트레이스: {traceback.format_exc()}")
+    
+    async def handle_OB_COLLECTOR_STOP(self, data):
+        """오더북 수집기 종료 이벤트 처리"""
+        try:
+            self.logger.info(f"📩 오더북 수집기 종료 이벤트 수신: {data}")
+            
+            # 텔레그램 알림 전송
+            message = data.get("message", "🛑 오더북 수집기가 종료되었습니다.")
+            
+            # INFO 레벨로 전송
+            result = await self.notifier.send_notification(
+                message,
+                level=self.notifier.NotificationLevel.INFO,
+                timeout=5.0
+            )
+            
+            # 결과 로깅
+            if result:
+                self.logger.info("✅ 오더북 수집기 종료 알림이 성공적으로 전송되었습니다.")
+            else:
+                self.logger.warning("⚠️ 오더북 수집기 종료 알림 전송이 실패했습니다.")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 오더북 종료 알림 처리 중 오류: {str(e)}", exc_info=True)
             import traceback
             self.logger.error(f"🔍 스택 트레이스: {traceback.format_exc()}")
     

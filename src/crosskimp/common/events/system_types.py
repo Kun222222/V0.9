@@ -7,6 +7,33 @@
 
 from enum import Enum
 from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+
+####################################
+# 이벤트 데이터 클래스
+####################################
+@dataclass
+class ProcessStatusEvent:
+    """
+    프로세스 상태 이벤트 데이터 클래스
+    
+    프로세스의 상태 변경 시 발행되는 이벤트의 데이터 구조를 정의합니다.
+    이 클래스를 사용하면 타입 체크와 필수 필드 검증이 가능해집니다.
+    
+    사용 예시:
+        event_data = ProcessStatusEvent(
+            process_name="ob_collector",
+            status=EventPaths.PROCESS_STATUS_RUNNING,
+            event_type=EventPaths.PROCESS_EVENT_STARTED
+        )
+        await event_bus.publish(EventPaths.PROCESS_STATUS, event_data.__dict__)
+    """
+    process_name: str  # 프로세스 이름 (필수)
+    status: str        # 프로세스 상태 (필수) - EventPaths.PROCESS_STATUS_* 상수 사용
+    event_type: str    # 이벤트 유형 (필수) - EventPaths.PROCESS_EVENT_* 상수 사용
+    error_message: Optional[str] = None  # 오류 메시지 (선택, 오류 시에만 사용)
+    details: Dict[str, Any] = field(default_factory=dict)  # 추가 상세 정보 (선택)
+    timestamp: float = field(default_factory=lambda: __import__('time').time())  # 이벤트 발생 시간 (자동 생성)
 
 ####################################
 # 이벤트 경로 체계 (계층 구조)
@@ -95,9 +122,10 @@ class EventPaths:
     OB_COLLECTOR_STOP = "component/ob_collector/stop"            # 오더북 중지됨 (상태 알림)
     OB_COLLECTOR_METRICS = "component/ob_collector/metrics"      # 오더북 메트릭 데이터
     OB_COLLECTOR_CONNECTION = "component/ob_collector/connection" # 오더북 연결 상태
+    OB_COLLECTOR_CONNECTION_LOST = "component/ob_collector/connection_lost" # 오더북 연결 끊김
+    OB_COLLECTOR_EXCHANGE_STATUS = "component/ob_collector/exchange_status" # 거래소별 상태 정보
     OB_COLLECTOR_SUBSCRIPTION = "component/ob_collector/subscription" # 구독 상태
     OB_COLLECTOR_ERROR = "component/ob_collector/error"          # 오더북 오류 발생
-    OB_COLLECTOR_MESSAGE = "component/ob_collector/message"      # 메시지 수신 통계
     
     ###################################
     # 컴포넌트별 이벤트 (텔레그램)
