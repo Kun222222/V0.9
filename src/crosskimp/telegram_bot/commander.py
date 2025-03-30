@@ -19,6 +19,7 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes, App
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent
 from crosskimp.common.config.app_config import get_config
+from crosskimp.telegram_bot.kill_telegram import ensure_single_telegram_bot_instance
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.TELEGRAM.value)
@@ -54,6 +55,13 @@ async def initialize_telegram_bot() -> Bot:
     
     if _telegram_bot_instance is not None:
         return _telegram_bot_instance
+    
+    # 기존 텔레그램 봇 프로세스 종료
+    try:
+        # 단일 인스턴스 보장
+        await ensure_single_telegram_bot_instance()
+    except Exception as e:
+        logger.error(f"기존 텔레그램 봇 종료 중 오류: {str(e)}")
         
     config = get_config()
     telegram_token = config.get_env("telegram.bot_token", "")

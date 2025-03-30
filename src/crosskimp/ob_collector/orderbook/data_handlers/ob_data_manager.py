@@ -276,9 +276,9 @@ class OrderbookDataManager:
             # 오류 정보 표시 추가
             error_text = f", 오류: {ex_stats['errors']}건" if ex_stats['errors'] > 0 else ""
             
-            self.logger.info(f"{exchange_kr} 원시 메시지: {ex_stats['raw_messages']:,}개, "
-                            f"오더북 메시지: {ex_stats['orderbook_messages']:,}개, "
-                            f"초당 메시지: {ex_stats['interval_rate']:.2f}개/초{error_text}")
+            self.logger.info(f"{exchange_kr} RAW: {ex_stats['raw_messages']:,}개, "
+                            f"OB: {ex_stats['orderbook_messages']:,}개, "
+                            f"M/S: {ex_stats['interval_rate']:.2f}개/초{error_text}")
     
     def prepare_for_cpp_export(self, orderbook: Dict) -> Dict:
         """
