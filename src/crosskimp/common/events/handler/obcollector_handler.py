@@ -381,13 +381,12 @@ class OrderbookProcess(ProcessComponent):
                     current_time = time.time()
                     self.logger.debug(f"메트릭 데이터 수집 시작")
                     
-                    # 연결 상태 가져오기
+                    # 1. 연결 상태 메트릭 수집 및 발행
                     connection_metrics = self.collector.connection_manager.get_connection_metrics()
+                    await self._publish_connection_metrics(connection_metrics)
                     
-                    # 메시지 통계 가져오기 (data_manager에서 직접 가져옴)
+                    # 2. 메시지 통계 가져오기 - 단순화 (ob_data_manager에서 이미 출력하므로 발행만 수행)
                     stats = self.collector.data_manager.get_statistics()
-                    
-                    # 메시지 메트릭 형식으로 변환
                     message_metrics = {}
                     for exchange, data in stats["exchanges"].items():
                         message_metrics[exchange] = {
@@ -395,12 +394,9 @@ class OrderbookProcess(ProcessComponent):
                             "rate": data["interval_rate"],
                             "error_count": data.get("errors", 0)
                         }
-                    
-                    # 메트릭 발행
-                    await self._publish_connection_metrics(connection_metrics)
                     await self._publish_message_metrics(message_metrics)
                     
-                    # 시스템 메트릭 생성 및 발행
+                    # 3. 시스템 메트릭 발행
                     system_metrics = {
                         "status": "process/running" if self.all_connected else "process/starting",
                         "uptime": time.time() - self.start_time if hasattr(self, 'start_time') else 0,
@@ -409,24 +405,14 @@ class OrderbookProcess(ProcessComponent):
                     }
                     await self._publish_system_metrics(system_metrics)
                     
-                    # 구독 메트릭 발행
+                    # 4. 구독 메트릭 발행
                     subscription_metrics = self.collector.connection_manager.get_subscription_metrics()
                     await self._publish_subscription_metrics(subscription_metrics)
                     
-                    # 로깅
-                    self.logger.debug(f"메트릭 데이터 수집 및 발행 완료")
+                    # 로그 간소화 (중복 출력 제거)
+                    self.logger.debug(f"메트릭 발행 완료, 다음 메트릭 수집까지 {interval}초 대기")
                     
-                    # 통계 요약 로깅
-                    total_raw_messages = sum(data["raw_messages"] for data in stats["exchanges"].values())
-                    total_interval_count = sum(data["interval_count"] for data in stats["exchanges"].values())
-                    total_rate = sum(data["interval_rate"] for data in stats["exchanges"].values())
-                    
-                    self.logger.info(f"📊 [메트릭 합계] {'전체 거래소':15} | 총: {total_raw_messages:8d}건 | "
-                                 f"수신: {total_interval_count:6d}건/{stats['interval_seconds']:.1f}초 | "
-                                 f"속도: {total_rate:.2f}건/초")
-                    
-                    # 지정된 간격만큼 대기
-                    self.logger.debug(f"다음 메트릭 수집까지 {interval}초 대기")
+                    # 지정된 간격 대기
                     await asyncio.sleep(interval)
                     
                 except asyncio.CancelledError:
