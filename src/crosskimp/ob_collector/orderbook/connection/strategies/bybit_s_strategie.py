@@ -43,44 +43,32 @@ class BybitSpotConnectionStrategy:
         """바이빗은 클라이언트 측에서 20초마다 ping이 필요함"""
         return True
         
-    async def connect(self, timeout: int = 0.5) -> websockets.WebSocketClientProtocol:
+    async def connect(self) -> websockets.WebSocketClientProtocol:
         """
         웹소켓 연결 수립
         
-        Args:
-            timeout: 연결 타임아웃 (초)
-            
         Returns:
             websockets.WebSocketClientProtocol: 웹소켓 연결 객체
         """
-        # self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
-        
-        retry_count = 0
-        while True:
-            try:
-                retry_count += 1
-                # 웹소켓 연결 (짧은 타임아웃으로 설정)
-                ws = await asyncio.wait_for(
-                    websockets.connect(
-                        self.BASE_WS_URL,
-                        ping_interval=20,  # 내부 핑 간격 (초)
-                        ping_timeout=10,   # 핑 타임아웃 (초)
-                        close_timeout=10   # 닫기 타임아웃 (초)
-                    ),
-                    timeout=timeout
-                )
-                
-                # self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 성공")
-                return ws
-                
-            except asyncio.TimeoutError:
-                self.logger.warning(f"{self.exchange_name_kr} 웹소켓 연결 타임아웃 ({retry_count}번째 시도), 재시도 중...")
-                await asyncio.sleep(0.5)  # 0.5초 대기 후 재시도
-                
-            except Exception as e:
-                self.logger.error(f"{self.exchange_name_kr} 웹소켓 연결 실패 ({retry_count}번째 시도): {str(e)}")
-                await asyncio.sleep(0.5)  # 0.5초 대기 후 재시도
+        try:
+            # 설정된 URI로 웹소켓 연결 수립
+            # 내장 핑퐁 메커니즘 비활성화 (ping_interval=None)
+            # 자체 핑퐁 메커니즘을 구현하여 사용
+            ws = await websockets.connect(
+                self.BASE_WS_URL,
+                ping_interval=None,  # 내장 핑퐁 비활성화
+                ping_timeout=None,   # 내장 핑퐁 타임아웃 비활성화
+                close_timeout=2.0,   # 빠른 종료를 위한 타임아웃 설정
+                max_size=1024 * 1024 * 10  # 최대 메시지 크기 증가 (10MB)
+            )
             
+            # 연결 성공
+            return ws
+            
+        except Exception as e:
+            # self.logger.error(f"바이빗 현물 웹소켓 연결 실패: {str(e)}")
+            raise
+        
     async def disconnect(self, ws: websockets.WebSocketClientProtocol) -> None:
         """
         웹소켓 연결 종료

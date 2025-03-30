@@ -15,6 +15,8 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, SystemComponent, EXCHANGE_NAMES_KR
 from crosskimp.common.config.app_config import get_config
 
+# 메트릭 모듈 임포트 제거
+
 # 기존 컴포넌트 임포트
 from crosskimp.ob_collector.core.aggregator import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
@@ -48,8 +50,12 @@ class OrderbookCollectorManager:
         # 설정 로드
         self.config = get_config()
         
-        # 서브 컴포넌트 초기화
+        # ConnectionManager 먼저 초기화 (다른 컴포넌트의 의존성)
         self.connection_manager = ConnectionManager()
+        
+        # 메트릭 관리자 삭제 - 외부에서 주입받도록 변경됨
+        
+        # 서브 컴포넌트 초기화
         self.factory = get_factory()
         self.aggregator = Aggregator(self.config.exchange_settings)
         self.usdtkrw_monitor = WsUsdtKrwMonitor()
@@ -88,6 +94,8 @@ class OrderbookCollectorManager:
         """
         try:
             self.logger.info("오더북 수집 시스템 초기화 시작...")
+            
+            # 메트릭 관리자 초기화 제거
             
             # 1. 심볼 필터링 실행
             self.logger.info("심볼 필터링 시작...")
@@ -170,10 +178,16 @@ class OrderbookCollectorManager:
             return False
             
     async def _connect_and_subscribe_all(self) -> None:
+        """모든 거래소 연결 및 심볼 구독"""
         """모든 거래소 연결 및 구독"""
         connect_tasks = []
         
         for exchange_code in self.connectors:
+            # 현재 연결 상태 확인 - 이미 연결된 경우 스킵
+            if self.connection_manager.is_exchange_connected(exchange_code):
+                self.logger.info(f"{EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)} 이미 연결되어 있습니다. 연결 시도 스킵")
+                continue
+                
             # 연결 태스크 추가
             connect_tasks.append(self._connect_and_subscribe(exchange_code))
             
@@ -181,14 +195,21 @@ class OrderbookCollectorManager:
         if connect_tasks:
             results = await asyncio.gather(*connect_tasks, return_exceptions=True)
             
-            success_count = sum(1 for res in results if res is True)
+            # 결과 처리 - 예외를 포함할 수 있음
+            success_count = 0
+            for i, res in enumerate(results):
+                if isinstance(res, Exception):
+                    self.logger.error(f"거래소 연결 중 오류 발생: {str(res)}")
+                elif res is True:
+                    success_count += 1
+                    
             self.logger.info(f"거래소 연결 결과: {success_count}/{len(connect_tasks)}개 성공")
         else:
-            self.logger.warning("연결할 거래소가 없습니다.")
+            self.logger.warning("연결할 거래소가 없거나 모두 이미 연결되어 있습니다.")
             
     async def _connect_and_subscribe(self, exchange_code: str) -> bool:
         """
-        특정 거래소 연결 및 구독
+        특정 거래소 연결 및 심볼 구독
         
         Args:
             exchange_code: 거래소 코드
@@ -196,44 +217,60 @@ class OrderbookCollectorManager:
         Returns:
             bool: 성공 여부
         """
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
+        symbols = self.filtered_symbols.get(exchange_code, [])
+        connector = self.connectors.get(exchange_code)
+        
+        if not connector:
+            self.logger.error(f"{exchange_kr} 커넥터를 찾을 수 없습니다.")
+            return False
+        
+        if not symbols:
+            self.logger.warning(f"{exchange_kr}의 구독할 심볼이 없습니다.")
+            return False
+        
         try:
-            exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
-            self.logger.info(f"🟠 {exchange_kr} 연결 시작...")
+            # 1. 오더북 콜백 설정 - set_orderbook_callback을 add_orderbook_callback로 변경
+            connector.add_orderbook_callback(self._on_orderbook_update)
             
-            # 거래소 커넥터 가져오기
-            connector = self.connection_manager.get_connector(exchange_code)
-            if not connector:
-                self.logger.error(f"{exchange_kr} 커넥터가 없습니다.")
-                return False
-                
-            # 오더북 콜백 등록
+            # 2. 추가 콜백 설정
             for callback in self.orderbook_callbacks:
                 connector.add_orderbook_callback(callback)
-                
-            # 연결
-            if not await connector.connect():
-                self.logger.error(f"{exchange_kr} 연결 실패")
+            
+            # 3. 연결 시도
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 시작")
+            connected = await connector.connect()
+            
+            if not connected:
+                self.logger.error(f"{exchange_kr} 웹소켓 연결 실패")
                 return False
-                
-            # 심볼 목록 가져오기
-            symbols = self.filtered_symbols.get(exchange_code, [])
-            if not symbols:
-                self.logger.warning(f"{exchange_kr} 구독할 심볼이 없습니다.")
-                return True  # 심볼이 없어도 연결은 성공으로 간주
-                
-            # 구독
-            if not await connector.subscribe(symbols):
+            
+            self.logger.info(f"{exchange_kr} 웹소켓 연결 성공")
+            
+            # 4. 심볼 구독 - subscribe_symbols를 subscribe로 변경
+            self.logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
+            subscribed = await connector.subscribe(symbols)
+            
+            if not subscribed:
                 self.logger.error(f"{exchange_kr} 심볼 구독 실패")
                 return False
-                
-            self.logger.info(f"{exchange_kr} 연결 및 구독 성공 ({len(symbols)}개 심볼)")
+            
+            # 5. ConnectionManager에 구독 상태 업데이트 (추가)
+            self.connection_manager.update_subscription_status(
+                exchange_code, 
+                active=True, 
+                symbols=symbols, 
+                symbol_count=len(symbols)
+            )
+            
+            self.logger.info(f"{exchange_kr} 구독 완료: {len(symbols)}개 심볼")
             return True
             
         except Exception as e:
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
             self.logger.error(f"{exchange_kr} 연결 및 구독 중 오류: {str(e)}", exc_info=True)
             return False
-            
+
     def add_orderbook_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """
         오더북 업데이트 콜백 등록
@@ -324,15 +361,27 @@ class OrderbookCollectorManager:
             data: 오더북 업데이트 데이터
         """
         try:
+            # 심볼 정보 추출 및 타임스탬프 업데이트
+            exchange = data.get("exchange", "unknown")
+            symbol = data.get("symbol", "unknown")
+            self.connection_manager.update_symbol_timestamp(exchange, symbol)
+            
             # 콜백 실행
             for callback in self.orderbook_callbacks:
                 try:
                     callback(data)
                 except Exception as e:
+                    # 오류 카운트 제거 - data_manager로 이관
                     self.logger.error(f"오더북 콜백 실행 중 오류: {str(e)}")
+                    # 대신 data_manager에 오류 기록
+                    self.data_manager.log_error(exchange)
                     
         except Exception as e:
+            exchange = data.get("exchange", "unknown") if isinstance(data, dict) else "unknown"
+            # 오류 카운트 제거 - data_manager로 이관
             self.logger.error(f"오더북 업데이트 처리 중 오류: {str(e)}")
+            # 대신 data_manager에 오류 기록
+            self.data_manager.log_error(exchange)
     
     async def _print_stats_periodically(self):
         """주기적으로 데이터 관리자 통계 출력"""
@@ -351,6 +400,22 @@ class OrderbookCollectorManager:
             pass
         except Exception as e:
             self.logger.error(f"통계 출력 태스크 오류: {str(e)}")
+
+    def get_raw_metrics_data(self):
+        """
+        메트릭 계산에 필요한 원시 데이터 제공
+        
+        Returns:
+            Dict: 원시 메트릭 데이터 (USDT/KRW 가격만)
+        """
+        try:
+            # 기본 메트릭 데이터 단순화 - USDT/KRW 가격만 반환
+            return {
+                "usdtkrw_prices": self.usdtkrw_monitor.get_all_prices()
+            }
+        except Exception as e:
+            self.logger.error(f"원시 메트릭 데이터 수집 중 오류: {str(e)}", exc_info=True)
+            return {}
 
 # 사용 예시
 async def main():

@@ -241,21 +241,28 @@ class BinanceFutureConnector(ExchangeConnectorInterface):
         if self.is_shutting_down:
             return
             
-        reconnect_delay = 1.0
-        self.logger.info(f"{self.name} {reconnect_delay}초 후 재연결 시도...")
-        await asyncio.sleep(reconnect_delay)
-        
-        # 재연결 시도
-        await self.disconnect()
-        await self.connect()
-        
-        # 재연결 후 구독 복원
-        if self.is_connected and self.subscribed_symbols:
-            self.logger.info(f"{self.name} 재연결 후 {len(self.subscribed_symbols)}개 심볼 재구독 시도...")
-            await self.subscribe(self.subscribed_symbols)
-            # 재연결 후 스냅샷 갱신
-            await self.refresh_snapshots()
+        # 연결 관리자에 재연결 요청
+        if self.connection_manager:
+            self.logger.info(f"{self.name} 연결 관리자에 재연결 요청")
+            self.connection_manager.reconnect_exchange(self.exchange_code)
+        else:
+            self.logger.warning(f"{self.name} 연결 관리자가 없어 직접 재연결 시도")
+            # 연결 관리자가 없는 경우에만 기존 로직 사용
+            reconnect_delay = 1.0
+            self.logger.info(f"{self.name} {reconnect_delay}초 후 재연결 시도...")
+            await asyncio.sleep(reconnect_delay)
             
+            # 재연결 시도
+            await self.disconnect()
+            await self.connect()
+            
+            # 재연결 후 구독 복원
+            if self.is_connected and self.subscribed_symbols:
+                self.logger.info(f"{self.name} 재연결 후 {len(self.subscribed_symbols)}개 심볼 재구독 시도...")
+                await self.subscribe(self.subscribed_symbols)
+                # 재연결 후 스냅샷 갱신
+                await self.refresh_snapshots()
+        
     async def subscribe(self, symbols: List[str]) -> bool:
         """
         심볼 구독

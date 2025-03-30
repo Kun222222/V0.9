@@ -17,6 +17,8 @@ class ConnectionManager:
     1. 거래소 연결 객체 관리
     2. 연결 상태 추적 (단일 진실 공급원)
     3. 연결 상태 모니터링
+    4. 구독 상태 관리 (추가됨)
+    5. 연결 시작 시간 및 업타임 트래킹 (추가됨)
     """
     
     def __init__(self, metrics_manager=None):
@@ -49,6 +51,18 @@ class ConnectionManager:
         
         # 재연결 콜백 (obcollector_manager의 _connect_and_subscribe 함수를 저장)
         self.reconnect_callback = None
+        
+        # 재연결 락 시스템 - 거래소별 락으로 동시 재연결 방지
+        self.reconnect_locks = {}
+        
+        # 연결 시작 시간 추적 (추가됨)
+        self.connection_start_time = {}
+        
+        # 구독 상태 관리 (추가됨)
+        self.subscription_status = {}
+        
+        # 심볼별 타임스탬프 (추가됨)
+        self.symbol_timestamps = {}
 
         # 로깅 추가 - 객체 생성 완료
         self.logger.debug("ConnectionManager 객체 생성 완료")
@@ -65,6 +79,19 @@ class ConnectionManager:
         self.connectors[exchange_code] = connector
         self.exchange_status[exchange_code] = False  # 초기 상태는 연결 안됨
         self.total_exchanges_count = len(self.connectors)
+        
+        # 구독 상태 초기화 (추가됨)
+        if exchange_code not in self.subscription_status:
+            self.subscription_status[exchange_code] = {
+                "active": False,
+                "symbol_count": 0,
+                "symbols": [],
+                "last_update": time.time()
+            }
+        
+        # 거래소별 락 생성
+        if exchange_code not in self.reconnect_locks:
+            self.reconnect_locks[exchange_code] = asyncio.Lock()
         
         # 바이낸스 선물인 경우 로깅 생략
         if exchange_code == Exchange.BINANCE_FUTURE.value:
@@ -96,6 +123,16 @@ class ConnectionManager:
         # 상태 업데이트
         self.exchange_status[exchange_code] = is_connected
         
+        # 연결 시작 시간 관리 (추가됨)
+        current_time = time.time()
+        if is_connected and not old_status:
+            # 새롭게 연결된 경우 시작 시간 기록
+            self.connection_start_time[exchange_code] = current_time
+        elif not is_connected and old_status:
+            # 연결이 끊긴 경우 시작 시간 제거
+            if exchange_code in self.connection_start_time:
+                del self.connection_start_time[exchange_code]
+        
         # 메트릭 업데이트 (메트릭 관리자가 있는 경우)
         if self.metric_manager:
             self.metric_manager.update_exchange_status(exchange_code, is_connected)
@@ -104,6 +141,8 @@ class ConnectionManager:
         if is_connected and not old_status:
             self.connected_exchanges_count += 1
             self.logger.info(f"🟢 {exchange_kr} 연결됨 (총 {self.connected_exchanges_count}/{self.total_exchanges_count})")
+            # 연결 성공 시 재연결 카운터 리셋
+            self.reconnect_count[exchange_code] = 0
         elif not is_connected and old_status:
             self.connected_exchanges_count = max(0, self.connected_exchanges_count - 1)
             self.logger.info(f"🔴 {exchange_kr} 연결 끊김 (총 {self.connected_exchanges_count}/{self.total_exchanges_count})")
@@ -167,6 +206,178 @@ class ConnectionManager:
             Any: 거래소 커넥터 객체 또는 None
         """
         return self.connectors.get(exchange_code)
+
+    # 업타임 계산 메서드 (추가됨)
+    def calculate_uptime(self, exchange_code: str) -> float:
+        """
+        거래소 연결 업타임 계산
+        
+        Args:
+            exchange_code: 거래소 코드
+            
+        Returns:
+            float: 업타임 (초 단위)
+        """
+        if not self.is_exchange_connected(exchange_code):
+            return 0.0
+            
+        if exchange_code not in self.connection_start_time:
+            return 0.0
+            
+        return time.time() - self.connection_start_time.get(exchange_code, time.time())
+    
+    def format_uptime(self, seconds: float) -> str:
+        """
+        업타임을 가독성 있는 형태로 포맷팅
+        
+        Args:
+            seconds: 초 단위 시간
+            
+        Returns:
+            str: 포맷팅된 업타임 문자열 (예: "2시간 30분")
+        """
+        if seconds < 60:
+            return f"{int(seconds)}초"
+        elif seconds < 3600:
+            return f"{int(seconds / 60)}분 {int(seconds % 60)}초"
+        else:
+            hours = int(seconds / 3600)
+            minutes = int((seconds % 3600) / 60)
+            return f"{hours}시간 {minutes}분"
+    
+    # 구독 상태 관리 메서드 (추가됨)
+    def update_subscription_status(self, exchange_code: str, active: bool, 
+                                 symbols: List[str], symbol_count: Optional[int] = None):
+        """
+        거래소 구독 상태 업데이트
+        
+        Args:
+            exchange_code: 거래소 코드
+            active: 구독 활성화 여부
+            symbols: 구독 중인 심볼 목록
+            symbol_count: 구독 중인 심볼 수 (None이면 len(symbols)로 계산)
+        """
+        if exchange_code not in self.subscription_status:
+            self.subscription_status[exchange_code] = {
+                "active": False,
+                "symbol_count": 0,
+                "symbols": [],
+                "last_update": time.time()
+            }
+        
+        if symbol_count is None:
+            symbol_count = len(symbols)
+            
+        self.subscription_status[exchange_code]["active"] = active
+        self.subscription_status[exchange_code]["symbol_count"] = symbol_count
+        self.subscription_status[exchange_code]["symbols"] = symbols
+        self.subscription_status[exchange_code]["last_update"] = time.time()
+        
+        # 심볼별 타임스탬프 업데이트
+        current_time = time.time()
+        for symbol in symbols:
+            key = f"{exchange_code}:{symbol}"
+            self.symbol_timestamps[key] = current_time
+        
+        # 로깅
+        exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
+        self.logger.debug(f"{exchange_kr} 구독 상태 업데이트: {symbol_count}개 심볼, 활성화={active}")
+    
+    def get_subscription_status(self, exchange_code: Optional[str] = None):
+        """
+        구독 상태 조회
+        
+        Args:
+            exchange_code: 거래소 코드 (None이면 모든 거래소 반환)
+            
+        Returns:
+            Dict: 구독 상태 정보
+        """
+        if exchange_code:
+            return self.subscription_status.get(exchange_code, {
+                "active": False,
+                "symbol_count": 0,
+                "symbols": [],
+                "last_update": 0
+            })
+        else:
+            return self.subscription_status.copy()
+    
+    def update_symbol_timestamp(self, exchange_code: str, symbol: str):
+        """
+        특정 심볼의 마지막 업데이트 시간 기록
+        
+        Args:
+            exchange_code: 거래소 코드
+            symbol: 심볼명
+        """
+        key = f"{exchange_code}:{symbol}"
+        self.symbol_timestamps[key] = time.time()
+    
+    def get_symbol_timestamp(self, exchange_code: str, symbol: str) -> float:
+        """
+        특정 심볼의 마지막 업데이트 시간 조회
+        
+        Args:
+            exchange_code: 거래소 코드
+            symbol: 심볼명
+            
+        Returns:
+            float: 마지막 업데이트 시간 (타임스탬프)
+        """
+        key = f"{exchange_code}:{symbol}"
+        return self.symbol_timestamps.get(key, 0)
+    
+    # 메트릭 수집용 인터페이스 메서드 (추가됨)
+    def get_connection_metrics(self) -> Dict[str, Any]:
+        """
+        연결 관련 메트릭 데이터 수집
+        
+        Returns:
+            Dict: 각 거래소별 연결 상태 및 업타임 정보
+        """
+        result = {}
+        
+        for exchange, connected in self.exchange_status.items():
+            # 업타임 계산
+            uptime = self.calculate_uptime(exchange)
+            
+            result[exchange] = {
+                "connected": connected,
+                "uptime": uptime,
+                "uptime_formatted": self.format_uptime(uptime) if uptime > 0 else "연결 안됨",
+                "reconnect_count": self.reconnect_count.get(exchange, 0),
+                "last_connected": self.connection_start_time.get(exchange, 0)
+            }
+            
+        return result
+    
+    def get_subscription_metrics(self) -> Dict[str, Any]:
+        """
+        구독 관련 메트릭 데이터 수집
+        
+        Returns:
+            Dict: 각 거래소별 구독 상태 정보
+        """
+        result = {}
+        
+        for exchange, status in self.subscription_status.items():
+            # 심볼별 타임스탬프 정보 수집
+            symbols_data = {}
+            for symbol in status["symbols"]:
+                key = f"{exchange}:{symbol}"
+                symbols_data[symbol] = {
+                    "last_update": self.symbol_timestamps.get(key, 0)
+                }
+            
+            result[exchange] = {
+                "active": status["active"],
+                "total_symbols": status["symbol_count"],
+                "symbols": symbols_data,
+                "last_update": status["last_update"]
+            }
+            
+        return result
 
     def start_monitoring(self, interval: int = 1):
         """
@@ -257,7 +468,7 @@ class ConnectionManager:
                             
                     # 연결이 끊어진 경우 재연결 시도
                     if not saved_state:
-                        # 재연결 시도 횟수 확인 - 5회 미만인 경우만 재시도
+                        # 재연결 시도 횟수 확인 - 50회 미만인 경우만 재시도
                         if exchange_code not in self.reconnect_count or self.reconnect_count[exchange_code] < 50:
                             self.logger.info(f"{exchange_kr} 연결 끊김 상태 감지, 재연결 시도 예약...")
                             # 재연결 태스크 생성
@@ -297,10 +508,10 @@ class ConnectionManager:
         self.logger.info(f"모든 거래소 연결 종료 완료 (성공: {success_count}, 실패: {error_count})")
         return success_count > 0
 
-    # 단순화된 재연결 메서드
+    # 중앙화된 재연결 메서드
     async def reconnect_exchange(self, exchange_code: str) -> bool:
         """
-        거래소 재연결 시도 - obcollector_manager의 _connect_and_subscribe 활용
+        거래소 재연결 시도 - 모든 재연결의 단일 진입점
         
         Args:
             exchange_code: 재연결할 거래소 코드
@@ -311,73 +522,83 @@ class ConnectionManager:
         # 거래소 한글명 가져오기
         exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
         
-        # 재연결 횟수 증가
-        self.reconnect_count[exchange_code] = self.reconnect_count.get(exchange_code, 0) + 1
-        count = self.reconnect_count[exchange_code]
-        
-        # 너무 많은 재연결 시도 방지 (최대 30회까지 허용)
-        if count > 30:
-            self.logger.warning(f"{exchange_kr} 재연결 최대 시도 횟수 초과 (30회), 5분 후 다시 시도")
-            await asyncio.sleep(300)  # 5분 후 다시 시도할 수 있도록 카운터 리셋
-            self.reconnect_count[exchange_code] = 0
+        # 해당 거래소에 대해 이미 재연결 진행 중인지 확인 (락 사용)
+        if exchange_code not in self.reconnect_locks:
+            self.reconnect_locks[exchange_code] = asyncio.Lock()
+            
+        # 비동기 락 획득 시도 (다른 재연결 시도와 충돌 방지)
+        if self.reconnect_locks[exchange_code].locked():
+            self.logger.debug(f"{exchange_kr} 이미 재연결 진행 중입니다. 중복 요청 무시")
             return False
-        
-        # 항상 1초 후에 재연결 시도
-        wait_time = 1.0
-        
-        self.logger.info(f"{exchange_kr} 재연결 {count}번째 시도 예정 ({wait_time}초 후)...")
-        await asyncio.sleep(wait_time)
-        
-        # 1. 커넥터 객체 가져오기
-        connector = self.get_connector(exchange_code)
-        if not connector:
-            self.logger.error(f"{exchange_kr} 재연결 실패: 커넥터를 찾을 수 없음")
-            return False
-        
-        # 2. 기존 연결 정리
-        try:
-            if hasattr(connector, 'disconnect'):
-                await connector.disconnect()
-                self.logger.info(f"{exchange_kr} 기존 연결 정리 완료")
-            else:
-                self.logger.warning(f"{exchange_kr} disconnect 메서드가 없음")
-        except Exception as e:
-            self.logger.error(f"{exchange_kr} 연결 정리 중 오류: {str(e)}")
-        
-        # 3. 재연결 콜백이 설정된 경우 사용 (obcollector_manager._connect_and_subscribe)
-        if self.reconnect_callback:
-            try:
-                self.logger.info(f"{exchange_kr} 재연결 콜백 실행...")
-                result = await self.reconnect_callback(exchange_code)
-                
-                if result:
-                    self.logger.info(f"{exchange_kr} 재연결 성공 (콜백 사용)")
-                    self.reconnect_count[exchange_code] = 0  # 성공 시 카운터 리셋
-                    return True
-                else:
-                    self.logger.error(f"{exchange_kr} 재연결 실패 (콜백 사용)")
-                    return False
-            except Exception as e:
-                self.logger.error(f"{exchange_kr} 재연결 콜백 실행 중 오류: {str(e)}")
+            
+        async with self.reconnect_locks[exchange_code]:
+            # 재연결 횟수 증가
+            self.reconnect_count[exchange_code] = self.reconnect_count.get(exchange_code, 0) + 1
+            count = self.reconnect_count[exchange_code]
+            
+            # 너무 많은 재연결 시도 방지 (최대 50회까지 허용)
+            if count > 50:
+                self.logger.warning(f"{exchange_kr} 재연결 최대 시도 횟수 초과 (50회), 5분 후 다시 시도")
+                await asyncio.sleep(300)  # 5분 후 다시 시도할 수 있도록 카운터 리셋
+                self.reconnect_count[exchange_code] = 0
                 return False
-        
-        # 4. 콜백이 없는 경우 기본 연결만 시도
-        else:
+            
+            # 항상 1초 후에 재연결 시도
+            wait_time = 1.0
+            
+            self.logger.info(f"{exchange_kr} 재연결 {count}번째 시도 예정 ({wait_time}초 후)...")
+            await asyncio.sleep(wait_time)
+            
+            # 1. 커넥터 객체 가져오기
+            connector = self.get_connector(exchange_code)
+            if not connector:
+                self.logger.error(f"{exchange_kr} 재연결 실패: 커넥터를 찾을 수 없음")
+                return False
+            
+            # 2. 기존 연결 정리
             try:
-                # 직접 connect 호출
-                if hasattr(connector, 'connect'):
-                    connect_result = await connector.connect()
-                    if connect_result:
-                        self.logger.info(f"{exchange_kr} 연결 성공 (구독은 수행되지 않음)")
-                        self.update_exchange_status(exchange_code, True)
+                if hasattr(connector, 'disconnect'):
+                    await connector.disconnect()
+                    self.logger.info(f"{exchange_kr} 기존 연결 정리 완료")
+                else:
+                    self.logger.warning(f"{exchange_kr} disconnect 메서드가 없음")
+            except Exception as e:
+                self.logger.error(f"{exchange_kr} 연결 정리 중 오류: {str(e)}")
+            
+            # 3. 재연결 콜백이 설정된 경우 사용 (obcollector_manager._connect_and_subscribe)
+            if self.reconnect_callback:
+                try:
+                    self.logger.info(f"{exchange_kr} 재연결 콜백 실행...")
+                    result = await self.reconnect_callback(exchange_code)
+                    
+                    if result:
+                        self.logger.info(f"{exchange_kr} 재연결 성공 (콜백 사용)")
                         self.reconnect_count[exchange_code] = 0  # 성공 시 카운터 리셋
                         return True
                     else:
-                        self.logger.error(f"{exchange_kr} 연결 실패")
+                        self.logger.error(f"{exchange_kr} 재연결 실패 (콜백 사용)")
                         return False
-                else:
-                    self.logger.error(f"{exchange_kr} connect 메서드가 없음")
+                except Exception as e:
+                    self.logger.error(f"{exchange_kr} 재연결 콜백 실행 중 오류: {str(e)}")
                     return False
-            except Exception as e:
-                self.logger.error(f"{exchange_kr} 재연결 중 오류: {str(e)}")
-                return False 
+            
+            # 4. 콜백이 없는 경우 기본 연결만 시도
+            else:
+                try:
+                    # 직접 connect 호출
+                    if hasattr(connector, 'connect'):
+                        connect_result = await connector.connect()
+                        if connect_result:
+                            self.logger.info(f"{exchange_kr} 연결 성공 (구독은 수행되지 않음)")
+                            self.update_exchange_status(exchange_code, True)
+                            self.reconnect_count[exchange_code] = 0  # 성공 시 카운터 리셋
+                            return True
+                        else:
+                            self.logger.error(f"{exchange_kr} 연결 실패")
+                            return False
+                    else:
+                        self.logger.error(f"{exchange_kr} connect 메서드가 없음")
+                        return False
+                except Exception as e:
+                    self.logger.error(f"{exchange_kr} 재연결 중 오류: {str(e)}")
+                    return False 

@@ -14,7 +14,8 @@ from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.events.handler.process_component import ProcessComponent
 from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR
 from crosskimp.common.events.system_types import EventChannels, EventValues
-from crosskimp.common.events.handler.metric.reporter import ObcMetricReporter
+
+# 메트릭 모듈 임포트 제거 (사용하지 않음)
 
 # 오더북 수집기 임포트
 from crosskimp.ob_collector.obcollector import OrderbookCollectorManager
@@ -51,7 +52,7 @@ class OrderbookProcess(ProcessComponent):
         
         # 메트릭 수집 관련 변수
         self.metric_interval = self.config.get("metrics", {}).get("interval", 20)  # 기본값 20초
-        self.metric_reporter = None
+        self.metric_collection_task = None  # 메트릭 수집 태스크 참조
         
         # 거래소 상태 추적용 변수
         self.exchange_uptimes = {}  # 각 거래소별 연결 시작 시간
@@ -60,6 +61,14 @@ class OrderbookProcess(ProcessComponent):
         
         # 모니터링 태스크 참조
         self._monitoring_task = None
+
+        # 텔레그램 주기적 알림 관련 설정
+        self.telegram_status_interval = 10 * 60  # 10분(초 단위)
+        self.last_telegram_status_time = 0  # 마지막 알림 시간
+        
+        # 이전 메트릭 저장 (변경점 계산용)
+        self.previous_metrics = {}
+        self.last_metric_time = None
 
     async def _do_start(self) -> bool:
         """
@@ -99,11 +108,17 @@ class OrderbookProcess(ProcessComponent):
                 self.logger.error("오더북 수집기 시작 실패")
                 return False
                 
-            # 3. 메트릭 수집 시작 (백그라운드에서, 실패해도 계속 진행)
+            # 3. 메트릭 수집 시작 - 변경: 직접 메트릭 수집 및 발행
             try:
                 self.logger.info("메트릭 수집 시작")
-                self.metric_reporter = ObcMetricReporter(self.collector, self.metric_interval)
-                await self.metric_reporter.start()
+                # ObcMetricManager 초기화 코드 제거
+                
+                # 메트릭 수집 태스크 시작
+                self.metric_collection_task = asyncio.create_task(
+                    self._collect_and_publish_metrics(self.metric_interval)
+                )
+                self.logger.info(f"메트릭 수집 태스크 시작됨 (간격: {self.metric_interval}초)")
+                
             except Exception as e:
                 self.logger.error(f"메트릭 수집 시작 실패: {str(e)}")
                 # 메트릭 실패는 치명적이지 않으므로 계속 진행
@@ -135,19 +150,25 @@ class OrderbookProcess(ProcessComponent):
 
     def _get_formatted_exchange_status(self, exchange_status: Dict[str, bool]) -> List[Dict[str, Any]]:
         """모든 거래소 상태 정보를 포맷팅"""
-        current_time = time.time()
         exchanges_info = []
         
         # 지원하는 거래소 목록 (필터링된 거래소 목록이 있으면 사용)
         supported_exchanges = list(self.collector.filtered_symbols.keys() if hasattr(self.collector, 'filtered_symbols') else exchange_status.keys())
         
+        # ConnectionManager에서 정보 가져오기
+        connection_metrics = self.collector.connection_manager.get_connection_metrics()
+        subscription_metrics = self.collector.connection_manager.get_subscription_metrics()
+        
         for exchange in supported_exchanges:
             is_connected = exchange_status.get(exchange, False)
             
-            # 업타임 계산
+            # ConnectionManager에서 업타임 정보 가져오기
             uptime_seconds = 0
-            if is_connected and exchange in self.exchange_uptimes:
-                uptime_seconds = current_time - self.exchange_uptimes[exchange]
+            uptime_formatted = "연결 안됨"
+            
+            if exchange in connection_metrics:
+                uptime_seconds = connection_metrics[exchange].get("uptime", 0)
+                uptime_formatted = connection_metrics[exchange].get("uptime_formatted", "연결 안됨")
                 
             # 거래소 표시명 가져오기 (한글명 있으면 사용)
             exchange_name = EXCHANGE_NAMES_KR.get(exchange, exchange)
@@ -155,24 +176,17 @@ class OrderbookProcess(ProcessComponent):
             # 구독 심볼 수 정보 가져오기
             subscribed_symbols_count = 0
             
-            # 직접 collector의 filtered_symbols 속성에서 심볼 정보 가져오기
-            if hasattr(self.collector, 'filtered_symbols'):
-                # filtered_symbols는 {exchange_name: [symbol1, symbol2, ...]} 형태로 저장됨
-                if exchange in self.collector.filtered_symbols:
-                    subscribed_symbols_count = len(self.collector.filtered_symbols[exchange])
-                    self.logger.debug(f"거래소 '{exchange}'의 구독 심볼 수: {subscribed_symbols_count}")
-                else:
-                    self.logger.debug(f"거래소 '{exchange}'의 심볼 정보가 filtered_symbols에 없음")
-            else:
-                self.logger.debug("collector에 filtered_symbols 속성이 없음")
+            # ConnectionManager에서 구독 정보 가져오기
+            if exchange in subscription_metrics:
+                subscribed_symbols_count = subscription_metrics[exchange].get("total_symbols", 0)
             
             exchanges_info.append({
                 "name": exchange,
                 "display_name": exchange_name,
                 "connected": is_connected,
                 "uptime_seconds": uptime_seconds,
-                "uptime_formatted": self._format_uptime(uptime_seconds) if uptime_seconds > 0 else "연결 안됨",
-                "subscribed_symbols_count": subscribed_symbols_count  # 구독 심볼 수 추가
+                "uptime_formatted": uptime_formatted,
+                "subscribed_symbols_count": subscribed_symbols_count
             })
             
         return exchanges_info
@@ -187,6 +201,11 @@ class OrderbookProcess(ProcessComponent):
         all_connected_event_sent = False
         current_time = time.time()
         
+        # 텔레그램 노티파이어 가져오기
+        from crosskimp.telegram_bot.notify import get_telegram_notifier
+        from crosskimp.telegram_bot.notify_formatter import NotificationLevel
+        telegram_notifier = get_telegram_notifier()
+        
         # 상태 모니터링 루프
         while True:
             try:
@@ -198,7 +217,7 @@ class OrderbookProcess(ProcessComponent):
                 check_count += 1
                 current_time = time.time()
                 
-                # 거래소 연결 상태 가져오기
+                # 거래소 연결 상태 가져오기 - ConnectionManager를 단일 진실 원천으로 사용
                 exchange_status = self.collector.get_exchange_status()
                 
                 # 거래소 연결 상태에 따라 self.exchange_uptimes 업데이트
@@ -234,19 +253,24 @@ class OrderbookProcess(ProcessComponent):
                 # 주기적 로깅 (5회마다)
                 if check_count % 5 == 0:
                     self.logger.debug(f"오더북 수집기 상태: {connected_count}/{total_count} 거래소 연결됨")
-                    # 업타임 상태 로깅 (디버깅용)
-                    self.logger.debug(f"현재 거래소 업타임 상태: {self.exchange_uptimes}")
                 
-                # 거래소 상태 변경 감지
+                # 거래소 상태 변경 감지 - 더 효율적인 비교
                 status_changed = False
+                
+                # 상태 변경 감지 방법 개선
                 for exchange, status in exchange_status.items():
-                    if exchange not in prev_exchange_status or prev_exchange_status[exchange] != status:
+                    prev_status = prev_exchange_status.get(exchange, False)
+                    if prev_status != status:
                         status_changed = True
                         break
-                        
-                # 연결 상태 변경 또는 모든 거래소 처음 연결된 경우 이벤트 발행
-                if status_changed or (self.all_connected and not prev_all_connected):
-                    # 이벤트 데이터 준비 (포맷팅은 notify_formatter.py에 위임)
+                
+                # 모든 거래소 처음 연결된 경우도 상태 변경으로 간주
+                if self.all_connected and not prev_all_connected:
+                    status_changed = True
+                
+                # 상태 변경이 있을 때만 이벤트 발행
+                if status_changed:
+                    # 이벤트 데이터 준비
                     event_data = {
                         "process_name": self.process_name,
                         "timestamp": current_time,
@@ -258,50 +282,46 @@ class OrderbookProcess(ProcessComponent):
                         }
                     }
                     
-                    # 연결 상태에 따라 다른 이벤트 발행
+                    # 모든 거래소 연결된 경우 이벤트 발행 (RUNNING 이벤트 제거)
                     if self.all_connected and not all_connected_event_sent:
-                        # 모든 거래소 연결 완료 - 컴포넌트 이벤트 발행 후 프로세스 상태 변경
                         all_connected_event_sent = True
                         
-                        # 1. 컴포넌트 특화 이벤트 발행 (오더북 수집기 실행 이벤트)
-                        self.logger.info("[디버깅] 모든 거래소 연결 완료, 컴포넌트 특화 이벤트 발행 시작")
-                        # 연결된 거래소 이름 목록 추가
-                        event_data["exchanges"] = [ex["name"] for ex in exchanges_info if ex["connected"]]
-                        await self.event_bus.publish(EventChannels.Component.ObCollector.RUNNING, event_data)
-                        self.logger.info("[디버깅] 컴포넌트 특화 이벤트 발행 완료")
-                        
-                        self.logger.info("[디버깅] 모든 거래소 연결 완료, PROCESS_RUNNING 상태로 변경 시작")
-                        # 2. 프로세스 상태 변경 (프로세스 생명주기 이벤트)
+                        # 프로세스 상태 변경만 유지 (RUNNING 이벤트 발행하지 않음)
                         await self._publish_status(EventValues.PROCESS_RUNNING)
-                        self.logger.info("[디버깅] PROCESS_RUNNING 상태로 변경 완료")
-                        
                         self.logger.info("모든 거래소 연결 완료, 프로세스 상태를 RUNNING으로 변경")
+                    
+                    # 개별 거래소 상태 변경 이벤트 발행
+                    for exchange_code, is_connected in exchange_status.items():
+                        prev_state = prev_exchange_status.get(exchange_code, False)
                         
-                    elif prev_all_connected and not self.all_connected:
-                        # 연결 끊김 이벤트 (컴포넌트 특화 이벤트)
-                        # reason 정보 추가 (포맷터에서 사용할 수 있도록)
-                        event_data["reason"] = "일부 거래소 연결이 끊겼습니다"
-                        # 연결이 끊긴 거래소 정보 추가
-                        disconnected_exchanges = [ex["name"] for ex in exchanges_info if not ex["connected"]]
-                        event_data["exchange"] = disconnected_exchanges[0] if disconnected_exchanges else "unknown"
-                        
-                        self.logger.info("[디버깅] 거래소 연결 끊김 이벤트 발행 시작")
-                        await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, event_data)
-                        self.logger.info("[디버깅] 거래소 연결 끊김 이벤트 발행 완료")
-                        self.logger.info("거래소 연결 끊김 이벤트 발행됨")
-                        
-                    elif status_changed:
-                        # 일반 상태 변경 이벤트 (컴포넌트 특화 이벤트)
-                        self.logger.info("[디버깅] 거래소 상태 변경 이벤트 발행 시작")
-                        await self.event_bus.publish(EventChannels.Component.ObCollector.EXCHANGE_STATUS, event_data)
-                        self.logger.info("[디버깅] 거래소 상태 변경 이벤트 발행 완료")
-                        self.logger.info("거래소 상태 변경 이벤트 발행됨")
+                        # 연결 상태가 변경된 경우에만 이벤트 발행
+                        if prev_state != is_connected:
+                            exchange_event_data = {
+                                "timestamp": current_time,
+                                "exchange": exchange_code,
+                                "status": is_connected,
+                                "exchanges_info": exchanges_info,
+                                "connected_count": connected_count,
+                                "total_count": total_count,
+                                "all_connected": self.all_connected  # 모든 거래소 연결 상태 추가
+                            }
+                            
+                            # 거래소 연결 끊김
+                            if prev_state and not is_connected:
+                                exchange_event_data["reason"] = f"{EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)} 연결이 끊겼습니다"
+                                await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, exchange_event_data)
+                                self.logger.info(f"거래소 '{exchange_code}' 연결 끊김 이벤트 발행됨")
+                            
+                            # 거래소 연결 성공
+                            elif not prev_state and is_connected:
+                                await self.event_bus.publish(EventChannels.Component.ObCollector.EXCHANGE_STATUS, exchange_event_data)
+                                self.logger.info(f"거래소 '{exchange_code}' 연결 성공 이벤트 발행됨")
                 
                 # 현재 상태를 이전 상태로 저장
                 prev_exchange_status = exchange_status.copy()
                 
-                # 1초마다 확인
-                await asyncio.sleep(1)
+                # 2초마다 확인 (1초에서 2초로 변경하여 부하 감소)
+                await asyncio.sleep(2)
                 
             except asyncio.CancelledError:
                 self.logger.info("오더북 수집기 상태 모니터링 태스크가 취소되었습니다.")
@@ -322,14 +342,14 @@ class OrderbookProcess(ProcessComponent):
         try:
             self.logger.info("오더북 프로세스 중지 중...")
             
-            # 1. 메트릭 수집 중지
-            if self.metric_reporter:
+            # 1. 메트릭 수집 태스크 중지
+            if self.metric_collection_task:
                 try:
-                    await self.metric_reporter.stop()
-                    self.logger.info("메트릭 리포터 종료됨")
+                    self.metric_collection_task.cancel()
+                    self.logger.info("메트릭 수집 태스크 취소됨")
                 except Exception as e:
-                    self.logger.warning(f"메트릭 리포터 종료 중 오류: {str(e)}")
-                self.metric_reporter = None
+                    self.logger.warning(f"메트릭 수집 태스크 취소 중 오류: {str(e)}")
+                self.metric_collection_task = None
             
             # 2. 수집기 중지
             stop_success = await self.collector.stop()
@@ -343,6 +363,182 @@ class OrderbookProcess(ProcessComponent):
         except Exception as e:
             self.logger.error(f"오더북 프로세스 중지 중 오류 발생: {str(e)}")
             return False
+
+    # 메트릭 수집 및 발행 관련 메서드들 - 단순화
+    async def _collect_and_publish_metrics(self, interval: int = 20):
+        """
+        메트릭 데이터 주기적 수집 및 이벤트 발행
+        
+        Args:
+            interval: 수집 간격(초)
+        """
+        try:
+            self.logger.info(f"🚀 메트릭 수집 태스크 실행 시작 (간격: {interval}초)")
+            self.last_metric_time = time.time()
+            
+            while self.is_running or self.is_starting:
+                try:
+                    current_time = time.time()
+                    self.logger.debug(f"메트릭 데이터 수집 시작")
+                    
+                    # 연결 상태 가져오기
+                    connection_metrics = self.collector.connection_manager.get_connection_metrics()
+                    
+                    # 메시지 통계 가져오기 (data_manager에서 직접 가져옴)
+                    stats = self.collector.data_manager.get_statistics()
+                    
+                    # 메시지 메트릭 형식으로 변환
+                    message_metrics = {}
+                    for exchange, data in stats["exchanges"].items():
+                        message_metrics[exchange] = {
+                            "total_count": data["raw_messages"],
+                            "rate": data["interval_rate"],
+                            "error_count": data.get("errors", 0)
+                        }
+                    
+                    # 메트릭 발행
+                    await self._publish_connection_metrics(connection_metrics)
+                    await self._publish_message_metrics(message_metrics)
+                    
+                    # 시스템 메트릭 생성 및 발행
+                    system_metrics = {
+                        "status": "process/running" if self.all_connected else "process/starting",
+                        "uptime": time.time() - self.start_time if hasattr(self, 'start_time') else 0,
+                        "connected_exchanges": len(self.connected_exchanges),
+                        "total_exchanges": len(self.collector.filtered_symbols) if hasattr(self.collector, 'filtered_symbols') else 0
+                    }
+                    await self._publish_system_metrics(system_metrics)
+                    
+                    # 구독 메트릭 발행
+                    subscription_metrics = self.collector.connection_manager.get_subscription_metrics()
+                    await self._publish_subscription_metrics(subscription_metrics)
+                    
+                    # 로깅
+                    self.logger.debug(f"메트릭 데이터 수집 및 발행 완료")
+                    
+                    # 통계 요약 로깅
+                    total_raw_messages = sum(data["raw_messages"] for data in stats["exchanges"].values())
+                    total_interval_count = sum(data["interval_count"] for data in stats["exchanges"].values())
+                    total_rate = sum(data["interval_rate"] for data in stats["exchanges"].values())
+                    
+                    self.logger.info(f"📊 [메트릭 합계] {'전체 거래소':15} | 총: {total_raw_messages:8d}건 | "
+                                 f"수신: {total_interval_count:6d}건/{stats['interval_seconds']:.1f}초 | "
+                                 f"속도: {total_rate:.2f}건/초")
+                    
+                    # 지정된 간격만큼 대기
+                    self.logger.debug(f"다음 메트릭 수집까지 {interval}초 대기")
+                    await asyncio.sleep(interval)
+                    
+                except asyncio.CancelledError:
+                    self.logger.debug("메트릭 수집 태스크가 취소되었습니다.")
+                    break
+                except Exception as e:
+                    self.logger.error(f"메트릭 수집 중 오류 발생: {str(e)}", exc_info=True)
+                    await asyncio.sleep(10)  # 오류 발생 시 10초 후 재시도
+        
+        except asyncio.CancelledError:
+            self.logger.debug("메트릭 수집 태스크가 취소되었습니다.")
+        except Exception as e:
+            self.logger.error(f"메트릭 수집 태스크 실행 중 오류 발생: {str(e)}", exc_info=True)
+        finally:
+            self.logger.debug("메트릭 수집 태스크 종료")
+
+    async def _publish_connection_metrics(self, connection_metrics):
+        """연결 메트릭 발행"""
+        if not connection_metrics:
+            return
+            
+        event_data = {
+            "process_id": self.process_name,
+            "timestamp": time.time(),
+            "metric_type": "connection",
+            "metrics": connection_metrics
+        }
+        
+        await self.event_bus.publish(
+            event_path=f"{EventChannels.Component.ObCollector.METRICS}/connection",
+            data=event_data
+        )
+            
+    async def _publish_message_metrics(self, message_metrics):
+        """메시지 메트릭 발행"""
+        if not message_metrics:
+            return
+            
+        event_data = {
+            "process_id": self.process_name,
+            "timestamp": time.time(),
+            "metric_type": "message",
+            "metrics": message_metrics
+        }
+        
+        await self.event_bus.publish(
+            event_path=f"{EventChannels.Component.ObCollector.METRICS}/message",
+            data=event_data
+        )
+    
+    async def _publish_error_metrics(self, error_metrics):
+        """오류 메트릭 발행"""
+        if not error_metrics:
+            return
+            
+        event_data = {
+            "process_id": self.process_name,
+            "timestamp": time.time(),
+            "metric_type": "error",
+            "metrics": error_metrics
+        }
+        
+        await self.event_bus.publish(
+            event_path=f"{EventChannels.Component.ObCollector.METRICS}/error",
+            data=event_data
+        )
+        
+    async def _publish_system_metrics(self, system_metrics):
+        """시스템 메트릭 발행"""
+        if not system_metrics:
+            return
+            
+        # 하위 컴포넌트 상태 제거 (불필요함)
+        if "components" in system_metrics:
+            del system_metrics["components"]
+            
+        event_data = {
+            "process_id": self.process_name,
+            "timestamp": time.time(),
+            "metric_type": "system",
+            "metrics": system_metrics
+        }
+        
+        await self.event_bus.publish(
+            event_path=f"{EventChannels.Component.ObCollector.METRICS}/system",
+            data=event_data
+        )
+        
+    async def _publish_subscription_metrics(self, subscription_metrics):
+        """구독 메트릭 발행"""
+        if not subscription_metrics:
+            return
+            
+        # 각 거래소에 대해 심볼 상세 정보 제거하고 총 수만 유지
+        simplified_metrics = {}
+        for exchange, data in subscription_metrics.items():
+            simplified_metrics[exchange] = {
+                "active": data.get("active", False),
+                "total_symbols": data.get("total_symbols", 0)
+            }
+            
+        event_data = {
+            "process_id": self.process_name,
+            "timestamp": time.time(),
+            "metric_type": "subscription",
+            "metrics": simplified_metrics
+        }
+        
+        await self.event_bus.publish(
+            event_path=f"{EventChannels.Component.ObCollector.METRICS}/subscription",
+            data=event_data
+        )
 
 # 싱글톤 인스턴스
 _instance = None

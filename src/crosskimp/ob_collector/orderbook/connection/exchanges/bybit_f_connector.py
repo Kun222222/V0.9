@@ -57,12 +57,9 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         self.ping_task = None
         self._ping_interval = 20  # 핑 전송 간격 (초)
         
-        # 연결 상태 및 재연결 설정
+        # 연결 상태 및 중지 설정
         self._connected = False
-        self._reconnecting = False
         self._stopping = False
-        self._max_reconnect_attempts = 0  # 0은 무제한 재시도를 의미
-        self._reconnect_delay = 0.5  # 초기 재연결 대기 시간
         
         # 메시지 및 오더북 콜백
         self.message_callbacks = []
@@ -108,98 +105,103 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         """
         거래소 웹소켓 서버에 연결
         
+        최대 60회(약 1분) 재시도를 포함한 연결 로직
+        
         Returns:
             bool: 연결 성공 여부
         """
+        # 이미 연결된 경우 바로 성공 반환
         if self.is_connected:
             return True
             
-        if self._reconnecting:
-            self.logger.debug("이미 재연결 중입니다.")
-            return False
-            
-        try:
-            # self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 시작")
-            
-            # 기존 메시지 처리 태스크 취소
-            if self._message_handler_task and not self._message_handler_task.done():
-                self._message_handler_task.cancel()
-                try:
-                    await self._message_handler_task
-                except asyncio.CancelledError:
-                    pass
-                self._message_handler_task = None
-            
-            # 웹소켓 연결 수립
-            self.ws = await self.connection_strategy.connect()
-            
-            # 연결 상태 업데이트
-            self.is_connected = True
-            
-            # 연결 후 설정
-            await self.connection_strategy.on_connected(self.ws)
-            
-            # 메시지 처리 태스크 시작
-            if self._message_handler_task is None or self._message_handler_task.done():
-                self._message_handler_task = asyncio.create_task(self._message_handler())
-                
-            # 핑 전송 태스크 시작 (바이빗은 직접 핑 전송 필요)
-            if self.connection_strategy.requires_ping():
-                self._start_ping_task()
-                
-            # self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 성공")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 웹소켓 연결 실패: {str(e)}")
-            self.is_connected = False
-            
-            # 연결 실패 시 재연결 태스크 시작
-            asyncio.create_task(self._reconnect())
-            return False
-            
-    async def disconnect(self) -> bool:
-        """
-        거래소 웹소켓 연결 종료
-        
-        Returns:
-            bool: 연결 종료 성공 여부
-        """
-        self._stopping = True
+        # 연결 시도 카운터 및 결과 변수
+        attempt_count = 0
+        max_attempts = 60  # 최대 60회 시도 (약 1분)
         
         try:
-            # 핑 태스크 정지
-            self._stop_ping_task()
-            
-            # 메시지 핸들러 종료 대기
-            if self._message_handler_task and not self._message_handler_task.done():
-                self._message_handler_task.cancel()
+            while attempt_count < max_attempts:
+                attempt_count += 1
+                
                 try:
-                    await self._message_handler_task
-                except asyncio.CancelledError:
-                    pass
-                self._message_handler_task = None
-                
-            # 웹소켓 연결 종료
-            if self.ws:
-                await self.connection_strategy.disconnect(self.ws)
-                self.ws = None
-                
-            # 연결 상태 업데이트
+                    self.logger.debug(f"{self.exchange_name_kr} 연결 시도 {attempt_count}/{max_attempts}")
+                    
+                    # 기존 메시지 처리 태스크 취소
+                    if self._message_handler_task and not self._message_handler_task.done():
+                        self._message_handler_task.cancel()
+                        try:
+                            await self._message_handler_task
+                        except asyncio.CancelledError:
+                            pass
+                        self._message_handler_task = None
+                        
+                    # 기존 연결 정리
+                    if self.ws:
+                        try:
+                            await self.ws.close()
+                        except:
+                            pass
+                        self.ws = None
+                    
+                    # 웹소켓 연결 수립
+                    self.ws = await self.connection_strategy.connect()
+                    
+                    # 연결 상태 업데이트
+                    self.is_connected = True
+                    
+                    # 연결 후 설정
+                    await self.connection_strategy.on_connected(self.ws)
+                    
+                    # 메시지 처리 태스크 시작
+                    if self._message_handler_task is None or self._message_handler_task.done():
+                        self._message_handler_task = asyncio.create_task(self._message_handler())
+                        
+                    # 핑 전송 태스크 시작 (바이빗은 직접 핑 전송 필요)
+                    if self.connection_strategy.requires_ping():
+                        self._start_ping_task()
+                        
+                    self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 성공 (시도 {attempt_count}/{max_attempts})")
+                    return True
+                    
+                except Exception as e:
+                    if attempt_count == max_attempts:
+                        self.logger.error(f"{self.exchange_name_kr} 웹소켓 연결 실패: {str(e)} (최대 시도 횟수 도달)")
+                    else:
+                        # self.logger.debug(f"{self.exchange_name_kr} 연결 시도 {attempt_count} 실패: {str(e)}")
+                        pass
+                    
+                    # 마지막 시도가 아니면 1초 대기 후 재시도
+                    if attempt_count < max_attempts:
+                        await asyncio.sleep(1)
+            
+            # 모든 시도 실패
             self.is_connected = False
-            
-            # 구독 목록 초기화
-            self._subscribed_symbols.clear()
-            
-            self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 웹소켓 연결 종료 중 오류: {str(e)}")
+            self.logger.error(f"{self.exchange_name_kr} 60회 연결 시도 후 연결 실패")
             return False
-        finally:
-            self._stopping = False
-            
+                
+        except Exception as e:
+            self.logger.error(f"{self.exchange_name_kr} 연결 프로세스 오류: {str(e)}")
+            self.is_connected = False
+            return False
+
+    async def _reconnect(self):
+        """
+        ConnectionManager에게 재연결 요청을 위임하는 메서드
+        """
+        if self._stopping:
+            return
+        
+        self.logger.info(f"{self.exchange_name_kr} 연결 끊김 감지, ConnectionManager에 재연결 요청")
+        
+        # 연결 상태 업데이트
+        self.is_connected = False
+        
+        # ConnectionManager가 있으면 재연결 위임
+        if self.connection_manager:
+            # ConnectionManager가 재연결 담당
+            asyncio.create_task(self.connection_manager.reconnect_exchange(self.exchange_code))
+        else:
+            self.logger.error(f"{self.exchange_name_kr} ConnectionManager가 없어 재연결 처리 불가")
+
     async def _message_handler(self):
         """웹소켓 메시지 수신 및 처리 루프"""
         try:
@@ -212,19 +214,30 @@ class BybitFutureConnector(ExchangeConnectorInterface):
                         # 메시지 수신
                         message = await self.ws.recv()
                         
+                        # JSON 파싱 (문자열인 경우만)
+                        if isinstance(message, str):
+                            try:
+                                parsed_message = json.loads(message)
+                            except:
+                                parsed_message = message
+                        else:
+                            parsed_message = message
+                            
+                        # 핑퐁 메시지 처리 (다양한 퐁 응답 형식 고려)
+                        if isinstance(parsed_message, dict) and (
+                                parsed_message.get("op") == "pong" or 
+                                parsed_message.get("ret_msg") == "pong"):
+                            self.logger.debug(f"{self.exchange_name_kr} 선물 퐁 응답 수신")
+                            continue
+                        
                         # 전처리
                         processed_message = self.connection_strategy.preprocess_message(message)
                         
                         # 메시지 타입 확인
                         msg_type = processed_message.get("type", "unknown")
-                        
-                        # 핑퐁 메시지 처리
-                        if msg_type == "pong":
-                            self.logger.debug(f"{self.exchange_name_kr} 선물 핑퐁 메시지 수신")
-                            continue
                             
                         # 구독 응답 처리
-                        elif msg_type == "subscription_response":
+                        if msg_type == "subscription_response":
                             self.logger.info(f"{self.exchange_name_kr} 선물 구독 응답: {processed_message['data']}")
                             continue
                             
@@ -240,7 +253,7 @@ class BybitFutureConnector(ExchangeConnectorInterface):
                         self.logger.warning(f"{self.exchange_name_kr} 선물 웹소켓 연결 끊김: {str(e)}")
                         self.is_connected = False
                         
-                        # 재연결 시도
+                        # 재연결 시도 - ConnectionManager에 위임
                         if not self._stopping:
                             asyncio.create_task(self._reconnect())
                         break
@@ -260,60 +273,6 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             self.logger.error(f"{self.exchange_name_kr} 선물 메시지 핸들러 태스크 오류: {str(e)}")
             self.is_connected = False
                 
-    async def _reconnect(self):
-        """재연결 수행"""
-        if self._reconnecting or self._stopping:
-            return
-            
-        self._reconnecting = True
-        attempt = 0
-        max_attempts = self._max_reconnect_attempts
-        delay = self._reconnect_delay
-        
-        self.logger.info(f"{self.exchange_name_kr} 웹소켓 재연결 시작 (최대 {max_attempts if max_attempts > 0 else '무제한'}회)")
-        
-        while not self._stopping and (max_attempts == 0 or attempt < max_attempts):
-            attempt += 1
-            
-            try:
-                self.logger.info(f"{self.exchange_name_kr} 재연결 시도 {attempt}/{max_attempts if max_attempts > 0 else '무제한'}")
-                
-                # 기존 연결 정리
-                if self.ws:
-                    try:
-                        await self.ws.close()
-                    except:
-                        pass
-                    self.ws = None
-                
-                # 기존 메시지 처리 태스크 취소
-                if self._message_handler_task and not self._message_handler_task.done():
-                    self._message_handler_task.cancel()
-                    try:
-                        await self._message_handler_task
-                    except asyncio.CancelledError:
-                        pass
-                    self._message_handler_task = None
-                
-                # 연결
-                success = await self.connect()
-                
-                if success:
-                    # 이전 구독 복원
-                    if self._subscribed_symbols:
-                        await self.subscribe(list(self._subscribed_symbols))
-                    break
-            except Exception as e:
-                self.logger.error(f"{self.exchange_name_kr} 재연결 중 오류: {str(e)}")
-                
-            # 재시도 간격 대기
-            await asyncio.sleep(delay)
-            
-        self._reconnecting = False
-        
-        if not self.is_connected:
-            self.logger.error(f"{self.exchange_name_kr} 웹소켓 재연결 실패")
-            
     async def subscribe(self, symbols: List[str]) -> bool:
         """
         심볼 목록 구독
@@ -425,7 +384,7 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 선물 메시지 전송 중 오류: {str(e)}")
             # 연결 문제 감지 시 재연결 수행
-            if not self._reconnecting and not self._stopping:
+            if not self._stopping:
                 asyncio.create_task(self._reconnect())
             return False
             
@@ -581,31 +540,10 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         """
         return self.ws
         
-    async def reconnect(self) -> bool:
-        """
-        재연결 수행
-        
-        Returns:
-            bool: 재연결 성공 여부
-        """
-        # 이미 연결된 경우 먼저 연결 종료
-        if self.is_connected:
-            await self.disconnect()
-            
-        # 재연결 수행
-        await self._reconnect()
-        
-        return self.is_connected
-    
     def _start_ping_task(self):
         """핑 전송 태스크 시작"""
         if self.ping_task is None or self.ping_task.done():
             self.ping_task = asyncio.create_task(self._ping_loop())
-            
-    def _stop_ping_task(self):
-        """핑 전송 태스크 중지"""
-        if self.ping_task and not self.ping_task.done():
-            self.ping_task.cancel()
             
     async def _ping_loop(self):
         """
@@ -614,19 +552,40 @@ class BybitFutureConnector(ExchangeConnectorInterface):
         """
         try:
             while not self._stopping and self.is_connected:
-                # 핑 메시지 전송
-                await self.connection_strategy.send_ping(self.ws)
+                try:
+                    # 바이빗 공식 문서에 따른 하트비트 패킷 형식
+                    ping_message = {
+                        "req_id": f"ping_{self.exchange_code}_{int(time.time())}",
+                        "op": "ping"
+                    }
+                    
+                    # 핑 메시지 전송
+                    if self.ws and not self.ws.closed:
+                        await self.ws.send(json.dumps(ping_message))
+                        self.logger.debug(f"{self.exchange_name_kr} 핑 전송")
+                    else:
+                        self.logger.warning(f"{self.exchange_name_kr} 웹소켓 연결이 없어 핑 전송 불가")
+                        self.is_connected = False
+                        break
+                        
+                except Exception as e:
+                    self.logger.error(f"{self.exchange_name_kr} 핑 전송 중 오류: {str(e)}")
+                    # 연결에 문제가 있는 경우 재연결 태스크 시작
+                    self.is_connected = False
+                    asyncio.create_task(self._reconnect())
+                    break
                 
                 # 다음 핑 전송까지 대기
                 await asyncio.sleep(self._ping_interval)
                 
         except asyncio.CancelledError:
             # 태스크 취소 시 조용히 종료
-            pass
+            self.logger.debug(f"{self.exchange_name_kr} 핑 루프 태스크 취소됨")
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 핑 루프 중 오류: {str(e)}")
             # 연결 문제가 있을 수 있으므로 재연결 시도
-            if not self._reconnecting and not self._stopping:
+            if not self._stopping:
+                self.is_connected = False
                 asyncio.create_task(self._reconnect())
                 
     async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
@@ -650,3 +609,50 @@ class BybitFutureConnector(ExchangeConnectorInterface):
             self.logger.info(f"[{symbol}] 스냅샷 데이터 없음. 구독을 통해 스냅샷을 받아야 합니다.")
             
         return snapshot 
+
+    async def disconnect(self) -> bool:
+        """
+        거래소 웹소켓 연결 종료
+        
+        Returns:
+            bool: 연결 종료 성공 여부
+        """
+        self._stopping = True
+        
+        try:
+            # 핑 태스크 정지
+            self._stop_ping_task()
+            
+            # 메시지 핸들러 종료 대기
+            if self._message_handler_task and not self._message_handler_task.done():
+                self._message_handler_task.cancel()
+                try:
+                    await self._message_handler_task
+                except asyncio.CancelledError:
+                    pass
+                self._message_handler_task = None
+                
+            # 웹소켓 연결 종료
+            if self.ws:
+                await self.connection_strategy.disconnect(self.ws)
+                self.ws = None
+                
+            # 연결 상태 업데이트
+            self.is_connected = False
+            
+            # 구독 목록 초기화
+            self._subscribed_symbols.clear()
+            
+            self.logger.info(f"{self.exchange_name_kr} 웹소켓 연결 종료됨")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"{self.exchange_name_kr} 웹소켓 연결 종료 중 오류: {str(e)}")
+            return False
+        finally:
+            self._stopping = False
+
+    def _stop_ping_task(self):
+        """핑 전송 태스크 중지"""
+        if self.ping_task and not self.ping_task.done():
+            self.ping_task.cancel() 

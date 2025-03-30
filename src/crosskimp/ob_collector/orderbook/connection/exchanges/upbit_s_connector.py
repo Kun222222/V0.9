@@ -210,20 +210,26 @@ class UpbitSpotConnector(ExchangeConnectorInterface):
                                 # ConnectionManager가 재연결 여부를 판단하도록 상태만 업데이트
                                 self.is_connected = False
                                 self.logger.warning(f"{self.exchange_name_kr} 웹소켓이 열려있지만 데이터가 수신되지 않음")
-                                continue
+                                # 연결 관리자에 재연결 요청
+                                await self._reconnect()
+                                break
                             else:
                                 self.logger.error(f"{self.exchange_name_kr} 웹소켓 닫힘 감지")
                                 self.is_connected = False
+                                await self._reconnect()
                                 break
                         except Exception as check_e:
                             self.logger.error(f"{self.exchange_name_kr} 연결 확인 중 오류: {str(check_e)}")
                             self.is_connected = False
+                            await self._reconnect()
                             break
                             
                     except websockets.exceptions.ConnectionClosed as cc:
                         # 연결 종료 처리
                         self.logger.warning(f"{self.exchange_name_kr} 연결 종료됨 (코드: {cc.code}, 사유: {cc.reason})")
                         self.is_connected = False
+                        # 연결 관리자에 재연결 요청
+                        await self._reconnect()
                         break
                         
                     except Exception as e:
@@ -237,6 +243,25 @@ class UpbitSpotConnector(ExchangeConnectorInterface):
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 메시지 처리 태스크 오류: {str(e)}")
             self.is_connected = False
+            
+    async def _reconnect(self):
+        """
+        ConnectionManager에게 재연결 요청을 위임하는 메서드
+        """
+        if self.stop_event.is_set():
+            return
+        
+        self.logger.info(f"{self.exchange_name_kr} 연결 끊김 감지, ConnectionManager에 재연결 요청")
+        
+        # 연결 상태 업데이트
+        self.is_connected = False
+        
+        # ConnectionManager가 있으면 재연결 위임
+        if self.connection_manager:
+            # ConnectionManager가 재연결 담당
+            asyncio.create_task(self.connection_manager.reconnect_exchange(self.exchange_code))
+        else:
+            self.logger.error(f"{self.exchange_name_kr} ConnectionManager가 없어 재연결 처리 불가")
             
     async def subscribe(self, symbols: List[str]) -> bool:
         """

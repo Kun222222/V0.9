@@ -59,7 +59,7 @@ class TelegramNotifier:
     텔레그램을 통해 시스템 알림을 전송하는 클래스
     """
     
-    # 알림 레벨 속성 - NotificationLevel 클래스 사용
+    # 알림 레벨 속성 참조
     NotificationLevel = NotificationLevel
     
     def __init__(self):
@@ -234,7 +234,8 @@ class TelegramNotifier:
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                reply_markup=reply_markup
+                reply_markup=reply_markup,
+                parse_mode='HTML'  # HTML 파싱 모드 추가
             )
             return True
         except Exception as e:

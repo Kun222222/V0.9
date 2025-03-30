@@ -40,6 +40,13 @@ class OrderbookDataManager:
         self.start_time = time.time()  # 시작 시간
         self.stats_interval = 20  # 통계 출력 주기 (초)
         
+        # 이전 통계 값 저장용 변수 추가
+        self._prev_counts = {}
+        self._prev_time = time.time()
+        
+        # 오류 카운팅 추가
+        self.error_counts = {}
+        
         self.logger.info("오더북 데이터 관리자 초기화")
     
     def register_exchange(self, exchange_code: str) -> None:
@@ -54,6 +61,7 @@ class OrderbookDataManager:
             self.registered_exchanges.add(exchange_code)
             self.message_counts[exchange_code] = 0
             self.orderbook_message_counts[exchange_code] = 0
+            self.error_counts[exchange_code] = 0  # 오류 카운터 추가
             # 한글 거래소명 사용
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
             self.logger.info(f"{exchange_kr} 거래소 등록 완료")
@@ -105,6 +113,7 @@ class OrderbookDataManager:
             self.total_messages += 1
         except Exception as e:
             self.logger.error(f"원시 메시지 로깅 실패: {str(e)}")
+            self.log_error(exchange_code)
     
     def log_orderbook_data(self, exchange_code: str, symbol: str, orderbook: Dict) -> None:
         """
@@ -147,11 +156,25 @@ class OrderbookDataManager:
                     callback_func(exchange_code, symbol, orderbook, "orderbook")
                 except Exception as e:
                     self.logger.error(f"콜백 '{callback_name}' 실행 중 오류: {str(e)}")
+                    self.log_error(exchange_code)
             
             # 메시지 통계 업데이트
             self.orderbook_message_counts[exchange_code] = self.orderbook_message_counts.get(exchange_code, 0) + 1
         except Exception as e:
             self.logger.error(f"오더북 데이터 로깅 실패: {str(e)}")
+            self.log_error(exchange_code)
+    
+    def log_error(self, exchange_code: str) -> None:
+        """
+        오류 카운트 증가
+        
+        Args:
+            exchange_code: 거래소 코드
+        """
+        if exchange_code not in self.error_counts:
+            self.error_counts[exchange_code] = 0
+            
+        self.error_counts[exchange_code] += 1
     
     def get_registered_exchanges(self) -> Set[str]:
         """
@@ -164,7 +187,7 @@ class OrderbookDataManager:
     
     def get_message_stats(self) -> Dict[str, Any]:
         """
-        메시지 통계 반환
+        메시지 통계 반환 (기본 형식, 하위 호환성 유지)
         
         Returns:
             Dict[str, Any]: 메시지 통계 정보
@@ -190,9 +213,56 @@ class OrderbookDataManager:
         
         return stats
     
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        확장된 메시지 통계 반환 (구간별 속도 계산 추가)
+        
+        Returns:
+            Dict[str, Any]: 확장된 메시지 통계 정보
+        """
+        elapsed = time.time() - self.start_time
+        current_time = time.time()
+        
+        # 이전 수집 시간과의 간격 계산
+        interval = current_time - self._prev_time
+        
+        stats = {
+            "total_messages": self.total_messages,
+            "elapsed_seconds": elapsed,
+            "messages_per_second": self.total_messages / elapsed if elapsed > 0 else 0,
+            "interval_seconds": interval,
+            "exchanges": {}
+        }
+        
+        for exchange in self.registered_exchanges:
+            raw_count = self.message_counts.get(exchange, 0)
+            ob_count = self.orderbook_message_counts.get(exchange, 0)
+            
+            # 구간별 속도 계산
+            prev_count = self._prev_counts.get(exchange, 0)
+            interval_count = raw_count - prev_count
+            interval_rate = interval_count / interval if interval > 0 else 0
+            
+            stats["exchanges"][exchange] = {
+                "raw_messages": raw_count,
+                "orderbook_messages": ob_count,
+                "total_rate": raw_count / elapsed if elapsed > 0 else 0,
+                "interval_count": interval_count,
+                "interval_rate": interval_rate,
+                "errors": self.error_counts.get(exchange, 0)
+            }
+            
+            # 현재 카운트를 이전 카운트로 저장
+            self._prev_counts[exchange] = raw_count
+        
+        # 시간 업데이트
+        self._prev_time = current_time
+        
+        return stats
+    
     def print_stats(self) -> None:
         """메시지 통계 출력"""
-        stats = self.get_message_stats()
+        stats = self.get_statistics()
         
         self.logger.info(f"== 오더북 데이터 관리자 통계 ==")
         self.logger.info(f"총 메시지 수: {stats['total_messages']:,}개")
@@ -202,9 +272,13 @@ class OrderbookDataManager:
         for exchange, ex_stats in stats["exchanges"].items():
             # 거래소 이름을 한글로 변환
             exchange_kr = EXCHANGE_NAMES_KR.get(exchange, exchange)
+            
+            # 오류 정보 표시 추가
+            error_text = f", 오류: {ex_stats['errors']}건" if ex_stats['errors'] > 0 else ""
+            
             self.logger.info(f"{exchange_kr} 원시 메시지: {ex_stats['raw_messages']:,}개, "
                             f"오더북 메시지: {ex_stats['orderbook_messages']:,}개, "
-                            f"초당 메시지: {ex_stats['messages_per_second']:.2f}개/초")
+                            f"초당 메시지: {ex_stats['interval_rate']:.2f}개/초{error_text}")
     
     def prepare_for_cpp_export(self, orderbook: Dict) -> Dict:
         """

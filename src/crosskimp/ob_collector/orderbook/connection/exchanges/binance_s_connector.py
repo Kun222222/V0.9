@@ -248,22 +248,24 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         if self.stop_event.is_set():
             return
             
-        # 무제한 재시도를 위해 max_reconnect_attempts가 0인 경우 항상 재연결 시도
-        if self.max_reconnect_attempts > 0 and self.reconnect_attempts >= self.max_reconnect_attempts:
-            self.logger.error(f"{self.exchange_name_kr} 최대 재연결 시도 횟수 초과 ({self.max_reconnect_attempts})")
-            return
+        # 연결 관리자에 재연결 요청
+        if self.connection_manager:
+            self.logger.info(f"{self.exchange_name_kr} 연결 관리자에 재연결 요청")
+            self.connection_manager.reconnect_exchange(self.exchange_code)
+        else:
+            self.logger.warning(f"{self.exchange_name_kr} 연결 관리자가 없어 직접 재연결 시도")
+            # 연결 관리자가 없는 경우에만 기존 로직 사용
+            self.reconnect_attempts += 1
+            delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), 60)
             
-        self.reconnect_attempts += 1
-        delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), 60)
-        
-        self.logger.info(f"{self.exchange_name_kr} {delay:.1f}초 후 재연결 시도 ({self.reconnect_attempts}/{self.max_reconnect_attempts if self.max_reconnect_attempts > 0 else '무제한'})")
-        await asyncio.sleep(delay)
-        
-        success = await self.connect()
-        if success and self.subscribed_symbols:
-            # 재연결 성공 시 기존 구독 심볼 복구
-            self.logger.info(f"{self.exchange_name_kr} 재연결 성공, {len(self.subscribed_symbols)}개 심볼 재구독 및 스냅샷 요청 중...")
-            await self.subscribe(self.subscribed_symbols)
+            self.logger.info(f"{self.exchange_name_kr} {delay:.1f}초 후 재연결 시도 ({self.reconnect_attempts}/{self.max_reconnect_attempts if self.max_reconnect_attempts > 0 else '무제한'})")
+            await asyncio.sleep(delay)
+            
+            success = await self.connect()
+            if success and self.subscribed_symbols:
+                # 재연결 성공 시 기존 구독 심볼 복구
+                self.logger.info(f"{self.exchange_name_kr} 재연결 성공, {len(self.subscribed_symbols)}개 심볼 재구독 및 스냅샷 요청 중...")
+                await self.subscribe(self.subscribed_symbols)
     
     async def subscribe(self, symbols: List[str]) -> bool:
         """

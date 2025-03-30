@@ -302,8 +302,8 @@ class ProcessComponent(ABC):
         
         # 주석 처리: 오류 이벤트는 더 이상 별도로 발행하지 않음
         # 오류 상태인 경우 오류 이벤트도 발행
-        # if status == EventValues.PROCESS_ERROR and error_message:
-        #     await self.event_bus.publish(EventChannels.Process.ERROR, event_data.__dict__)
+        if status == EventValues.PROCESS_ERROR and error_message:
+            await self.event_bus.publish(EventChannels.Process.ERROR, event_data.__dict__)
         
     @abstractmethod
     async def _do_start(self) -> bool:
