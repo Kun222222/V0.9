@@ -165,6 +165,11 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 
                 await asyncio.sleep(0.5)
 
+            # 코인별 거래량 출력 (내림차순 정렬)
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 코인별 24시간 거래량:")
+            for symbol, volume in sorted(volume_dict.items(), key=lambda x: x[1], reverse=True):
+                logger.info(f"  {symbol}: {volume:,.0f} KRW")
+
             # 3. 거래량 필터링
             filtered_symbols = [
                 sym for sym, vol in volume_dict.items()
@@ -217,11 +222,15 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
             market_data = data["data"]
             symbols = [sym for sym in market_data.keys() if sym != "date"]
             
+            # 거래량 정보 수집
+            volume_dict: Dict[str, float] = {}
+            
             # 거래량 필터링
             filtered_symbols = []
             for symbol in symbols:
                 try:
                     volume = float(market_data[symbol].get("acc_trade_value_24H", 0))
+                    volume_dict[symbol] = volume
                     if volume >= min_volume:
                         filtered_symbols.append(symbol)
                 except (KeyError, ValueError) as e:
@@ -229,6 +238,11 @@ async def fetch_bithumb_symbols_and_volume(min_volume: float) -> List[str]:
                         f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 거래량 파싱에 실패했습니다. "
                         f"심볼: {symbol}, 오류: {str(e)}"
                     )
+            
+            # 코인별 거래량 출력 (내림차순 정렬)
+            logger.info(f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 코인별 24시간 거래량:")
+            for symbol, volume in sorted(volume_dict.items(), key=lambda x: x[1], reverse=True):
+                logger.info(f"  {symbol}: {volume:,.0f} KRW")
             
             logger.info(
                 f"{EXCHANGE_NAMES_KR[Exchange.BITHUMB.value]} 필터링 결과입니다. "

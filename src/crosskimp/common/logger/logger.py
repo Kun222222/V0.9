@@ -496,7 +496,7 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
     Returns:
         logging.Logger: 생성된 로거 인스턴스
     """
-    logger_name = f"{exchange_name}_raw_logger"
+    logger_name = f"{exchange_name}_logger"
     
     # 하위 폴더 생성하지 않고 raw_data 디렉토리에 직접 로깅
     raw_data_dir = LOG_SUBDIRS['raw_data']

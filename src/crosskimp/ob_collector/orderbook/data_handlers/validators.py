@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
+from crosskimp.ob_collector.orderbook.data_handlers.ob_data_manager import get_orderbook_data_manager
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
@@ -62,9 +63,12 @@ class BaseOrderBookValidator:
         self.sequences = {}   # symbol -> sequence
         self.logger = get_unified_logger()
         
+        # 오더북 데이터 관리자에서 설정값 가져오기
+        self.data_manager = get_orderbook_data_manager()
+        
         # 검증 설정
-        self.max_depth = 20  # 최대 깊이
-        self.output_depth = 10  # 출력용 최대 깊이
+        self.max_depth = self.data_manager.get_orderbook_internal_depth()  # 내부 저장용 최대 깊이
+        self.output_depth = self.data_manager.get_orderbook_output_depth()  # 출력용 최대 깊이
         self.price_precision = 8  # 가격 정밀도
         self.size_precision = 8  # 수량 정밀도
         

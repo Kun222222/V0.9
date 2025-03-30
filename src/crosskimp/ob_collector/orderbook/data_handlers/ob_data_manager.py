@@ -19,6 +19,7 @@ from typing import Dict, List, Any, Optional, Callable, Set
 
 from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.config.app_config import get_config
 
 class OrderbookDataManager:
     """
@@ -40,6 +41,13 @@ class OrderbookDataManager:
         self.start_time = time.time()  # 시작 시간
         self.stats_interval = 20  # 통계 출력 주기 (초)
         
+        # 설정 로드
+        self.config = get_config()
+        
+        # 오더북 설정 - 중앙에서 관리할 뎁스 값 (설정 파일에서 로드)
+        self.orderbook_output_depth = self.config.get('trading.settings.orderbook_output_depth', 15)  # 출력 및 분석용 오더북 깊이
+        self.orderbook_internal_depth = self.config.get('trading.settings.orderbook_internal_depth', 50)  # 내부 저장용 오더북 깊이
+        
         # 이전 통계 값 저장용 변수 추가
         self._prev_counts = {}
         self._prev_time = time.time()
@@ -47,7 +55,7 @@ class OrderbookDataManager:
         # 오류 카운팅 추가
         self.error_counts = {}
         
-        self.logger.info("오더북 데이터 관리자 초기화")
+        self.logger.info(f"오더북 데이터 관리자 초기화 (출력 깊이: {self.orderbook_output_depth}, 내부 깊이: {self.orderbook_internal_depth})")
     
     def register_exchange(self, exchange_code: str) -> None:
         """
@@ -105,8 +113,8 @@ class OrderbookDataManager:
             self.register_exchange(exchange_code)
             
         try:
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-            self.raw_loggers[exchange_code].debug(f"[{current_time}] {message}")
+            # current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            # self.raw_loggers[exchange_code].debug(f"[{current_time}] {message}")
             
             # 메시지 통계 업데이트
             self.message_counts[exchange_code] = self.message_counts.get(exchange_code, 0) + 1
@@ -131,14 +139,14 @@ class OrderbookDataManager:
             # 현재 시간 포맷팅
             current_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
             
-            # 상위 10개 호가만 로깅
-            bids = orderbook.get("bids", [])[:10]
-            asks = orderbook.get("asks", [])[:10]
+            # 중앙 설정된 뎁스 값으로 호가 제한
+            bids = orderbook.get("bids", [])[:self.orderbook_output_depth]
+            asks = orderbook.get("asks", [])[:self.orderbook_output_depth]
             
             # 로그 데이터 구성
             log_data = {
-                "exchange": exchange_code,
-                "symbol": symbol,
+                "exch": exchange_code,
+                "sym": symbol,
                 "ts": orderbook.get("timestamp", int(time.time() * 1000)),
                 "seq": orderbook.get("sequence", 0),
                 "bids": bids,
@@ -147,7 +155,7 @@ class OrderbookDataManager:
             
             # raw_logger에 오더북 데이터 로깅
             self.raw_loggers[exchange_code].debug(
-                f"[{current_time}] 매수 ({len(bids)}) / 매도 ({len(asks)}) {json.dumps(log_data)}"
+                f"매수 {len(bids)} / 매도 {len(asks)} {json.dumps(log_data)}"
             )
             
             # 콜백 실행 (향후 C++ 연동 등에 사용)
@@ -302,6 +310,59 @@ class OrderbookDataManager:
         }
         
         return export_data
+    
+    def get_orderbook_output_depth(self) -> int:
+        """
+        설정된 출력용 오더북 뎁스 값 반환
+        
+        Returns:
+            int: 출력용 오더북 뎁스 값
+        """
+        return self.orderbook_output_depth
+        
+    def get_orderbook_internal_depth(self) -> int:
+        """
+        설정된 내부 저장용 오더북 뎁스 값 반환
+        
+        Returns:
+            int: 내부 저장용 오더북 뎁스 값
+        """
+        return self.orderbook_internal_depth
+        
+    def set_orderbook_depths(self, output_depth: int = None, internal_depth: int = None) -> None:
+        """
+        오더북 뎁스 값 설정
+        
+        Args:
+            output_depth: 설정할 출력용 오더북 뎁스
+            internal_depth: 설정할 내부 저장용 오더북 뎁스
+        """
+        if output_depth is not None and output_depth > 0:
+            self.orderbook_output_depth = output_depth
+            self.logger.info(f"출력용 오더북 뎁스 설정: {output_depth}")
+        
+        if internal_depth is not None and internal_depth > 0:
+            self.orderbook_internal_depth = internal_depth
+            self.logger.info(f"내부 저장용 오더북 뎁스 설정: {internal_depth}")
+            
+    # 기존 메서드는 호환성을 위해 유지
+    def get_orderbook_depth(self) -> int:
+        """
+        설정된 오더북 뎁스 값 반환 (호환성 유지용)
+        
+        Returns:
+            int: 출력용 오더북 뎁스 값
+        """
+        return self.orderbook_output_depth
+        
+    def set_orderbook_depth(self, depth: int) -> None:
+        """
+        오더북 뎁스 값 설정 (호환성 유지용)
+        
+        Args:
+            depth: 설정할 오더북 뎁스
+        """
+        self.set_orderbook_depths(output_depth=depth)
 
 # 싱글톤 인스턴스
 _instance = None

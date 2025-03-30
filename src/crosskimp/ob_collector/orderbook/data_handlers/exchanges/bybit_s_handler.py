@@ -99,10 +99,13 @@ class BybitSpotDataHandler:
             self.last_update_ids[symbol] = update_id
             self.snapshot_timestamps[symbol] = timestamp
             
-            # 로깅용 복사본 생성 (최대 10개 항목)
+            # 오더북 데이터 관리자의 설정값으로 호가 제한
+            output_depth = self.data_manager.get_orderbook_output_depth()
+            
+            # 로깅용 복사본 생성 (중앙 설정된 깊이로 제한)
             log_orderbook = {
-                "bids": sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:10],
-                "asks": sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:10],
+                "bids": sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:output_depth],
+                "asks": sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:output_depth],
                 "timestamp": timestamp,
                 "sequence": sequence,
                 "update_id": update_id,
@@ -331,9 +334,9 @@ class BybitSpotDataHandler:
             orderbook["sequence"] = sequence
             orderbook["update_id"] = update_id
             
-            # 로깅용 복사본 생성 (최대 10개 항목)
-            log_bids = sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:10]
-            log_asks = sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:10]
+            # 로깅용 복사본 생성 (최대 15개 항목)
+            log_bids = sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:15]
+            log_asks = sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:15]
             
             # 배열 형태로 변환 [[price, amount], ...]
             formatted_bids = [[price, amount] for price, amount in log_bids]

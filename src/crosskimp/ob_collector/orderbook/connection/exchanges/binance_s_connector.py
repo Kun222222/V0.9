@@ -182,9 +182,6 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         """
         self.logger.info(f"{self.exchange_name_kr} 메시지 수신 루프 시작")
         
-        last_ping_time = time.time()
-        ping_interval = 30  # 30초 간격으로 ping 전송
-        
         try:
             # 락을 사용하여 동시에 여러 태스크가 메시지 핸들러를 실행하지 않도록 함
             async with self._message_handler_lock:
@@ -195,6 +192,16 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
                         
                         # 메시지 전처리
                         processed = self.connection_strategy.preprocess_message(message)
+                        
+                        # ping 메시지 처리 (추가)
+                        if isinstance(processed, dict) and processed.get("type") == "unknown":
+                            data = processed.get("data", {})
+                            if isinstance(data, dict) and "ping" in data:
+                                # 서버의 ping 메시지에 pong으로 응답
+                                pong_message = {"pong": data["ping"]}
+                                await self.send_message(pong_message)
+                                self.logger.debug(f"서버 ping 수신 및 pong 응답: {data['ping']}")
+                                continue
                         
                         # 메시지 콜백 호출
                         for callback in self.message_callbacks:
@@ -216,11 +223,7 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
                                     self.logger.error(f"오더북 콜백 실행 중 오류: {str(callback_error)}")
                 
                     except asyncio.TimeoutError:
-                        # 주기적으로 ping 전송 (필요한 경우)
-                        current_time = time.time()
-                        if self.connection_strategy.requires_ping() and (current_time - last_ping_time) >= ping_interval:
-                            await self.connection_strategy.send_ping(self.ws)
-                            last_ping_time = current_time
+                        # 타임아웃 처리 - 계속 진행
                         continue
                     
                     except websockets.exceptions.ConnectionClosed as e:

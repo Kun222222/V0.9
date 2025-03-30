@@ -67,8 +67,8 @@ class BinanceFutureConnectionStrategy:
             ws = await asyncio.wait_for(
                 websockets.connect(
                     self.BASE_WS_URL,
-                    ping_interval=20,  # 내부 핑 간격 (초)
-                    ping_timeout=10,   # 핑 타임아웃 (초)
+                    ping_interval=30,  # 20초에서 180초(3분)로 변경
+                    ping_timeout=20,    # 10초에서 60초로 변경
                     close_timeout=10   # 닫기 타임아웃 (초)
                 ),
                 timeout=timeout
