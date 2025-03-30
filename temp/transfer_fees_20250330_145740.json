@@ -1,0 +1,15 @@
+{
+  "upbit": {},
+  "bithumb": {},
+  "binance": {
+    "error": "400 Client Error:  for url: https://api.binance.com/sapi/v1/capital/config/getall?timestamp=1743317867950&signature=ef811ef831dcf40377f0626a2c66339753eda193bad169b746ee337ba128519a"
+  },
+  "timestamp": "2025-03-30T14:57:48.200712",
+  "currencies": [
+    "BTC",
+    "ETH",
+    "XRP",
+    "SOL",
+    "ADA"
+  ]
+}
