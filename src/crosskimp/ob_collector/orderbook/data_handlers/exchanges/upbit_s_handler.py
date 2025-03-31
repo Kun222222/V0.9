@@ -31,10 +31,13 @@ class UpbitSpotDataHandler:
         self.sequence_numbers = {}  # 심볼별 시퀀스 번호 (타임스탬프 값 사용)
         self.last_update_time = {}  # 심볼별 마지막 업데이트 시간
         
+        # 업비트는 오더북 깊이가 15로 고정
+        self.orderbook_depth = 15
+        
         # 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
         
-        # self.logger.info("업비트 현물 데이터 핸들러 초기화 완료")
+        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (오더북 깊이: {self.orderbook_depth}, 고정)")
         
     async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
         """
@@ -106,31 +109,6 @@ class UpbitSpotDataHandler:
         
         return orderbook
         
-    def create_subscription_message(self, symbols: List[str]) -> Dict[str, Any]:
-        """
-        구독 메시지 생성
-        
-        Args:
-            symbols: 구독할 심볼 목록
-            
-        Returns:
-            Dict[str, Any]: 구독 메시지
-        """
-        # KRW-BTC 형식으로 변환
-        formatted_symbols = [f"KRW-{s.upper()}" for s in symbols]
-        
-        # 업비트 구독 메시지 형식
-        ticket = f"upbit-ticket-{int(time.time() * 1000)}"
-        
-        # 구독 메시지 생성
-        subscribe_msg = [
-            {"ticket": ticket},
-            {"type": "orderbook", "codes": formatted_symbols},
-            {"format": "DEFAULT"}
-        ]
-        
-        return subscribe_msg
-    
     def normalize_symbol(self, symbol: str) -> str:
         """
         심볼 정규화

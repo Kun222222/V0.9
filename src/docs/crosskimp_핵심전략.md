@@ -235,149 +235,373 @@ RP (프리미엄 환전 효율) – 해외 1 USDT로 얻은 KRW 비율
 
 ---
 
-## 실시간 데이터 수집 및 계산 트리거 구조
+## 실시간 계산 시뮬레이션 예시
 
-이 전략은 **실시간**으로 다수 거래소 가격을 모니터링하고 신속하게 기회를 포착해야 합니다.
+본 섹션에서는 인덱스 기반 하이브리드 구조를 활용한 실시간 김프율 계산과 거래 의사결정 과정을 시뮬레이션 예시로 설명합니다. 효율적인 데이터 처리와 최적 거래 기회 포착 과정을 단계별로 제시합니다.
 
-### 데이터 수집
-- 4개 거래소(업비트, 빗썸, 바이낸스, 바이빗)의 현물 및 선물 **오더북** 구독
-- 초당 1000~3000건의 이벤트 처리 능력 필요
+### 초기 시스템 상태
 
-### 주요 설계 요소
+시스템은 다음과 같은 상태로 초기화되어 있다고 가정합니다:
 
-#### 오더북 데이터 구조
-- 거래소별/코인별 오더북 객체 유지 (예: OrderBook[업비트][BTC])
-- **호가 누적 캐시**로 시장가 주문 예상 체결가 실시간 계산
-- 1천만원/7700 USDT 규모 주문의 체결 가격 실시간 추정
+1. **거래소 설정**
+   - 국내: 빗썸, 업비트
+   - 해외: 바이낸스, 바이빗
 
-#### 이벤트 기반 계산 트리거
-- 새 오더북 데이터 입수 시 **관련 조합만 계산**하여 효율화
-- 업데이트 코인이 전송코인 목록에 속하면 해당 RT 재계산
-- 업데이트 코인이 수익코인 목록에 속하면 해당 RP 재계산
-- USDT/KRW 환율 업데이트 시 E 갱신
+2. **코인 목록**
+   - 트래킹 코인: BTC, ETH, XRP, DOGE, SOL, SUI, MATIC, AVAX, LAYER 등
+   - 거래소별 지원 코인은 상이 (예: 업비트는 LAYER 지원, 빗썸은 미지원)
 
-#### 캐시 및 조합 최적화
-- 전송코인/수익코인 후보 미리 선정 (예: 전송코인 5종, 수익코인 5종)
-- **조합 스코어링**: Score(i,j) = RT[i] × RP[j] - 1
-- 0.1% 임계치 초과 조합만 별도 관리
+3. **인덱스 기반 데이터 구조**
+   ```
+   # 인덱스 매핑
+   coin_to_idx = {'BTC': 0, 'ETH': 1, 'XRP': 2, 'DOGE': 3, ...}
+   dom_to_idx = {'빗썸': 0, '업비트': 1}
+   for_to_idx = {'바이낸스': 0, '바이빗': 1}
+   
+   # 김프율 배열 (3차원: 코인×국내거래소×해외거래소)
+   transfer_premiums = np.full((len(coins), 2, 2), np.nan)  # 전송코인 김프율
+   profit_premiums = np.full((len(coins), 2, 2), np.nan)    # 수익코인 김프율
+   
+   # 유효 페어 마스크
+   valid_pairs = np.zeros((len(coins), 2, 2), dtype=bool)
+   ```
 
-#### 병렬 처리
-- 각 거래소 데이터 스트림을 개별 소비자 스레드가 처리
-- 중앙 **계산 스레드**가 RT, RP 값 원자적 갱신
-- **락/쓰레드 안전** 유지, lock-free 구조 사용
-- 이벤트 큐 또는 tick당 한 번 처리로 중복 계산 방지
+4. **초기 USDT/KRW 환율**
+   - 환율 = 1,350원/USDT (빗썸/업비트 USDT 마켓 기준)
 
-#### 실시간 통합
-- 계산된 값들을 UI/로그로 모니터링
-- **자동 매매 트리거 모듈**에 입력
-- 중요 조합 별도 추적 및 알림
-- 최근 추이 등 데이터 캐싱으로 분석 지원
+5. **거래 수수료**
+   - 국내: 매수/매도 각 0.05%
+   - 해외: 매수/매도 각 0.1%
+   - 출금 수수료: 코인별 상이 (예: BTC 0.0005, XRP 0.25)
 
----
+### 시뮬레이션 케이스 1: 바이낸스 SUI 오더북 업데이트
 
-## 조합 선정 및 매매 실행 트리거
+**1. 이벤트 수신**
+```
+수신 데이터: 바이낸스 SUI/USDT 오더북 업데이트
+시간: 2023-04-01 15:30:25.123
+매도호가(asks): [[2.29, 5000], [2.30, 8000], ...]  # [가격, 수량]
+매수호가(bids): [[2.28, 4000], [2.27, 6000], ...]
+```
 
-실시간 계산된 모든 코인 조합에 대한 수익률 스코어를 기준으로 매매를 결정합니다.
+**2. 관련 페어 찾기**
+```python
+# SUI 코인 인덱스
+coin_idx = coin_to_idx['SUI']  # 예: 5
+foreign_idx = for_to_idx['바이낸스']  # 0
 
-### 의사결정 로직
+# 유효한 국내 거래소 찾기
+related_pairs = []
+for dom_idx in range(len(domestic_exchanges)):
+    if valid_pairs[coin_idx, dom_idx, foreign_idx]:
+        related_pairs.append((coin_idx, dom_idx, foreign_idx))
+# 결과: [(5, 0, 0), (5, 1, 0)]  # (SUI, 빗썸, 바이낸스), (SUI, 업비트, 바이낸스)
+```
 
-#### 임계치 필터
-- Score(i,j) = RT[i] × RP[j] - 1 ≥ 0.0010 (≥0.1%) 조합 선정
-- 조건 처음 충족 시 **트리거 발생**으로 간주
-- 이미 진행 중인 조합은 추가 트리거 보류
+**3. 오더북 캐시 업데이트**
+```python
+# 오더북 캐시 업데이트
+orderbooks['바이낸스']['SUI'] = {
+    'asks': [[2.29, 5000], [2.30, 8000], ...],
+    'bids': [[2.28, 4000], [2.27, 6000], ...],
+    'timestamp': 1680359425123
+}
+```
 
-#### 우선순위 결정
-- 여러 조합 동시 발견 시 **수익률 높은 순** 우선 실행
-- 충분한 자금 시 **복수 조합 병렬 실행** 가능
-- 자금 제약 시 높은 수익률 조합 우선
+**4. 관련 페어 김프율 계산**
 
-### 매매 트리거 세부 절차
+**빗썸-바이낸스 SUI 페어 계산:**
+```python
+# 빗썸 SUI 오더북 데이터 조회
+bithumb_sui = orderbooks['빗썸']['SUI']
+# 시장가 계산 (1000만원어치 매수 또는 150 SUI 매도 가정)
+domestic_buy_price = calculate_market_buy_price(bithumb_sui, 10_000_000)  # 예: 3,200원
+domestic_sell_price = calculate_market_sell_price(bithumb_sui, 150)  # 예: 3,180원
 
-1. **호가 재확인**
-   - 트리거 시점 최신 호가 다시 확인
-   - **사전 호가 잠금** 또는 **TLV** 방식 안전장치
+# 바이낸스 SUI 시장가 계산 (150 SUI 매수 또는 매도 가정)
+binance_sui = orderbooks['바이낸스']['SUI']
+foreign_buy_price = calculate_market_buy_price(binance_sui, 150)  # 예: 2.29 USDT
+foreign_sell_price = calculate_market_sell_price(binance_sui, 150)  # 예: 2.28 USDT
 
-2. **동시 주문 실행**
-   - 전송코인 국내 매수 + 수익코인 해외 매수 거의 동시 실행
-   - 이어서 전송코인 해외 숏 + 수익코인 선물 숏 실행
-   - 멀티스레드/비동기 호출로 시간차 최소화
+# 환율 적용 (1,350원/USDT)
+foreign_buy_price_krw = foreign_buy_price * 1350  # 3,091.5원
+foreign_sell_price_krw = foreign_sell_price * 1350  # 3,078원
 
-3. **체결 확인 및 수량 정리**
-   - 체결된 수량으로 정확한 전송 수량과 포지션 규모 계산
-   - 전송 수수료 고려한 출금 요청
-   - 헤지 포지션 수량 조정으로 완벽 매칭
+# 김프율 계산
+transfer_premium = (domestic_buy_price / foreign_sell_price_krw) - 1  # (3,200 / 3,078) - 1 = 3.96%
+profit_premium = (domestic_sell_price / foreign_buy_price_krw) - 1  # (3,180 / 3,091.5) - 1 = 2.86%
 
-4. **상태 기록**
-   - 거래 정보 시스템에 기록 (조합, 이익률, 자금, 가격, 수수료 등)
-   - 추적 및 디버깅 목적
+# 배열에 저장
+transfer_premiums[coin_idx, 0, 0] = transfer_premium  # SUI, 빗썸, 바이낸스
+profit_premiums[coin_idx, 0, 0] = profit_premium
+```
 
-### 자금 할당 및 락(lock)
-- 거래에 필요한 자금 **예약/차감**
-- 내부 **자금 풀** 관리로 진행 중 금액 사용 불가 표시
-- 멀티스레드 환경에서 **뮤텍스/원자적 연산** 적용
+**업비트-바이낸스 SUI 페어도 동일 방식으로 계산**
 
----
+**5. 최적 페어 갱신 검토**
+```python
+# 전송코인 최소값 확인 (마스킹 적용)
+masked_transfer = np.where(valid_pairs, transfer_premiums, np.inf)
+min_transfer_idx = np.unravel_index(np.argmin(masked_transfer), masked_transfer.shape)
+min_transfer_premium = masked_transfer[min_transfer_idx]
 
-## 자금 회전 및 동시 실행 계획
+# 기존 최적값과 비교
+if min_transfer_premium < best_transfer['premium']:
+    best_transfer['premium'] = min_transfer_premium
+    best_transfer['indices'] = min_transfer_idx
+    print(f"새로운 최적 전송코인: {idx_to_coin[min_transfer_idx[0]]} ({idx_to_dom[min_transfer_idx[1]]}→{idx_to_for[min_transfer_idx[2]]}), 프리미엄: {min_transfer_premium*100:.2f}%")
 
-### 파이프라인 운영
-- 1분 단위 실행, 20분 전송 지연, 8억원 버퍼 가정
-- 첫 거래 자금 회수 전에도 새 거래 계속 시작
-- steady-state에서 **최대 20건 미완료 거래** 동시 존재
-- 파이프라인 방식으로 연속적 자금 순환
+# 수익코인도 유사한 방식으로 최대값 탐색 및 갱신
+```
 
-### 동시 실행 한도
-- 8억원 버퍼는 1천만원×80건 커버 가능
-- 20분 파이프라인(20건)에 4배 여유
-- 여러 조합 동시 트리거도 충분히 처리
-- 각 거래는 독립적 헤지로 간섭 없음
-- 동일 코인 반복 사용은 제한 필요 (예: 동일 코인 최대 3건)
+**6. 거래 기회 평가**
+```python
+# 최적 전송코인 및 수익코인 조합의 기대 수익률 계산
+expected_return = best_profit['premium'] - best_transfer['premium'] - total_fee_rate
+if expected_return >= 0.001:  # 0.1% 이상
+    # 거래 트리거
+    print(f"거래 기회 발견! 수익률: {expected_return*100:.2f}%")
+    print(f"전송코인: {idx_to_coin[best_transfer['indices'][0]]} ({idx_to_dom[best_transfer['indices'][1]]}→{idx_to_for[best_transfer['indices'][2]]})")
+    print(f"수익코인: {idx_to_coin[best_profit['indices'][0]]} ({idx_to_for[best_profit['indices'][2]]}→{idx_to_dom[best_profit['indices'][1]]})")
+```
 
-### 도착 및 청산 처리
-- 각 거래 약 20분 후 전송 완료로 마무리
-- **전송 완료 이벤트** 또는 타이머로 처리
-- 마무리 절차: 마진 숏 상환, 국내 매도, 선물 포지션 청산
-- 도착 지연 시 **보정 로직** 포함
+### 시뮬레이션 케이스 2: USDT/KRW 환율 변동
 
-### 자금 회수 및 재사용
-- 거래 완료 시 KRW와 USDT 원래 계정으로 귀속
-- 국내: 수익코인 매도 수익(이익 포함) 회수
-- 해외: 전송코인 숏 상환 후 USDT 확보
-- 시스템 자금풀에서 락 해제하여 **재투입** 가능하게 함
+**1. 이벤트 수신**
+```
+수신 데이터: 빗썸 USDT/KRW 가격 변동
+시간: 2023-04-01 15:31:05.456
+새 환율: 1,345원/USDT (이전: 1,350원/USDT)
+```
 
-### 자금 회전 효율
-- 1분에 1천만원씩 회전, 20분 후부터 매 분 결과 발생
-- 20분간 누적 20건×0.1% = 2% 수익 발생 가능
-- 8억원 병렬 활용 시 최대 매 분 800만원 이익 이론상 가능
-- **자본 효율 극대화** 구조
+**2. 환율 업데이트 및 재계산 대상 선정**
+```python
+# 환율 업데이트
+old_rate = usdt_krw['rate']  # 1,350
+usdt_krw = {'rate': 1345, 'timestamp': 1680359465456}
 
-### 모니터링 및 안전장치
-- 각 거래별 타이머로 지연 감지
-- **실시간 대시보드**로 상태 추적
-- API 실패/지연 시 **신규 트리거 중단** 등 failsafe
-- 이상 상황 자동 대응 메커니즘
+# 환율 변동률 계산
+rate_change_ratio = usdt_krw['rate'] / old_rate - 1  # -0.0037 (약 -0.37%)
 
----
+# 변동폭이 일정 수준 이상인 경우에만 주요 페어 재계산
+if abs(rate_change_ratio) >= 0.001:  # 0.1% 이상 변동
+    # 최적 전송코인 및 수익코인 페어 재계산
+    recalculate_pair_premium(best_transfer['indices'])
+    recalculate_pair_premium(best_profit['indices'])
+    
+    # 상위 N개 유망 페어 재계산
+    for pair in promising_pairs[:10]:
+        recalculate_pair_premium(pair)
+```
 
-## 정리 및 구현 시사점
+**3. 최적 기회 재평가**
+```python
+# 최적 조합의 새로운 기대 수익률 계산
+expected_return = best_profit['premium'] - best_transfer['premium'] - total_fee_rate
 
-본 설계는 **교차 김프 아비트라지**의 실시간 계산과 실행 로직을 상세히 다룹니다.
+if expected_return >= 0.001:
+    print(f"환율 변동 후에도 거래 기회 유지! 수익률: {expected_return*100:.2f}%")
+else:
+    print(f"환율 변동으로 거래 기회 사라짐. 새 수익률: {expected_return*100:.2f}%")
+```
 
-### 핵심 요소
-- **전송코인/수익코인 경로 모듈화**로 RT, RP 분리 계산
-- **USDT/KRW 환율** 일원화로 국내외 가격 통일 비교
-- **이벤트 기반, 캐시 최적화, 조합 스코어링** 로직
-- 동시성 관리와 파이프라인 처리로 자금 효율 극대화
+### 시뮬레이션 케이스 3: 다중 이벤트 동시 처리
 
-### 구현 시 고려사항
-- 정수 기반 처리 또는 **소수점 오차 관리**
-- 거래소 API 호출 지연 및 실패 재시도 로직
-- 데이터 스트림 **로스 방지** 튜닝
-- 실시간성과 안정성 균형을 위한 **임계값 조율**
+**1. 상황 설정**
+```
+- 빗썸 XRP 오더북 업데이트와 바이빗 DOGE 오더북 업데이트가 거의 동시에 도착
+- 처리 우선순위: 타임스탬프 기준 순차 처리
+```
 
-### 코드 구조 제안
-- `calculate_RT(coin)`, `calculate_RP(coin)`, `evaluate_scores()`, `execute_trade(pair)` 등 함수화
-- 이벤트 루프 내 함수 호출 구조
-- 멀티스레드 시 큐(queue)/Pub-Sub으로 이벤트 전달
+**2. 여러 이벤트 큐잉**
+```python
+# 이벤트 큐에 추가
+event_queue.put({
+    'type': 'orderbook_update',
+    'exchange': '빗썸',
+    'symbol': 'XRP',
+    'data': {...},
+    'timestamp': 1680359510123
+})
 
-이 설계를 바탕으로 세분화된 로직과 데이터 구조를 구현하면 실제 아비트라지 트레이딩 봇을 구축할 수 있습니다.
+event_queue.put({
+    'type': 'orderbook_update',
+    'exchange': '바이빗',
+    'symbol': 'DOGE',
+    'data': {...},
+    'timestamp': 1680359510456
+})
+```
+
+**3. 순차 처리**
+```python
+# 각 이벤트를 순차적으로 처리
+event1 = event_queue.get()
+process_orderbook_update(event1)
+
+event2 = event_queue.get()
+process_orderbook_update(event2)
+
+# 최종 최적 조합 재평가
+evaluate_best_opportunity()
+```
+
+### 시뮬레이션 케이스 4: 최적 조합 발견 시 거래 실행
+
+**1. 수익성 있는 조합 발견**
+```
+최적 전송코인: LAYER (업비트→바이넌스), 김프율: -2.8%
+최적 수익코인: DOGE (바이빗→빗썸), 김프율: +5.5%
+기대 수익률: 7.9% (수수료 제외 전)
+총 수수료 및 비용: 약 0.4%
+순 기대 수익률: 7.5% > 0.1% (기준 임계값)
+```
+
+**2. 거래 자금 할당**
+```python
+# 거래 규모 설정
+transaction_size_krw = 10_000_000  # 1천만원
+transaction_size_usdt = 7_700  # 약 7,700 USDT (환율 1,300원 기준)
+
+# 자금 풀에서 락(lock)
+lock_funds('KRW', transaction_size_krw)
+lock_funds('USDT', transaction_size_usdt)
+```
+
+**3. 4개 주문 동시 실행**
+```python
+# 전송코인 경로
+order1_result = place_order('업비트', 'LAYER', 'buy', transaction_size_krw)
+order2_result = place_order('바이낸스', 'LAYER', 'margin_sell', order1_result['quantity'])
+
+# 수익코인 경로
+order3_result = place_order('바이빗', 'DOGE', 'buy', transaction_size_usdt)
+order4_result = place_order('바이빗', 'DOGE-PERP', 'short', order3_result['quantity'])
+```
+
+**4. 전송 모니터링 및 완료 처리**
+```python
+# 전송 요청
+withdrawal_id = withdraw_coin('업비트', 'LAYER', order1_result['quantity'] - withdrawal_fee, 'binance_address')
+
+# 거래 상태 기록
+transaction_id = generate_uuid()
+active_transactions[transaction_id] = {
+    'status': 'in_progress',
+    'transfer_coin': 'LAYER',
+    'profit_coin': 'DOGE',
+    'transfer_order_id': (order1_result['id'], order2_result['id']),
+    'profit_order_id': (order3_result['id'], order4_result['id']),
+    'withdrawal_id': withdrawal_id,
+    'start_time': current_timestamp,
+    'expected_return': 0.075,
+    'funds': {'KRW': transaction_size_krw, 'USDT': transaction_size_usdt}
+}
+
+# 완료 처리 함수 (비동기로 완료 상태 모니터링)
+async def monitor_completion(transaction_id):
+    transaction = active_transactions[transaction_id]
+    
+    # 전송코인 도착 확인
+    while True:
+        deposit_status = check_deposit('바이낸스', 'LAYER', transaction['withdrawal_id'])
+        if deposit_status == 'completed':
+            # 전송코인 마진 대출 상환
+            repay_margin_loan('바이낸스', 'LAYER', transaction['transfer_order_id'][1])
+            break
+        await asyncio.sleep(30)  # 30초마다 체크
+    
+    # 수익코인 국내 도착 확인
+    withdraw_profit_coin('바이빗', 'DOGE', adjusted_quantity, 'bithumb_address')
+    
+    while True:
+        deposit_status = check_deposit('빗썸', 'DOGE', expected_id)
+        if deposit_status == 'completed':
+            # 국내 수익코인 매도
+            sell_result = place_order('빗썸', 'DOGE', 'sell', final_quantity)
+            # 선물 포지션 청산
+            close_result = place_order('바이빗', 'DOGE-PERP', 'close_short', position_size)
+            break
+        await asyncio.sleep(30)
+    
+    # 거래 완료 및 실제 수익 계산
+    final_krw = sell_result['total'] * (1 - fee_rate['bithumb']['sell'])
+    profit_krw = final_krw - transaction['funds']['KRW']
+    profit_percentage = profit_krw / transaction['funds']['KRW'] * 100
+    
+    # 거래 결과 기록
+    transaction['status'] = 'completed'
+    transaction['end_time'] = current_timestamp
+    transaction['actual_return'] = profit_percentage / 100
+    transaction['profit_krw'] = profit_krw
+    
+    # 자금 풀 반환
+    release_funds('KRW', final_krw)
+    release_funds('USDT', transaction['funds']['USDT'])
+    
+    print(f"거래 완료! 예상 수익률: {transaction['expected_return']*100:.2f}%, 실제 수익률: {profit_percentage:.2f}%")
+```
+
+### 실제 사례 기반 수익성 분석
+
+#### 사례 1: XRP 전송 / BTC 수익 조합
+```
+조건:
+- 국내 XRP 구매가: 720원
+- 해외 XRP 판매가: 0.53 USDT (USDT/KRW 1,350원 기준 = 715.5원)
+- XRP 김프율: +0.63%
+- 국내 BTC 판매가: 80,100,000원
+- 해외 BTC 구매가: 58,500 USDT (USDT/KRW 1,350원 기준 = 78,975,000원)
+- BTC 김프율: +1.42%
+
+계산:
+- 전송코인(XRP) 효율: 715.5 / 720 = 0.9937 (약 -0.63%)
+- 수익코인(BTC) 효율: 80,100,000 / 78,975,000 = 1.0142 (약 +1.42%)
+- 총 효율: 0.9937 * 1.0142 = 1.0077
+- 총 수익률(수수료 전): 0.77%
+- 수수료 등 비용: 약 0.4%
+- 순 수익률: 약 0.37%
+```
+
+#### 사례 2: AVAX 전송 / ETH 수익 조합
+```
+조건:
+- 국내 AVAX 구매가: 51,200원
+- 해외 AVAX 판매가: 39.80 USDT (USDT/KRW 1,350원 기준 = 53,730원)
+- AVAX 김프율: -4.71% (역프리미엄)
+- 국내 ETH 판매가: 4,950,000원
+- 해외 ETH 구매가: 3,550 USDT (USDT/KRW 1,350원 기준 = 4,792,500원)
+- ETH 김프율: +3.29%
+
+계산:
+- 전송코인(AVAX) 효율: 53,730 / 51,200 = 1.0495 (약 +4.95%)
+- 수익코인(ETH) 효율: 4,950,000 / 4,792,500 = 1.0329 (약 +3.29%)
+- 총 효율: 1.0495 * 1.0329 = 1.0840
+- 총 수익률(수수료 전): 8.40%
+- 수수료 등 비용: 약 0.4%
+- 순 수익률: 약 8.00%
+```
+
+### 구현 시 고려사항 및 최적화 전략
+
+1. **효율적인 데이터 구조**
+   - 인덱스 기반 하이브리드 구조로 메모리 효율화
+   - 마스킹 기법을 통한 유효 페어만 계산
+   - NumPy 배열 활용으로 벡터화 연산 가능
+
+2. **계산 최적화**
+   - 영향 받는 페어만 선택적 재계산
+   - 환율 변동 시 중요 페어만 우선 업데이트
+   - 임계값 필터링으로 불필요한 연산 제거
+
+3. **동시성 관리**
+   - 멀티스레딩으로 이벤트 처리 병렬화
+   - 락 프리(lock-free) 구조 활용
+   - 원자적 업데이트로 데이터 정합성 유지
+
+4. **거래 실행 최적화**
+   - 주문 동시 실행으로 시간차 최소화
+   - 비동기 모니터링으로 리소스 효율화
+   - 단일 트랜잭션 ID로 관련 주문 그룹화
+
+이러한 시뮬레이션 예시와 최적화 전략을 기반으로 초당 1,000개 이상의 오더북 이벤트를 효율적으로 처리하면서 0.1% 이상의 수익 기회를 실시간으로 포착하고 실행하는 시스템을 구현할 수 있습니다.

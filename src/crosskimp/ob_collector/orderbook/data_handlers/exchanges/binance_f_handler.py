@@ -29,13 +29,23 @@ class BinanceFutureDataHandler:
     # 상수 정의
     REST_API_ENDPOINT = "https://fapi.binance.com"
     ORDERBOOK_SNAPSHOT_ENDPOINT = "/fapi/v1/depth"
-    DEFAULT_LIMIT = 50  # 오더북 스냅샷 요청 시 기본 깊이 (100에서 50으로 변경)
     
     def __init__(self):
         """초기화"""
         self.logger = get_unified_logger(SystemComponent.OB_COLLECTOR.value)
         self.exchange_code = Exchange.BINANCE_FUTURE.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
+        
+        # 설정 로드
+        self.config = get_config()
+        
+        # 오더북 구독 설정
+        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 50)
+        self.orderbook_speed = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_speed", 100)
+        
+        # 스냅샷 API 기본 깊이 설정 (설정 파일에서 로드)
+        self.DEFAULT_LIMIT = self.orderbook_depth
+        
         # 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
         self.data_manager.register_exchange(self.exchange_code)
@@ -43,7 +53,6 @@ class BinanceFutureDataHandler:
         # 기존 raw_logger는 유지하되 사용은 최소화
         self.raw_logger = create_raw_logger(self.exchange_code)
         
-        self.config = get_config()
         self.symbol_infos = {}  # 심볼별 정보 캐시
         self.last_snapshot_time = {}  # 마지막 스냅샷 요청 시간 (심볼별)
         
@@ -68,7 +77,7 @@ class BinanceFutureDataHandler:
         self.snapshot_cooldown = {}  # 심볼별 스냅샷 재요청 쿨다운 시간
         self.min_snapshot_interval = 10.0  # 각 심볼별 스냅샷 요청 최소 간격 (초)
         
-        # self.logger.info("바이낸스 선물 데이터 핸들러 초기화")
+        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (구독 깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
         
     async def get_orderbook_snapshot(self, symbol: str, limit: int = None) -> Dict[str, Any]:
         """
@@ -224,6 +233,13 @@ class BinanceFutureDataHandler:
             # 오더북 내용 로깅
             orderbook = self.validator.get_orderbook(symbol)
             if orderbook:
+                # 중앙 데이터 관리자를 통해 오더북 데이터 로깅
+                self.data_manager.log_orderbook_data(
+                    self.exchange_code,
+                    symbol,
+                    orderbook
+                )
+                
                 bids_count = len(orderbook.get("bids", []))
                 asks_count = len(orderbook.get("asks", []))
                 # self.logger.info(f"바이낸스 선물 {symbol} 스냅샷 초기화 완료 | lastUpdateId: {last_update_id}, 매수: {bids_count}건, 매도: {asks_count}건")
@@ -435,43 +451,26 @@ class BinanceFutureDataHandler:
             # 마지막 업데이트 ID 업데이트
             self.last_update_ids[symbol] = final_update_id
             
-            # 업데이트 성공 시 주기적으로 오더북 상태 로깅 (100번에 1번 정도)
-            if final_update_id % 100 == 0:
-                orderbook = self.validator.get_orderbook(symbol)
-                if orderbook:
-                    bids_count = len(orderbook.get("bids", []))
-                    asks_count = len(orderbook.get("asks", []))
-                    
-                    # 최상위 호가 정보 로깅
-                    if bids_count > 0 and asks_count > 0:
-                        best_bid = orderbook["bids"][0]
-                        best_ask = orderbook["asks"][0]
-                        # self.logger.debug(f"바이낸스 선물 {symbol} 델타 업데이트 후 오더북 상태 - 매수: {bids_count}건, 매도: {asks_count}건, 최상위 매수: {best_bid[0]}, 최상위 매도: {best_ask[0]}")
+            # 매 업데이트마다 오더북 상태 로깅
+            orderbook = self.validator.get_orderbook(symbol)
+            if orderbook:
+                # 중앙 데이터 관리자를 통해 오더북 데이터 로깅
+                self.data_manager.log_orderbook_data(
+                    self.exchange_code,
+                    symbol,
+                    orderbook
+                )
+                
+                # 디버그 로깅은 필요시 주석 해제
+                # bids_count = len(orderbook.get("bids", []))
+                # asks_count = len(orderbook.get("asks", []))
+                # if bids_count > 0 and asks_count > 0:
+                #     best_bid = orderbook["bids"][0]
+                #     best_ask = orderbook["asks"][0]
+                #     self.logger.debug(f"바이낸스 선물 {symbol} 델타 업데이트 후 오더북 상태 - 매수: {bids_count}건, 매도: {asks_count}건, 최상위 매수: {best_bid[0]}, 최상위 매도: {best_ask[0]}")
             
         except Exception as e:
             self.logger.error(f"바이낸스 선물 {symbol} 델타 처리 중 오류: {str(e)}")
-        
-    def create_subscription_message(self, symbols: List[str]) -> Dict[str, Any]:
-        """
-        웹소켓 구독 메시지 생성
-        
-        Args:
-            symbols: 구독할 심볼 목록
-            
-        Returns:
-            Dict[str, Any]: 구독 메시지
-        """
-        # 심볼 형식 변환 (모두 소문자로 + usdt 추가)
-        formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
-        
-        # 바이낸스 선물 구독 메시지 형식
-        params = [f"{symbol}@depth@100ms" for symbol in formatted_symbols]
-        
-        return {
-            "method": "SUBSCRIBE",
-            "params": params,
-            "id": int(time.time() * 1000)  # 고유 ID 생성
-        }
         
     def normalize_symbol(self, symbol: str) -> str:
         """

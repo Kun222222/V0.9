@@ -35,7 +35,12 @@ class BinanceFutureConnectionStrategy:
         self.subscriptions = []
         self.id_counter = 1  # 요청 ID 카운터
         self.exchange_name = EXCHANGE_NAMES_KR.get(self.EXCHANGE_CODE, "바이낸스 선물")
-        # self.logger.info(f"{self.exchange_name} 연결 전략 초기화")
+        
+        # 오더북 구독 설정 로드
+        self.orderbook_depth = self.config.get(f"exchanges.{self.EXCHANGE_CODE}.orderbook_subscription_depth", 50)
+        self.orderbook_speed = self.config.get(f"exchanges.{self.EXCHANGE_CODE}.orderbook_subscription_speed", 100)
+        
+        self.logger.info(f"{self.exchange_name} 연결 전략 초기화 (구독 깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""
@@ -129,8 +134,8 @@ class BinanceFutureConnectionStrategy:
             # 심볼 형식 변환 (소문자로 변경하고 usdt 추가)
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
-            # 심볼별로 depth 스트림 구독
-            params = [f"{symbol}@depth@100ms" for symbol in formatted_symbols]
+            # 설정된 속도로 심볼별 depth 스트림 구독
+            params = [f"{symbol}@depth@{self.orderbook_speed}ms" for symbol in formatted_symbols]
             
             # 구독 메시지 생성
             request_id = self._get_next_id()
@@ -141,7 +146,7 @@ class BinanceFutureConnectionStrategy:
             }
             
             # 구독 요청 전송
-            self.logger.info(f"{self.exchange_name} 구독 요청: {len(params)}개 심볼")
+            self.logger.info(f"{self.exchange_name} 구독 요청: {len(params)}개 심볼 (깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
             self.logger.debug(f"{self.exchange_name} 구독 요청 상세: {subscribe_msg}")
             
             await ws.send(json.dumps(subscribe_msg))
@@ -174,8 +179,8 @@ class BinanceFutureConnectionStrategy:
             # 심볼 형식 변환 (소문자로 변경하고 usdt 추가)
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
-            # 심볼별로 depth 스트림 구독 해제
-            params = [f"{symbol}@depth@100ms" for symbol in formatted_symbols]
+            # 설정된 속도로 심볼별 depth 스트림 구독 해제
+            params = [f"{symbol}@depth@{self.orderbook_speed}ms" for symbol in formatted_symbols]
             
             # 구독 해제 메시지 생성
             request_id = self._get_next_id()

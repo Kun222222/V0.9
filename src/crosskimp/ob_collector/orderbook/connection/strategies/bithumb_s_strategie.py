@@ -32,7 +32,11 @@ class BithumbSpotConnectionStrategy:
         self.subscriptions = []
         self.id_counter = 1  # 요청 ID 카운터
         self.exchange_name = EXCHANGE_NAMES_KR.get(self.EXCHANGE_CODE, "[빗썸]")
-        # self.logger.info(f"{self.exchange_name} 연결 전략 초기화")
+        
+        # 빗썸은 오더북 깊이가 15로 고정
+        self.orderbook_depth = 15
+        
+        self.logger.info(f"{self.exchange_name} 연결 전략 초기화 (깊이: {self.orderbook_depth}, 고정값)")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""

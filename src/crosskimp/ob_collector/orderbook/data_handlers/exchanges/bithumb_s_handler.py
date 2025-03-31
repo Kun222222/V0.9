@@ -31,10 +31,13 @@ class BithumbSpotDataHandler:
         self.sequence_numbers = {}  # 심볼별 시퀀스 번호 (타임스탬프 값 사용)
         self.last_update_time = {}  # 심볼별 마지막 업데이트 시간
         
+        # 빗썸은 오더북 깊이가 15로 고정
+        self.orderbook_depth = 15
+        
         # 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
         
-        # self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 완료")
+        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (오더북 깊이: {self.orderbook_depth}, 고정)")
         
     def get_orderbook(self, symbol: str) -> Optional[Dict]:
         """
@@ -255,31 +258,6 @@ class BithumbSpotDataHandler:
             
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} {symbol} 델타 업데이트 처리 중 오류: {str(e)}")
-    
-    def create_subscription_message(self, symbols: List[str]) -> Dict[str, Any]:
-        """
-        구독 메시지 생성
-        
-        Args:
-            symbols: 구독할 심볼 목록
-            
-        Returns:
-            Dict[str, Any]: 구독 메시지
-        """
-        # KRW-BTC 형식으로 변환
-        formatted_symbols = [f"KRW-{s.upper()}" for s in symbols]
-        
-        # 빗썸은 헤더-본문 구조로 구성
-        ticket = f"bithumb-ticket-{int(time.time() * 1000)}"
-        
-        # 구독 메시지 생성
-        subscribe_msg = [
-            {"ticket": ticket},
-            {"type": "orderbook", "codes": formatted_symbols},
-            {"format": "DEFAULT"}  # 필드 생략 방식 (스냅샷과 실시간 모두 수신)
-        ]
-        
-        return subscribe_msg
     
     def normalize_symbol(self, symbol: str) -> str:
         """

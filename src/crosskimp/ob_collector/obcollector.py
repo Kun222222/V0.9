@@ -156,6 +156,10 @@ class OrderbookCollectorManager:
             self.logger.info("오더북 수집 시스템 시작 중...")
             self.is_running = True
             
+            # 0. USDT/KRW 모니터를 OrderbookDataManager에 연결
+            self.data_manager.set_usdt_monitor(self.usdtkrw_monitor)
+            self.logger.info("USDT/KRW 모니터가 오더북 데이터 관리자에 연결되었습니다.")
+            
             # 1. USDT/KRW 모니터링 시작 (별도 태스크)
             usdtkrw_task = asyncio.create_task(self.usdtkrw_monitor.start())
             self.logger.info("USDT/KRW 모니터링 시작됨")

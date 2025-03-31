@@ -365,6 +365,15 @@ class BaseOrderBookValidator:
             
             # 현재 시간 기록 (오래된 데이터 정리용)
             self.last_update_time[symbol] = time.time()
+            
+            # 중앙 로깅 시스템에 오더북 데이터 로깅 (최신 오더북)
+            orderbook = self.get_orderbook(symbol)
+            if orderbook and self.data_manager:
+                self.data_manager.log_orderbook_data(
+                    self.exchange_code,
+                    symbol,
+                    orderbook
+                )
         
         # 6. 출력용 뎁스 제한 적용
         limited_bids = self._limit_depth(self.orderbooks[symbol]["bids"])

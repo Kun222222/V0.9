@@ -33,7 +33,12 @@ class BybitFutureConnectionStrategy:
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         self.subscriptions = []
         self.id_counter = 1  # 요청 ID 카운터
-        # self.logger.info(f"{self.exchange_name_kr} 연결 전략 초기화")
+        
+        # 오더북 구독 설정 로드
+        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 200)
+        self.orderbook_speed = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_speed", 20)
+        
+        self.logger.info(f"{self.exchange_name_kr} 연결 전략 초기화 (구독 깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""
@@ -113,8 +118,8 @@ class BybitFutureConnectionStrategy:
             # 심볼 형식 변환 (모두 소문자로)
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
-            # 심볼별로 depth 스트림 구독
-            args = [f"orderbook.200.{symbol.upper()}" for symbol in formatted_symbols]
+            # 심볼별로 설정된 깊이로 오더북 스트림 구독
+            args = [f"orderbook.{self.orderbook_depth}.{symbol.upper()}" for symbol in formatted_symbols]
             
             # 구독 메시지 생성
             request_id = self._get_next_id()
@@ -125,7 +130,7 @@ class BybitFutureConnectionStrategy:
             }
             
             # 구독 요청 전송
-            self.logger.info(f"{self.exchange_name_kr} 구독 요청: {len(args)}개 심볼")
+            self.logger.info(f"{self.exchange_name_kr} 구독 요청: {len(args)}개 심볼 (깊이: {self.orderbook_depth})")
             self.logger.debug(f"{self.exchange_name_kr} 구독 요청 상세: {subscribe_msg}")
             
             await ws.send(json.dumps(subscribe_msg))
@@ -158,8 +163,8 @@ class BybitFutureConnectionStrategy:
             # 심볼 형식 변환 (모두 소문자로)
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
-            # 심볼별로 depth 스트림 구독 해제
-            args = [f"orderbook.200.{symbol.upper()}" for symbol in formatted_symbols]
+            # 심볼별로 설정된 깊이로 오더북 스트림 구독 해제
+            args = [f"orderbook.{self.orderbook_depth}.{symbol.upper()}" for symbol in formatted_symbols]
             
             # 구독 해제 메시지 생성
             request_id = self._get_next_id()

@@ -124,7 +124,6 @@ class AppConfig:
         self.backup_dir = self._get_full_path("backup_dir", "config/backups")
         
         # 로그 관련 경로
-        self.orderbook_data_dir = self._get_full_path("orderbook_data", "logs/orderbook_data")
         self.raw_data_dir = self._get_full_path("raw_data", "logs/raw_data")
         
         # 데이터베이스 관련 경로
@@ -158,7 +157,6 @@ class AppConfig:
                 "temp_dir": "temp",
                 "backup_dir": "config/backups",
                 "env_file": ".env",
-                "orderbook_data": "logs/orderbook_data",
                 "raw_data": "logs/raw_data",
                 "db_path": "data/trading.db"
             },
@@ -609,7 +607,6 @@ class AppConfig:
             self.data_dir,
             self.backup_dir,
             self.temp_dir,
-            self.orderbook_data_dir,
             self.raw_data_dir,
             os.path.dirname(self.db_path)
         ]

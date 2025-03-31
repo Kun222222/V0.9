@@ -29,8 +29,7 @@ from crosskimp.common.config.common_constants import (
 # 로그 디렉토리 및 파일 경로 설정 - 기본값으로 설정 (실제 경로는 나중에 초기화됨)
 LOGS_DIR = "src/logs"
 LOG_SUBDIRS = {
-    'raw_data': "src/logs/raw_data",
-    'orderbook_data': "src/logs/orderbook_data"
+    'raw_data': "src/logs/raw_data"
 }
 
 # 설정 가져오기 초기화 여부 플래그
@@ -500,7 +499,21 @@ def create_raw_logger(exchange_name: str) -> logging.Logger:
     
     # 하위 폴더 생성하지 않고 raw_data 디렉토리에 직접 로깅
     raw_data_dir = LOG_SUBDIRS['raw_data']
-    os.makedirs(raw_data_dir, exist_ok=True)
+    
+    # 메인 로그 디렉토리와 raw_data 디렉토리 존재 확인 및 생성
+    internal_logger = _get_internal_logger()
+    try:
+        # 메인 로그 디렉토리 먼저 확인
+        if not os.path.exists(LOGS_DIR):
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            internal_logger.info(f"메인 로그 디렉토리 생성: {LOGS_DIR}")
+            
+        # raw_data 디렉토리 확인
+        if not os.path.exists(raw_data_dir):
+            os.makedirs(raw_data_dir, exist_ok=True)
+            internal_logger.info(f"Raw 데이터 디렉토리 생성: {raw_data_dir}")
+    except Exception as e:
+        internal_logger.error(f"로그 디렉토리 생성 중 오류: {str(e)}")
     
     logger = create_logger(
         name=logger_name,
@@ -539,15 +552,24 @@ def initialize_logging() -> None:
                 global LOGS_DIR, LOG_SUBDIRS
                 LOGS_DIR = config.get_path("logs_dir")
                 LOG_SUBDIRS['raw_data'] = config.get_path("raw_data_dir")
-                LOG_SUBDIRS['orderbook_data'] = config.get_path("orderbook_data_dir")
                 internal_logger.info(f"설정에서 로그 경로 로드: {LOGS_DIR}")
             except Exception as e:
                 internal_logger.error(f"로그 경로 로드 실패, 기본값 사용: {str(e)}")
                 
-            # 로그 디렉토리 생성 - error 폴더 제외
-            os.makedirs(LOGS_DIR, exist_ok=True)
-            for dir_name, dir_path in LOG_SUBDIRS.items():
-                os.makedirs(dir_path, exist_ok=True)
+            # 로그 디렉토리 생성 - 존재 여부 확인
+            try:
+                # 메인 로그 디렉토리 확인
+                if not os.path.exists(LOGS_DIR):
+                    os.makedirs(LOGS_DIR, exist_ok=True)
+                    internal_logger.info(f"메인 로그 디렉토리 생성: {LOGS_DIR}")
+                
+                # 하위 디렉토리 생성
+                for dir_name, dir_path in LOG_SUBDIRS.items():
+                    if not os.path.exists(dir_path):
+                        os.makedirs(dir_path, exist_ok=True)
+                        internal_logger.info(f"로그 하위 디렉토리 생성: {dir_path}")
+            except Exception as e:
+                internal_logger.error(f"로그 디렉토리 생성 중 오류: {str(e)}")
             
             # 오래된 로그 파일 정리
             cleanup_old_logs()
@@ -585,9 +607,22 @@ def get_unified_logger(component: str = SystemComponent.SYSTEM.value) -> logging
         # 기본 통합 로거가 없으면 생성
         if _unified_logger is None:
             # 로그 디렉토리 생성 - 필요한 모든 디렉토리 확인
-            os.makedirs(LOGS_DIR, exist_ok=True)
-            for dir_name, dir_path in LOG_SUBDIRS.items():
-                os.makedirs(dir_path, exist_ok=True)
+            try:
+                # 메인 로그 디렉토리 먼저 생성
+                if not os.path.exists(LOGS_DIR):
+                    os.makedirs(LOGS_DIR, exist_ok=True)
+                    internal_logger = _get_internal_logger()
+                    internal_logger.info(f"메인 로그 디렉토리 생성: {LOGS_DIR}")
+                
+                # 하위 디렉토리 생성
+                for dir_name, dir_path in LOG_SUBDIRS.items():
+                    if not os.path.exists(dir_path):
+                        os.makedirs(dir_path, exist_ok=True)
+                        internal_logger = _get_internal_logger()
+                        internal_logger.info(f"로그 하위 디렉토리 생성: {dir_path}")
+            except Exception as e:
+                internal_logger = _get_internal_logger()
+                internal_logger.error(f"로그 디렉토리 생성 중 오류: {str(e)}")
                 
             _unified_logger = create_logger(
                 name='unified_logger',

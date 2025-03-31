@@ -40,6 +40,10 @@ class BybitSpotDataHandler:
         self.exchange_code = Exchange.BYBIT_SPOT.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         
+        # 오더북 구독 설정
+        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 200)
+        self.orderbook_speed = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_speed", 20)
+        
         # 중앙 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
         
@@ -51,7 +55,7 @@ class BybitSpotDataHandler:
         # HTTP 세션
         self.session = None
         
-        # self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 완료")
+        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (구독 깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
         
     async def process_snapshot(self, symbol: str, data: Dict) -> None:
         """
@@ -334,9 +338,10 @@ class BybitSpotDataHandler:
             orderbook["sequence"] = sequence
             orderbook["update_id"] = update_id
             
-            # 로깅용 복사본 생성 (최대 15개 항목)
-            log_bids = sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:15]
-            log_asks = sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:15]
+            # 로깅용 복사본 생성 (중앙 설정된 깊이로 제한)
+            output_depth = self.data_manager.get_orderbook_output_depth()
+            log_bids = sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:output_depth]
+            log_asks = sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:output_depth]
             
             # 배열 형태로 변환 [[price, amount], ...]
             formatted_bids = [[price, amount] for price, amount in log_bids]
@@ -357,30 +362,6 @@ class BybitSpotDataHandler:
         except Exception as e:
             self.logger.error(f"바이빗 현물 델타 업데이트 처리 중 오류: {str(e)}")
             
-    def create_subscription_message(self, symbols: List[str]) -> Dict[str, Any]:
-        """
-        구독 메시지 생성
-        
-        Args:
-            symbols: 구독할 심볼 목록
-            
-        Returns:
-            Dict[str, Any]: 구독 메시지
-        """
-        # 심볼 형식 변환
-        formatted_symbols = [self.normalize_symbol(s) for s in symbols]
-        
-        # args 배열 구성
-        args = [f"orderbook.50.{symbol.upper()}" for symbol in formatted_symbols]
-        
-        # 구독 메시지 생성
-        message = {
-            "op": "subscribe",
-            "args": args
-        }
-        
-        return message
-        
     def normalize_symbol(self, symbol: str) -> str:
         """
         심볼명 정규화 (API 요청용)
@@ -399,7 +380,7 @@ class BybitSpotDataHandler:
             symbol = f"{symbol}usdt"
             
         return symbol
-        
+            
     def get_orderbook(self, symbol: str) -> Optional[Dict]:
         """
         오더북 데이터 반환

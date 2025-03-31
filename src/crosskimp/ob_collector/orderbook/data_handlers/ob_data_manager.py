@@ -20,6 +20,8 @@ from typing import Dict, List, Any, Optional, Callable, Set
 from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
 from crosskimp.common.config.app_config import get_config
+# 시장가 주문 시뮬레이션 기능 추가
+from crosskimp.radar.market_order.market_order import handle_orderbook_data
 
 class OrderbookDataManager:
     """
@@ -55,7 +57,23 @@ class OrderbookDataManager:
         # 오류 카운팅 추가
         self.error_counts = {}
         
+        # USDT/KRW 모니터 인스턴스 저장용 변수 추가
+        self.usdt_monitor = None
+        
+        # 시장가 주문 시뮬레이션 활성화 여부
+        self.enable_market_order_simulation = True
+        
         self.logger.info(f"오더북 데이터 관리자 초기화 (출력 깊이: {self.orderbook_output_depth}, 내부 깊이: {self.orderbook_internal_depth})")
+    
+    def set_usdt_monitor(self, usdt_monitor):
+        """
+        USDT/KRW 모니터 인스턴스 설정
+        
+        Args:
+            usdt_monitor: WsUsdtKrwMonitor 인스턴스
+        """
+        self.usdt_monitor = usdt_monitor
+        self.logger.info("USDT/KRW 모니터가 오더북 데이터 관리자에 연결되었습니다.")
     
     def register_exchange(self, exchange_code: str) -> None:
         """
@@ -143,20 +161,38 @@ class OrderbookDataManager:
             bids = orderbook.get("bids", [])[:self.orderbook_output_depth]
             asks = orderbook.get("asks", [])[:self.orderbook_output_depth]
             
+            # USDT/KRW 가격 정보 가져오기
+            usdt_prices = {}
+            if self.usdt_monitor:
+                usdt_prices = self.usdt_monitor.get_all_prices()
+                
+                # 업비트와 빗썸의 가격이 모두 0이 아닌 경우에만 로깅 진행
+                upbit_price = usdt_prices.get(Exchange.UPBIT.value, 0.0)
+                bithumb_price = usdt_prices.get(Exchange.BITHUMB.value, 0.0)
+                
+                if upbit_price <= 0.0 or bithumb_price <= 0.0:
+                    # 메시지 통계는 업데이트하되 로깅은 건너뜀
+                    self.orderbook_message_counts[exchange_code] = self.orderbook_message_counts.get(exchange_code, 0) + 1
+                    return
+            
             # 로그 데이터 구성
             log_data = {
                 "exch": exchange_code,
                 "sym": symbol,
                 "ts": orderbook.get("timestamp", int(time.time() * 1000)),
                 "seq": orderbook.get("sequence", 0),
+                "usdt_krw": usdt_prices,  # USDT/KRW 가격 정보 추가
                 "bids": bids,
                 "asks": asks
             }
             
             # raw_logger에 오더북 데이터 로깅
-            self.raw_loggers[exchange_code].debug(
-                f"매수 {len(bids)} / 매도 {len(asks)} {json.dumps(log_data)}"
-            )
+            log_message = f"매수 {len(bids)} / 매도 {len(asks)} {json.dumps(log_data)}"
+            self.raw_loggers[exchange_code].debug(log_message)
+            
+            # 시장가 주문 시뮬레이션 실행
+            if self.enable_market_order_simulation:
+                handle_orderbook_data(log_message)
             
             # 콜백 실행 (향후 C++ 연동 등에 사용)
             for callback_name, callback_func in self.callbacks.items():

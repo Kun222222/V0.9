@@ -33,7 +33,12 @@ class BybitSpotConnectionStrategy:
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         self.subscriptions = []
         self.id_counter = 1  # 요청 ID 카운터
-        # self.logger.info(f"{self.exchange_name_kr} 연결 전략 초기화")
+        
+        # 오더북 구독 설정 로드
+        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 200)
+        self.orderbook_speed = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_speed", 20)
+        
+        self.logger.info(f"{self.exchange_name_kr} 연결 전략 초기화 (구독 깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""
@@ -123,8 +128,8 @@ class BybitSpotConnectionStrategy:
                 batch_num = (i // MAX_SYMBOLS_PER_BATCH) + 1
                 total_batches = (len(formatted_symbols) + MAX_SYMBOLS_PER_BATCH - 1) // MAX_SYMBOLS_PER_BATCH
                 
-                # 심볼별로 depth 스트림 구독
-                args = [f"orderbook.200.{symbol.upper()}" for symbol in batch_symbols]
+                # 설정된 깊이로 심볼별 orderbook 스트림 구독
+                args = [f"orderbook.{self.orderbook_depth}.{symbol.upper()}" for symbol in batch_symbols]
                 
                 # 구독 메시지 생성
                 request_id = self._get_next_id()
@@ -135,7 +140,7 @@ class BybitSpotConnectionStrategy:
                 }
                 
                 # 구독 요청 전송
-                self.logger.info(f"{self.exchange_name_kr} 구독 요청: 배치 {batch_num}/{total_batches}, {len(args)}개 심볼")
+                self.logger.info(f"{self.exchange_name_kr} 구독 요청: 배치 {batch_num}/{total_batches}, {len(args)}개 심볼 (깊이: {self.orderbook_depth})")
                 self.logger.debug(f"{self.exchange_name_kr} 구독 요청 상세: {subscribe_msg}")
                 
                 await ws.send(json.dumps(subscribe_msg))
@@ -182,8 +187,8 @@ class BybitSpotConnectionStrategy:
                 batch_num = (i // MAX_SYMBOLS_PER_BATCH) + 1
                 total_batches = (len(formatted_symbols) + MAX_SYMBOLS_PER_BATCH - 1) // MAX_SYMBOLS_PER_BATCH
                 
-                # 심볼별로 depth 스트림 구독 해제
-                args = [f"orderbook.200.{symbol.upper()}" for symbol in batch_symbols]
+                # 설정된 깊이로 심볼별 orderbook 스트림 구독 해제
+                args = [f"orderbook.{self.orderbook_depth}.{symbol.upper()}" for symbol in batch_symbols]
                 
                 # 구독 해제 메시지 생성
                 request_id = self._get_next_id()
@@ -211,7 +216,7 @@ class BybitSpotConnectionStrategy:
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 구독 해제 중 오류: {str(e)}")
             return False
-    
+            
     async def send_ping(self, ws: websockets.WebSocketClientProtocol) -> bool:
         """
         Ping 메시지 전송
