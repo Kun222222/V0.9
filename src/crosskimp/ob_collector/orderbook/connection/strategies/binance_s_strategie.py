@@ -67,17 +67,25 @@ class BinanceSpotConnectionStrategy:
         # self.logger.info(f"{self.exchange_name} 웹소켓 연결 시도 중: {self.BASE_WS_URL}")
         
         try:
-            # 웹소켓 연결 (websockets 버전에 따라 헤더 설정 방식이 다름)
-            # 버전 호환성을 위해 더 단순한 방법 사용
+            # 웹소켓 연결
             ws = await asyncio.wait_for(
                 websockets.connect(
                     self.BASE_WS_URL,
-                    ping_interval=30,  # 20초에서 180초(3분)로 변경
-                    ping_timeout=20,    # 10초에서 60초로 변경
-                    close_timeout=10    # 닫기 타임아웃 (초)
+                    ping_interval=None,  # 클라이언트 ping 비활성화 (서버가 ping을 보냄)
+                    ping_timeout=None,   # 기본 ping 타임아웃 비활성화
+                    close_timeout=10     # 닫기 타임아웃 (초)
                 ),
                 timeout=timeout
             )
+            
+            # 서버로부터 받은 ping에 즉시 pong으로 응답하는 핸들러 등록
+            async def ping_handler(conn, payload):
+                self.logger.debug(f"{self.exchange_name} ping 수신, pong 응답 중...")
+                if not conn.closed:
+                    pong_waiter = await conn.pong(payload)
+                    return pong_waiter
+            
+            ws.ping_handler = ping_handler
             
             self.logger.info(f"{self.exchange_name} 웹소켓 연결 성공")
             return ws

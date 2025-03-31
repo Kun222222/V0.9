@@ -215,7 +215,7 @@ class MarketOrderSimulator:
                     handler.flush()
                 
                 # warning에서 debug로 로그 레벨 변경
-                self.logger.debug(f"불완전 주문 감지: {exchange} {symbol} - 매수 소비율: {buy_consumption_rate:.2f}%, 매도 소비율: {sell_consumption_rate:.2f}%")
+                # self.logger.debug(f"불완전 주문 감지: {exchange} {symbol} - 매수 소비율: {buy_consumption_rate:.2f}%, 매도 소비율: {sell_consumption_rate:.2f}%")
             
         except Exception as e:
             self.logger.error(f"시장가 주문 시뮬레이션 중 오류 발생: {str(e)}")

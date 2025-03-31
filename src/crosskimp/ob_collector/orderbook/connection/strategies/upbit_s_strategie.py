@@ -37,7 +37,12 @@ class UpbitSpotConnectionStrategy:
         # 업비트는 오더북 깊이가 15로 고정
         self.orderbook_depth = 15
         
-        self.logger.info(f"{self.exchange_name} 연결 전략 초기화 (깊이: {self.orderbook_depth}, 고정값)")
+        # 호가 모아보기 레벨 설정 (설정 파일에서 가져옴)
+        level_from_config = self.config.get(f"exchanges.{self.EXCHANGE_CODE}.orderbook_level", 0)
+        # 명시적으로 정수로 변환
+        self.orderbook_level = int(level_from_config)
+        
+        self.logger.info(f"{self.exchange_name} 연결 전략 초기화 (깊이: {self.orderbook_depth}, 고정값, 호가 모아보기 레벨: {self.orderbook_level})")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""
@@ -112,13 +117,14 @@ class UpbitSpotConnectionStrategy:
         if self.subscriptions:
             await self.subscribe(ws, self.subscriptions)
             
-    async def subscribe(self, ws: websockets.WebSocketClientProtocol, symbols: List[str]) -> bool:
+    async def subscribe(self, ws: websockets.WebSocketClientProtocol, symbols: List[str], symbol_prices: Dict[str, float] = None) -> bool:
         """
         심볼 구독
         
         Args:
             ws: 웹소켓 연결 객체
             symbols: 구독할 심볼 목록
+            symbol_prices: 심볼별 가격 정보 (제공되면 가격에 따라 레벨 자동 설정)
             
         Returns:
             bool: 구독 성공 여부
@@ -128,28 +134,75 @@ class UpbitSpotConnectionStrategy:
             return False
             
         try:
+            # 구독할 심볼이 없는 경우
+            if not symbols:
+                self.logger.info(f"{self.exchange_name} 구독할 심볼이 없습니다")
+                return True
+                
             # 심볼 형식 변환 (KRW-BTC 형식으로 변경)
             formatted_symbols = [f"KRW-{s.upper()}" for s in symbols]
             
             # 업비트 구독 메시지 형식
             # [
             #   {"ticket": "티켓 이름"},
-            #   {"type": "orderbook", "codes": ["KRW-BTC", "KRW-ETH", ...]},
+            #   {"type": "orderbook", "codes": ["KRW-BTC", "KRW-ETH", ...], "level": 레벨값},
             #   {"format": "SIMPLE"}
             # ]
             
             ticket = f"upbit-ticket-{int(time.time() * 1000)}"
             
+            # 호가 모아보기 레벨 설정
+            orderbook_level = self.orderbook_level  # 기본값 사용
+            
+            # 가격 정보가 제공된 경우 가격대별 레벨 설정
+            if symbol_prices and symbols:
+                self.logger.info(f"가격 정보에 기반한 호가 모아보기 레벨 계산 중 (심볼 수: {len(symbols)}개)")
+                
+                # 가격 기반 레벨 목록
+                price_levels = []
+                
+                for sym in symbols:
+                    price = symbol_prices.get(sym, 0)
+                    if price <= 0:
+                        continue
+                    
+                    # 가격대별 적절한 레벨 설정
+                    # 업비트 API 호가 모아보기 레벨:
+                    # 0: 호가를 그대로 표시
+                    # 1: 1원 단위
+                    # 2: 10원 단위
+                    # 3: 100원 단위
+                    # 4: 1,000원 단위
+                    # 5: 10,000원 단위
+                    if price < 100:  # 100원 미만
+                        level = 1  # 호가를 그대로 표시
+                    elif price < 1000:  # 1,000원 미만
+                        level = 1  # 1원 단위
+                    elif price < 10000:  # 10,000원 미만
+                        level = 10  # 10원 단위
+                    elif price < 100000:  # 100,000원 미만
+                        level = 100  # 100원 단위
+                    elif price < 1000000:  # 1,000,000원 미만
+                        level = 1000  # 1,000원 단위
+                    else:  # 1,000,000원 이상
+                        level = 10000  # 10,000원 단위
+                    
+                    price_levels.append(level)
+                
+                # 가격 레벨이 있으면 가장 정밀한 레벨(가장 작은 값)으로 설정
+                if price_levels:
+                    orderbook_level = min(price_levels)
+                    self.logger.info(f"가격 기반 호가 모아보기 레벨 설정: {orderbook_level}")
+            
             # 구독 메시지 생성
             subscribe_msg = [
                 {"ticket": ticket},
-                {"type": "orderbook", "codes": formatted_symbols},
+                {"type": "orderbook", "codes": formatted_symbols, "level": orderbook_level},
                 {"format": "DEFAULT"}  # 필드 생략 방식
             ]
             
             # 구독 요청 전송
-            self.logger.info(f"{self.exchange_name} 구독 요청: {len(formatted_symbols)}개 심볼")
-            self.logger.debug(f"{self.exchange_name} 구독 요청 상세: {subscribe_msg}")
+            self.logger.info(f"{self.exchange_name} 구독 요청: {len(formatted_symbols)}개 심볼, 호가 모아보기 레벨: {orderbook_level}")
             
             await ws.send(json.dumps(subscribe_msg))
             

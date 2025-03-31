@@ -263,12 +263,13 @@ class UpbitSpotConnector(ExchangeConnectorInterface):
         else:
             self.logger.error(f"{self.exchange_name_kr} ConnectionManager가 없어 재연결 처리 불가")
             
-    async def subscribe(self, symbols: List[str]) -> bool:
+    async def subscribe(self, symbols: List[str], symbol_prices: Dict[str, float] = None) -> bool:
         """
         심볼 목록 구독
         
         Args:
             symbols: 구독할 심볼 목록
+            symbol_prices: 심볼별 가격 정보
             
         Returns:
             bool: 구독 성공 여부
@@ -278,26 +279,29 @@ class UpbitSpotConnector(ExchangeConnectorInterface):
             return False
             
         try:
-            # 정규화된 심볼 목록
-            normalized_symbols = [self.data_handler.normalize_symbol(s) for s in symbols]
-            
-            # 이미 구독 중인 심볼 제외
-            new_symbols = [s for s in normalized_symbols if s not in self.subscribed_symbols]
-            
-            if not new_symbols:
-                self.logger.info(f"{self.exchange_name_kr} 구독할 새로운 심볼 없음")
+            # 구독할 심볼이 없는 경우
+            if not symbols:
+                self.logger.info(f"{self.exchange_name_kr} 구독할 심볼이 없습니다")
                 return True
                 
             # 구독 요청
-            self.logger.info(f"{self.exchange_name_kr} {len(new_symbols)}개 심볼 구독 중...")
+            self.logger.info(f"{self.exchange_name_kr} {len(symbols)}개 심볼 구독 중...")
+            self.logger.debug(f"{self.exchange_name_kr} 구독 심볼 목록: {sorted(symbols)}")
             
-            # 연결 전략을 통해 구독
-            result = await self.connection_strategy.subscribe(self.ws, new_symbols)
+            # 심볼별 가격 정보 준비
+            if symbol_prices:
+                filtered_prices = {sym: symbol_prices.get(sym, 0) for sym in symbols}
+                self.logger.debug(f"가격 정보: {len(filtered_prices)}개 심볼")
+            else:
+                filtered_prices = None
+            
+            # 연결 전략을 통해 구독 요청
+            result = await self.connection_strategy.subscribe(self.ws, symbols, filtered_prices)
             
             if result:
-                # 구독 심볼 저장
-                self.subscribed_symbols.update(new_symbols)
-                self.logger.info(f"{self.exchange_name_kr} {len(new_symbols)}개 심볼 구독 성공")
+                # 구독 성공 시 구독 심볼 목록 업데이트
+                self.subscribed_symbols = set(symbols)  # 새 목록으로 완전히 대체
+                self.logger.info(f"{self.exchange_name_kr} {len(symbols)}개 심볼 구독 성공")
             else:
                 self.logger.error(f"{self.exchange_name_kr} 심볼 구독 실패")
                 

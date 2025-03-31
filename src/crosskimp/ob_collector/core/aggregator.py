@@ -107,7 +107,7 @@ async def make_request(
 # ============================
 # Upbit 관련 함수
 # ============================
-async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
+async def fetch_upbit_symbols_and_volume(min_volume: float) -> Tuple[List[str], Dict[str, float]]:
     """
     Upbit 심볼 조회 및 거래량 필터링
     
@@ -115,7 +115,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
         min_volume: 최소 거래량 (KRW)
     
     Returns:
-        List[str]: 필터링된 심볼 목록
+        Tuple[List[str], Dict[str, float]]: 필터링된 심볼 목록과 심볼별 가격 정보
     """
     try:
         logger.info(
@@ -128,7 +128,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             data = await make_request(session, "https://api.upbit.com/v1/market/all")
             if not data:
                 logger.error(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 마켓 정보 조회에 실패했습니다.")
-                return []
+                return [], {}
                 
             symbols = [
                 item["market"].split('-')[1]
@@ -140,6 +140,7 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             
             # 2. 거래량 조회 (청크 단위로 분할)
             volume_dict: Dict[str, float] = {}
+            price_dict: Dict[str, float] = {}  # 가격 정보도 같이 저장
             chunks = [symbols[i:i+99] for i in range(0, len(symbols), 99)]
             
             for i, chunk in enumerate(chunks, 1):
@@ -161,14 +162,17 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
                 for item in data:
                     symbol = item['market'].split('-')[1]
                     volume = float(item.get('acc_trade_price_24h', 0))
+                    price = float(item.get('trade_price', 0))  # 가격 정보도 저장
                     volume_dict[symbol] = volume
+                    price_dict[symbol] = price
                 
                 await asyncio.sleep(0.5)
 
             # 코인별 거래량 출력 (내림차순 정렬)
             logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 코인별 24시간 거래량:")
             for symbol, volume in sorted(volume_dict.items(), key=lambda x: x[1], reverse=True):
-                logger.info(f"  {symbol}: {volume:,.0f} KRW")
+                price = price_dict.get(symbol, 0)
+                logger.info(f"  {symbol}: {volume:,.0f} KRW, 가격: {price:,.2f} KRW")
 
             # 3. 거래량 필터링
             filtered_symbols = [
@@ -182,14 +186,17 @@ async def fetch_upbit_symbols_and_volume(min_volume: float) -> List[str]:
             )
             logger.debug(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 필터링된 심볼: {sorted(filtered_symbols)}")
             
-            return filtered_symbols
+            # 필터링된 심볼에 대한 가격 정보만 필터링
+            filtered_prices = {sym: price_dict[sym] for sym in filtered_symbols if sym in price_dict}
+            
+            return filtered_symbols, filtered_prices
 
     except Exception as e:
         logger.error(
             f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 심볼 및 거래량 조회에 실패했습니다: {str(e)}",
             exc_info=True
         )
-        return []
+        return [], {}
 
 # ============================
 # Bithumb 관련 함수
@@ -645,9 +652,10 @@ class Aggregator:
             filtered_data: Dict[str, List[str]] = {}
             
             # Upbit
-            upbit_symbols = await fetch_upbit_symbols_and_volume(self.min_volume)
+            upbit_symbols, _ = await fetch_upbit_symbols_and_volume(self.min_volume)
             if upbit_symbols:
                 filtered_data[Exchange.UPBIT.value] = upbit_symbols
+                logger.info(f"{EXCHANGE_NAMES_KR[Exchange.UPBIT.value]} 필터링된 심볼: {len(upbit_symbols)}개")
             
             # Bithumb
             bithumb_symbols = await fetch_bithumb_symbols_and_volume(self.min_volume)

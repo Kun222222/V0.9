@@ -193,16 +193,6 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
                         # 메시지 전처리
                         processed = self.connection_strategy.preprocess_message(message)
                         
-                        # ping 메시지 처리 (추가)
-                        if isinstance(processed, dict) and processed.get("type") == "unknown":
-                            data = processed.get("data", {})
-                            if isinstance(data, dict) and "ping" in data:
-                                # 서버의 ping 메시지에 pong으로 응답
-                                pong_message = {"pong": data["ping"]}
-                                await self.send_message(pong_message)
-                                self.logger.debug(f"서버 ping 수신 및 pong 응답: {data['ping']}")
-                                continue
-                        
                         # 메시지 콜백 호출
                         for callback in self.message_callbacks:
                             try:

@@ -18,7 +18,7 @@ from crosskimp.common.config.app_config import get_config
 # 메트릭 모듈 임포트 제거
 
 # 기존 컴포넌트 임포트
-from crosskimp.ob_collector.core.aggregator import Aggregator
+from crosskimp.ob_collector.core.aggregator import Aggregator, fetch_upbit_symbols_and_volume
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.orderbook.connection.connector_manager import ConnectionManager
 from crosskimp.ob_collector.orderbook.connection.factory import get_factory, ExchangeConnectorFactory
@@ -62,6 +62,7 @@ class OrderbookCollectorManager:
         
         # 내부 상태 변수
         self.filtered_symbols = {}  # 필터링된 심볼 목록
+        self.symbol_prices = {}     # 심볼별 가격 정보 (추가됨)
         self.connectors = {}  # 생성된 커넥터 객체
         self.subscriptions = {}  # 구독 정보
         
@@ -95,16 +96,32 @@ class OrderbookCollectorManager:
         try:
             self.logger.info("오더북 수집 시스템 초기화 시작...")
             
-            # 메트릭 관리자 초기화 제거
-            
             # 1. 심볼 필터링 실행
             self.logger.info("심볼 필터링 시작...")
+            
+            # Aggregator를 통해 모든 거래소의 심볼 필터링 수행
             self.filtered_symbols = await self.aggregator.run_filtering()
             
             if not self.filtered_symbols:
                 self.logger.error("심볼 필터링 실패 또는 필터링된 심볼이 없습니다.")
                 return False
+            
+            # 업비트 가격 정보 가져오기 (필터링된 심볼에 대해서만)
+            if Exchange.UPBIT.value in self.filtered_symbols:
+                # 필터링된 심볼 목록 가져오기
+                filtered_upbit_symbols = self.filtered_symbols[Exchange.UPBIT.value]
                 
+                # 모든 가격 정보 가져오기 (한 번만 호출)
+                _, all_upbit_prices = await fetch_upbit_symbols_and_volume(
+                    self.config.get_value_from_settings("trading.settings.min_volume_krw", 5000000000)
+                )
+                
+                # 필터링된 심볼에 대한 가격 정보만 저장
+                filtered_upbit_prices = {sym: all_upbit_prices.get(sym, 0) for sym in filtered_upbit_symbols}
+                self.symbol_prices[Exchange.UPBIT.value] = filtered_upbit_prices
+                
+                self.logger.info(f"업비트 필터링된 심볼: {len(filtered_upbit_symbols)}개, 가격 정보 수집 완료")
+            
             self.logger.info(f"심볼 필터링 완료: {len(self.filtered_symbols)}개 거래소")
             
             # 1.5 ConnectionManager에 재연결 콜백 등록
@@ -234,7 +251,7 @@ class OrderbookCollectorManager:
             return False
         
         try:
-            # 1. 오더북 콜백 설정 - set_orderbook_callback을 add_orderbook_callback로 변경
+            # 1. 오더북 콜백 설정
             connector.add_orderbook_callback(self._on_orderbook_update)
             
             # 2. 추가 콜백 설정
@@ -251,15 +268,38 @@ class OrderbookCollectorManager:
             
             self.logger.info(f"{exchange_kr} 웹소켓 연결 성공")
             
-            # 4. 심볼 구독 - subscribe_symbols를 subscribe로 변경
+            # 4. 심볼 구독
             self.logger.info(f"{exchange_kr} 구독 시작 ({len(symbols)}개 심볼)")
-            subscribed = await connector.subscribe(symbols)
+            self.logger.debug(f"{exchange_kr} 구독 시작: {sorted(symbols)}")
+            
+            # 업비트인 경우 가격 정보와 함께 전달
+            if exchange_code == Exchange.UPBIT.value and hasattr(connector, 'connection_strategy'):
+                # 업비트 가격 정보 가져오기
+                prices = self.symbol_prices.get(Exchange.UPBIT.value, {})
+                
+                # 로그 추가
+                self.logger.debug(f"구독 요청 - 필터링된 심볼 목록: {len(symbols)}개, 가격 정보: {len(prices)}개")
+                if len(symbols) != len(prices):
+                    self.logger.warning(f"심볼 수({len(symbols)})와 가격 정보 수({len(prices)})가 일치하지 않습니다")
+                
+                # 커넥터의 connection_strategy에 직접 구독 요청 (가격 정보 포함)
+                # 필터링된 심볼에 대한 가격 정보만 전달
+                filtered_prices = {sym: prices.get(sym, 0) for sym in symbols}
+                
+                subscribed = await connector.connection_strategy.subscribe(
+                    connector.ws, 
+                    symbols, 
+                    filtered_prices
+                )
+            else:
+                # 그 외 거래소는 일반 구독
+                subscribed = await connector.subscribe(symbols)
             
             if not subscribed:
                 self.logger.error(f"{exchange_kr} 심볼 구독 실패")
                 return False
             
-            # 5. ConnectionManager에 구독 상태 업데이트 (추가)
+            # 5. ConnectionManager에 구독 상태 업데이트
             self.connection_manager.update_subscription_status(
                 exchange_code, 
                 active=True, 
