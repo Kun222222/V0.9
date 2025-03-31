@@ -28,7 +28,7 @@ class BithumbSpotDataHandler:
         self.exchange_code = Exchange.BITHUMB.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         self.orderbooks = {}  # 심볼별 오더북 저장
-        self.sequence_numbers = {}  # 심볼별 시퀀스 번호
+        self.sequence_numbers = {}  # 심볼별 시퀀스 번호 (타임스탬프 값 사용)
         self.last_update_time = {}  # 심볼별 마지막 업데이트 시간
         
         # 데이터 관리자 가져오기
@@ -95,11 +95,15 @@ class BithumbSpotDataHandler:
             bids = data.get("bids", [])
             asks = data.get("asks", [])
             
+            # 시퀀스 번호에 타임스탬프 값 저장
+            self.sequence_numbers[symbol] = timestamp
+            
             # 오더북 구성
             orderbook = {
                 "exchange": self.exchange_code,
                 "symbol": symbol,
                 "timestamp": timestamp,
+                "sequence": self.sequence_numbers[symbol],  # 시퀀스 번호 추가
                 "bids": sorted(bids, key=lambda x: float(x[0]), reverse=True),  # 매수 호가는 내림차순
                 "asks": sorted(asks, key=lambda x: float(x[0]))  # 매도 호가는 오름차순
             }
@@ -229,11 +233,15 @@ class BithumbSpotDataHandler:
                             # self.logger.debug(f"빗썸 현물 {symbol} 역전된 매도가 제거: {price}")
                             current_asks.pop(price, None)
             
+            # 시퀀스 번호에 타임스탬프 값 저장
+            self.sequence_numbers[symbol] = timestamp
+            
             # 업데이트된 오더북 구성
             updated_orderbook = {
                 "exchange": self.exchange_code,
                 "symbol": symbol,
                 "timestamp": timestamp,
+                "sequence": self.sequence_numbers[symbol],  # 시퀀스 번호 추가
                 "bids": sorted([(price, amount) for price, amount in current_bids.items()], key=lambda x: float(x[0]), reverse=True),
                 "asks": sorted([(price, amount) for price, amount in current_asks.items()], key=lambda x: float(x[0]))
             }

@@ -28,7 +28,7 @@ class UpbitSpotDataHandler:
         self.exchange_code = Exchange.UPBIT.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         self.orderbooks = {}  # 심볼별 오더북 저장
-        self.sequence_numbers = {}  # 심볼별 시퀀스 번호
+        self.sequence_numbers = {}  # 심볼별 시퀀스 번호 (타임스탬프 값 사용)
         self.last_update_time = {}  # 심볼별 마지막 업데이트 시간
         
         # 데이터 관리자 가져오기
@@ -84,11 +84,15 @@ class UpbitSpotDataHandler:
         bids = message.get("bids", [])
         asks = message.get("asks", [])
         
+        # 시퀀스 번호에 타임스탬프 값 저장
+        self.sequence_numbers[symbol] = timestamp
+        
         # 업비트는 매번 전체 오더북을 전송하므로, 바로 저장
         orderbook = {
             "exchange": Exchange.UPBIT.value,
             "symbol": symbol,
             "timestamp": timestamp,
+            "sequence": self.sequence_numbers[symbol],  # 시퀀스 번호 추가
             "bids": sorted(bids, key=lambda x: float(x[0]), reverse=True),  # 매수 호가는 내림차순
             "asks": sorted(asks, key=lambda x: float(x[0]))  # 매도 호가는 오름차순
         }

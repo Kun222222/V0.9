@@ -124,7 +124,7 @@ class BybitSpotConnectionStrategy:
                 total_batches = (len(formatted_symbols) + MAX_SYMBOLS_PER_BATCH - 1) // MAX_SYMBOLS_PER_BATCH
                 
                 # 심볼별로 depth 스트림 구독
-                args = [f"orderbook.50.{symbol.upper()}" for symbol in batch_symbols]
+                args = [f"orderbook.200.{symbol.upper()}" for symbol in batch_symbols]
                 
                 # 구독 메시지 생성
                 request_id = self._get_next_id()
@@ -183,7 +183,7 @@ class BybitSpotConnectionStrategy:
                 total_batches = (len(formatted_symbols) + MAX_SYMBOLS_PER_BATCH - 1) // MAX_SYMBOLS_PER_BATCH
                 
                 # 심볼별로 depth 스트림 구독 해제
-                args = [f"orderbook.50.{symbol.upper()}" for symbol in batch_symbols]
+                args = [f"orderbook.200.{symbol.upper()}" for symbol in batch_symbols]
                 
                 # 구독 해제 메시지 생성
                 request_id = self._get_next_id()

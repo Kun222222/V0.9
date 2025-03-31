@@ -114,7 +114,7 @@ class BybitFutureConnectionStrategy:
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
             # 심볼별로 depth 스트림 구독
-            args = [f"orderbook.50.{symbol.upper()}" for symbol in formatted_symbols]
+            args = [f"orderbook.200.{symbol.upper()}" for symbol in formatted_symbols]
             
             # 구독 메시지 생성
             request_id = self._get_next_id()
@@ -159,7 +159,7 @@ class BybitFutureConnectionStrategy:
             formatted_symbols = [s.lower() + 'usdt' if not s.lower().endswith('usdt') else s.lower() for s in symbols]
             
             # 심볼별로 depth 스트림 구독 해제
-            args = [f"orderbook.50.{symbol.upper()}" for symbol in formatted_symbols]
+            args = [f"orderbook.200.{symbol.upper()}" for symbol in formatted_symbols]
             
             # 구독 해제 메시지 생성
             request_id = self._get_next_id()
