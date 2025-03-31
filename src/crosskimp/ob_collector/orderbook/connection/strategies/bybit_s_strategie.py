@@ -35,10 +35,9 @@ class BybitSpotConnectionStrategy:
         self.id_counter = 1  # 요청 ID 카운터
         
         # 오더북 구독 설정 로드
-        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 200)
-        self.orderbook_speed = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_speed", 20)
+        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 50)
         
-        self.logger.info(f"{self.exchange_name_kr} 연결 전략 초기화 (구독 깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
+        self.logger.info(f"{self.exchange_name_kr} 연결 전략 초기화 (구독 깊이: {self.orderbook_depth})")
         
     def get_ws_url(self) -> str:
         """웹소켓 URL 반환"""

@@ -41,8 +41,7 @@ class BybitSpotDataHandler:
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         
         # 오더북 구독 설정
-        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 200)
-        self.orderbook_speed = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_speed", 20)
+        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 50)
         
         # 중앙 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
@@ -55,7 +54,7 @@ class BybitSpotDataHandler:
         # HTTP 세션
         self.session = None
         
-        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (구독 깊이: {self.orderbook_depth}, 속도: {self.orderbook_speed}ms)")
+        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (구독 깊이: {self.orderbook_depth})")
         
     async def process_snapshot(self, symbol: str, data: Dict) -> None:
         """

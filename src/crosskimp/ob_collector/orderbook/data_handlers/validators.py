@@ -67,8 +67,7 @@ class BaseOrderBookValidator:
         self.data_manager = get_orderbook_data_manager()
         
         # 검증 설정
-        self.max_depth = self.data_manager.get_orderbook_internal_depth()  # 내부 저장용 최대 깊이
-        self.output_depth = self.data_manager.get_orderbook_output_depth()  # 출력용 최대 깊이
+        self.output_depth = self.data_manager.get_orderbook_output_depth()  # 오더북 최대 깊이
         self.price_precision = 8  # 가격 정밀도
         self.size_precision = 8  # 수량 정밀도
         

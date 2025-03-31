@@ -47,8 +47,7 @@ class OrderbookDataManager:
         self.config = get_config()
         
         # 오더북 설정 - 중앙에서 관리할 뎁스 값 (설정 파일에서 로드)
-        self.orderbook_output_depth = self.config.get('trading.settings.orderbook_output_depth', 15)  # 출력 및 분석용 오더북 깊이
-        self.orderbook_internal_depth = self.config.get('trading.settings.orderbook_internal_depth', 50)  # 내부 저장용 오더북 깊이
+        self.orderbook_output_depth = self.config.get('trading.settings.orderbook_output_depth', 30)  # 출력 및 분석용 오더북 깊이
         
         # 이전 통계 값 저장용 변수 추가
         self._prev_counts = {}
@@ -63,7 +62,7 @@ class OrderbookDataManager:
         # 시장가 주문 시뮬레이션 활성화 여부
         self.enable_market_order_simulation = True
         
-        self.logger.info(f"오더북 데이터 관리자 초기화 (출력 깊이: {self.orderbook_output_depth}, 내부 깊이: {self.orderbook_internal_depth})")
+        self.logger.info(f"오더북 데이터 관리자 초기화 (출력 깊이: {self.orderbook_output_depth})")
     
     def set_usdt_monitor(self, usdt_monitor):
         """
@@ -349,37 +348,23 @@ class OrderbookDataManager:
     
     def get_orderbook_output_depth(self) -> int:
         """
-        설정된 출력용 오더북 뎁스 값 반환
+        설정된 오더북 뎁스 값 반환
         
         Returns:
-            int: 출력용 오더북 뎁스 값
+            int: 오더북 뎁스 값
         """
         return self.orderbook_output_depth
         
-    def get_orderbook_internal_depth(self) -> int:
-        """
-        설정된 내부 저장용 오더북 뎁스 값 반환
-        
-        Returns:
-            int: 내부 저장용 오더북 뎁스 값
-        """
-        return self.orderbook_internal_depth
-        
-    def set_orderbook_depths(self, output_depth: int = None, internal_depth: int = None) -> None:
+    def set_orderbook_depth(self, depth: int) -> None:
         """
         오더북 뎁스 값 설정
         
         Args:
-            output_depth: 설정할 출력용 오더북 뎁스
-            internal_depth: 설정할 내부 저장용 오더북 뎁스
+            depth: 설정할 오더북 뎁스
         """
-        if output_depth is not None and output_depth > 0:
-            self.orderbook_output_depth = output_depth
-            self.logger.info(f"출력용 오더북 뎁스 설정: {output_depth}")
-        
-        if internal_depth is not None and internal_depth > 0:
-            self.orderbook_internal_depth = internal_depth
-            self.logger.info(f"내부 저장용 오더북 뎁스 설정: {internal_depth}")
+        if depth is not None and depth > 0:
+            self.orderbook_output_depth = depth
+            self.logger.info(f"오더북 뎁스 설정: {depth}")
             
     # 기존 메서드는 호환성을 위해 유지
     def get_orderbook_depth(self) -> int:
@@ -387,18 +372,9 @@ class OrderbookDataManager:
         설정된 오더북 뎁스 값 반환 (호환성 유지용)
         
         Returns:
-            int: 출력용 오더북 뎁스 값
+            int: 오더북 뎁스 값
         """
         return self.orderbook_output_depth
-        
-    def set_orderbook_depth(self, depth: int) -> None:
-        """
-        오더북 뎁스 값 설정 (호환성 유지용)
-        
-        Args:
-            depth: 설정할 오더북 뎁스
-        """
-        self.set_orderbook_depths(output_depth=depth)
 
 # 싱글톤 인스턴스
 _instance = None
