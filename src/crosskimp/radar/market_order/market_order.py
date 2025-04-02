@@ -125,6 +125,7 @@ class MarketOrderSimulator:
             exchange = orderbook_data.get("exch", "")
             symbol = orderbook_data.get("sym", "")
             timestamp = orderbook_data.get("ts", 0)
+            sequence = orderbook_data.get("seq", 0)  # 시퀀스 값 추출
             bids = orderbook_data.get("bids", [])
             asks = orderbook_data.get("asks", [])
             usdt_krw = orderbook_data.get("usdt_krw", {})
@@ -134,7 +135,7 @@ class MarketOrderSimulator:
                 self.logger.warning(f"필수 오더북 데이터 누락: exchange={exchange}, symbol={symbol}")
                 return
             
-            # 국내/해외 거래소 구분
+            # 국내/해외 거래소 구분 (bybit_spot 추가)
             is_korean_exchange = exchange in ["upbit", "bithumb"]
             
             # USDT/KRW 환율 가져오기 (해외 거래소용)
@@ -170,6 +171,7 @@ class MarketOrderSimulator:
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             log_data = {
                 "timestamp": current_time,
+                "sequence": sequence,  # 시퀀스 값 추가
                 "exchange": exchange,
                 "symbol": symbol,
                 "base_amount_krw": self.base_order_amount_krw,
@@ -187,7 +189,7 @@ class MarketOrderSimulator:
                     "consumed_krw": sell_consumed,
                     "consumption_rate": sell_consumption_rate
                 },
-                "usdt_krw": upbit_usdt_rate if not is_korean_exchange else 0
+                "usdt_krw": upbit_usdt_rate  # 국내 거래소도 동일한 환율 정보 적용
             }
             
             # 모든 거래는 항상 시뮬레이션 로그에 기록
@@ -200,6 +202,7 @@ class MarketOrderSimulator:
             if is_incomplete:
                 incomplete_log_data = {
                     "timestamp": current_time,
+                    "sequence": sequence,  # 시퀀스 값 추가
                     "exchange": exchange,
                     "symbol": symbol,
                     "reason": "orderbook_depth_insufficient",

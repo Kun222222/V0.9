@@ -18,7 +18,7 @@ from crosskimp.common.config.app_config import get_config
 # 메트릭 모듈 임포트 제거
 
 # 기존 컴포넌트 임포트
-from crosskimp.ob_collector.core.aggregator import Aggregator, fetch_upbit_symbols_and_volume
+from crosskimp.ob_collector.symbol_filter.filter_manager import Aggregator
 from crosskimp.ob_collector.core.ws_usdtkrw import WsUsdtKrwMonitor
 from crosskimp.ob_collector.orderbook.connection.connector_manager import ConnectionManager
 from crosskimp.ob_collector.orderbook.connection.factory import get_factory, ExchangeConnectorFactory
@@ -100,27 +100,25 @@ class OrderbookCollectorManager:
             self.logger.info("심볼 필터링 시작...")
             
             # Aggregator를 통해 모든 거래소의 심볼 필터링 수행
-            self.filtered_symbols = await self.aggregator.run_filtering()
+            filter_result = await self.aggregator.run_filtering()
+            
+            # 필터링 결과에서 심볼 목록과 가격 정보 추출
+            self.filtered_symbols = filter_result.get("symbols", {})
+            self.symbol_prices = filter_result.get("prices", {})
             
             if not self.filtered_symbols:
                 self.logger.error("심볼 필터링 실패 또는 필터링된 심볼이 없습니다.")
                 return False
             
-            # 업비트 가격 정보 가져오기 (필터링된 심볼에 대해서만)
+            # 업비트 심볼 및 가격 정보 확인
             if Exchange.UPBIT.value in self.filtered_symbols:
-                # 필터링된 심볼 목록 가져오기
                 filtered_upbit_symbols = self.filtered_symbols[Exchange.UPBIT.value]
+                upbit_prices = self.symbol_prices.get(Exchange.UPBIT.value, {})
                 
-                # 모든 가격 정보 가져오기 (한 번만 호출)
-                _, all_upbit_prices = await fetch_upbit_symbols_and_volume(
-                    self.config.get_value_from_settings("trading.settings.min_volume_krw", 5000000000)
-                )
-                
-                # 필터링된 심볼에 대한 가격 정보만 저장
-                filtered_upbit_prices = {sym: all_upbit_prices.get(sym, 0) for sym in filtered_upbit_symbols}
-                self.symbol_prices[Exchange.UPBIT.value] = filtered_upbit_prices
-                
-                self.logger.info(f"업비트 필터링된 심볼: {len(filtered_upbit_symbols)}개, 가격 정보 수집 완료")
+                if upbit_prices:
+                    self.logger.info(f"업비트 필터링된 심볼: {len(filtered_upbit_symbols)}개, 가격 정보: {len(upbit_prices)}개 수집 완료")
+                else:
+                    self.logger.warning(f"업비트 심볼은 {len(filtered_upbit_symbols)}개 필터링되었으나 가격 정보가 없습니다")
             
             self.logger.info(f"심볼 필터링 완료: {len(self.filtered_symbols)}개 거래소")
             
@@ -274,7 +272,7 @@ class OrderbookCollectorManager:
             
             # 업비트인 경우 가격 정보와 함께 전달
             if exchange_code == Exchange.UPBIT.value and hasattr(connector, 'connection_strategy'):
-                # 업비트 가격 정보 가져오기
+                # 거래소별 가격 정보 가져오기
                 prices = self.symbol_prices.get(Exchange.UPBIT.value, {})
                 
                 # 로그 추가

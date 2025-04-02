@@ -88,7 +88,7 @@ class Exchange(Enum):
     """
     # 현물 거래소
     BINANCE_SPOT = "binance_spot"            # 바이낸스 현물
-    BYBIT_SPOT = "bybit"                # 바이빗 현물
+    BYBIT_SPOT = "bybit_spot"                # 바이빗 현물
     UPBIT = "upbit"                # 업비트 현물
     BITHUMB = "bithumb"            # 빗썸 현물
     

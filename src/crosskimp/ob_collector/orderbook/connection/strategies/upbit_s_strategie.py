@@ -160,6 +160,7 @@ class UpbitSpotConnectionStrategy:
                 
                 # 가격 기반 레벨 목록
                 price_levels = []
+                symbol_level_info = {}  # 심볼별 레벨 정보 저장
                 
                 for sym in symbols:
                     price = symbol_prices.get(sym, 0)
@@ -175,24 +176,33 @@ class UpbitSpotConnectionStrategy:
                     # 4: 1,000원 단위
                     # 5: 10,000원 단위
                     if price < 100:  # 100원 미만
-                        level = 1  # 호가를 그대로 표시
+                        level = 0  # 호가를 그대로 표시
                     elif price < 1000:  # 1,000원 미만
-                        level = 1  # 1원 단위
+                        level = 10  # 1원 단위
                     elif price < 10000:  # 10,000원 미만
                         level = 10  # 10원 단위
                     elif price < 100000:  # 100,000원 미만
-                        level = 100  # 100원 단위
+                        level = 1000  # 100원 단위
                     elif price < 1000000:  # 1,000,000원 미만
                         level = 1000  # 1,000원 단위
                     else:  # 1,000,000원 이상
                         level = 10000  # 10,000원 단위
                     
                     price_levels.append(level)
+                    symbol_level_info[sym] = {
+                        "price": price,
+                        "level": level
+                    }
                 
                 # 가격 레벨이 있으면 가장 정밀한 레벨(가장 작은 값)으로 설정
                 if price_levels:
                     orderbook_level = min(price_levels)
-                    self.logger.info(f"가격 기반 호가 모아보기 레벨 설정: {orderbook_level}")
+                    # 심볼별 레벨 정보 로깅 (상위 5개만)
+                    top_symbols = list(symbol_level_info.items())[:5]
+                    level_details = ", ".join([f"{s.upper()}({v['price']}원→{v['level']})" for s, v in top_symbols])
+                    if len(symbol_level_info) > 5:
+                        level_details += f" 외 {len(symbol_level_info) - 5}개"
+                    self.logger.info(f"가격 기반 호가 모아보기 레벨 설정: {orderbook_level} (심볼별: {level_details})")
             
             # 구독 메시지 생성
             subscribe_msg = [
@@ -201,8 +211,19 @@ class UpbitSpotConnectionStrategy:
                 {"format": "DEFAULT"}  # 필드 생략 방식
             ]
             
+            # 호가 모아보기 레벨 정보 로그
+            level_info = {
+                0: "원본 호가",
+                1: "1원 단위",
+                10: "10원 단위",
+                100: "100원 단위",
+                1000: "1000원 단위",
+                10000: "10000원 단위"
+            }
+            level_desc = level_info.get(orderbook_level, "알 수 없는 단위")
+            
             # 구독 요청 전송
-            self.logger.info(f"{self.exchange_name} 구독 요청: {len(formatted_symbols)}개 심볼, 호가 모아보기 레벨: {orderbook_level}")
+            self.logger.info(f"{self.exchange_name} 구독 요청: {len(formatted_symbols)}개 심볼, 호가 모아보기 레벨: {orderbook_level} ({level_desc})")
             
             await ws.send(json.dumps(subscribe_msg))
             
