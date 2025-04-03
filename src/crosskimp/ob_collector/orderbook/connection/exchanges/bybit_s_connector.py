@@ -14,6 +14,8 @@ import logging
 from crosskimp.common.config.app_config import get_config
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.events.system_types import EventChannels
 
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
 from crosskimp.ob_collector.orderbook.connection.strategies.bybit_s_strategie import BybitSpotConnectionStrategy
@@ -73,6 +75,9 @@ class BybitSpotConnector(ExchangeConnectorInterface):
         
         # 메시지 핸들러 락 추가 - 동시 실행 방지
         self._message_handler_lock = asyncio.Lock()
+        
+        # 이벤트 버스 추가
+        self.event_bus = get_component_event_bus(SystemComponent.OB_COLLECTOR)
         
         # self.logger.info(f"{self.exchange_name_kr} 커넥터 초기화 완료")
     
@@ -193,22 +198,9 @@ class BybitSpotConnector(ExchangeConnectorInterface):
 
     async def _reconnect(self):
         """
-        ConnectionManager에게 재연결 요청을 위임하는 메서드
+        연결 재시도 로직은 이벤트 버스로 대체됨
         """
-        if self._stopping:
-            return
-        
-        self.logger.info(f"{self.exchange_name_kr} 연결 끊김 감지, ConnectionManager에 재연결 요청")
-        
-        # 연결 상태 업데이트
-        self.is_connected = False
-        
-        # ConnectionManager가 있으면 재연결 위임
-        if self.connection_manager:
-            # ConnectionManager가 재연결 담당
-            asyncio.create_task(self.connection_manager.reconnect_exchange(self.exchange_code))
-        else:
-            self.logger.error(f"{self.exchange_name_kr} ConnectionManager가 없어 재연결 처리 불가")
+        pass
 
     async def disconnect(self) -> bool:
         """
@@ -303,9 +295,14 @@ class BybitSpotConnector(ExchangeConnectorInterface):
                         self.logger.warning(f"{self.exchange_name_kr} 웹소켓 연결 끊김: {str(e)}")
                         self.is_connected = False
                         
-                        # 종료 명령이 아니면 재연결 시도
+                        # 이벤트 버스를 통해 연결 끊김 알림
                         if not self._stopping:
-                            asyncio.create_task(self._reconnect())
+                            await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                                "exchange_code": self.exchange_code,
+                                "exchange_name": self.exchange_name_kr,
+                                "error": str(e),
+                                "timestamp": time.time()
+                            })
                         break
                         
                     except asyncio.CancelledError:
@@ -433,9 +430,14 @@ class BybitSpotConnector(ExchangeConnectorInterface):
             
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 메시지 전송 중 오류: {str(e)}")
-            # 연결 문제 감지 시 재연결 수행
+            # 이벤트 버스를 통해 연결 끊김 알림
             if not self._stopping:
-                asyncio.create_task(self._reconnect())
+                asyncio.create_task(self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                    "exchange_code": self.exchange_code,
+                    "exchange_name": self.exchange_name_kr,
+                    "error": f"메시지 전송 오류: {str(e)}",
+                    "timestamp": time.time()
+                }))
             return False
             
     def add_message_callback(self, callback: Callable) -> None:
@@ -634,44 +636,57 @@ class BybitSpotConnector(ExchangeConnectorInterface):
         주기적으로 핑 메시지를 전송하는 루프
         바이빗은 20초마다 ping 메시지를 전송해야 합니다.
         """
+        PING_INTERVAL = 20  # 핑 전송 간격 (초)
+        
+        self.logger.info(f"{self.exchange_name_kr} 핑 루프 시작 (간격: {PING_INTERVAL}초)")
+        
         try:
             while not self._stopping and self.is_connected:
                 try:
-                    # 바이빗 공식 문서에 따른 하트비트 패킷 형식
-                    ping_message = {
-                        "req_id": f"ping_{self.exchange_code}_{int(time.time())}",
-                        "op": "ping"
-                    }
-                    
-                    # 핑 메시지 전송
-                    if self.ws and not self.ws.closed:
-                        await self.ws.send(json.dumps(ping_message))
-                        self.logger.debug(f"{self.exchange_name_kr} 핑 전송")
-                    else:
-                        self.logger.warning(f"{self.exchange_name_kr} 웹소켓 연결이 없어 핑 전송 불가")
+                    # 핑 전송 전 연결 상태 확인
+                    if self.ws is None or self.ws.closed:
+                        self.logger.warning(f"{self.exchange_name_kr} 웹소켓이 닫혀 있어 핑 전송 중단")
                         self.is_connected = False
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                            "exchange_code": self.exchange_code,
+                            "exchange_name": self.exchange_name_kr,
+                            "error": "웹소켓이 닫힌 상태에서 핑 전송 시도",
+                            "timestamp": time.time()
+                        })
                         break
-                        
-                except Exception as e:
-                    self.logger.error(f"{self.exchange_name_kr} 핑 전송 중 오류: {str(e)}")
-                    # 연결에 문제가 있는 경우 재연결 태스크 시작
+                    
+                    # 핑 전송 (이제 ConnectionClosed를 발생시킬 수 있음)
+                    await self.connection_strategy.send_ping(self.ws)
+                    
+                    # 핑 간격만큼 대기
+                    await asyncio.sleep(PING_INTERVAL)
+                    
+                except websockets.exceptions.ConnectionClosed as e:
+                    # 연결 끊김 감지
+                    self.logger.warning(f"{self.exchange_name_kr} 핑 전송 중 연결 끊김: {str(e)}")
                     self.is_connected = False
-                    asyncio.create_task(self._reconnect())
+                    
+                    # 이벤트 버스를 통해 연결 끊김 알림
+                    await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                        "exchange_code": self.exchange_code,
+                        "exchange_name": self.exchange_name_kr,
+                        "error": f"핑 전송 중 연결 끊김: {str(e)}",
+                        "timestamp": time.time()
+                    })
                     break
-                
-                # 다음 핑 전송까지 대기
-                await asyncio.sleep(self._ping_interval)
+                    
+                except Exception as e:
+                    # 기타 예외
+                    self.logger.error(f"{self.exchange_name_kr} 핑 루프 오류: {str(e)}")
+                    await asyncio.sleep(1)  # 짧은 대기 후 재시도
                 
         except asyncio.CancelledError:
-            # 태스크 취소 시 조용히 종료
-            self.logger.debug(f"{self.exchange_name_kr} 핑 루프 태스크 취소됨")
+            self.logger.info(f"{self.exchange_name_kr} 핑 루프 취소됨")
         except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 핑 루프 중 오류: {str(e)}")
-            # 연결 문제가 있을 수 있으므로 재연결 시도
-            if not self._stopping:
-                self.is_connected = False
-                asyncio.create_task(self._reconnect())
-                
+            self.logger.error(f"{self.exchange_name_kr} 핑 루프 크리티컬 오류: {str(e)}")
+            
+        self.logger.info(f"{self.exchange_name_kr} 핑 루프 종료")
+        
     async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
         """
         특정 심볼의 오더북 스냅샷 조회

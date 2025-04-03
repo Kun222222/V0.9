@@ -225,7 +225,18 @@ class BybitSpotConnectionStrategy:
             
         Returns:
             bool: 전송 성공 여부
+            
+        Raises:
+            websockets.exceptions.ConnectionClosed: 웹소켓이 이미 닫힌 경우나 핑 전송 실패 시
         """
+        # 웹소켓 상태 확인
+        if ws is None or ws.closed:
+            self.logger.warning(f"{self.exchange_name_kr} 웹소켓이 이미 닫혀있어 핑 전송 불가")
+            # 명시적으로 ConnectionClosed 예외 발생
+            raise websockets.exceptions.ConnectionClosed(
+                1000, "웹소켓이 이미 닫힌 상태"
+            )
+            
         try:
             # 바이빗은 직접 ping 메시지 필요
             ping_msg = {
@@ -233,10 +244,14 @@ class BybitSpotConnectionStrategy:
                 "req_id": str(self._get_next_id())
             }
             await ws.send(json.dumps(ping_msg))
+            self.logger.debug(f"{self.exchange_name_kr} 핑 전송 완료")
             return True
         except Exception as e:
             self.logger.error(f"바이빗 현물 핑 메시지 전송 실패: {str(e)}")
-            return False
+            # 핑 전송 실패 시 ConnectionClosed 예외로 변환하여 상위에서 처리
+            raise websockets.exceptions.ConnectionClosed(
+                1001, f"핑 전송 실패: {str(e)}"
+            ) from e
     
     def preprocess_message(self, message: str) -> Dict[str, Any]:
         """

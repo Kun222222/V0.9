@@ -8,12 +8,13 @@ import asyncio
 import time
 import json
 import websockets
-from typing import Dict, List, Any, Optional, Union, Callable
-import logging
+from typing import Dict, List, Any, Optional, Union, Callable, Set
 
 from crosskimp.common.config.app_config import get_config
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.events.system_types import EventChannels
 
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
 from crosskimp.ob_collector.orderbook.connection.strategies.binance_s_strategie import BinanceSpotConnectionStrategy
@@ -59,19 +60,19 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         
         # 연결 재시도 설정
         self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 0  # 0은 무제한 재시도를 의미
         self.reconnect_delay = 1.0  # 초기 재연결 지연 시간
         
         # 연결 설정
         self.connect_timeout = self.config.get_system("connection.connect_timeout", 30)
         
-        # 구독 상태
-        self.subscribed_symbols = []
+        # 구독 상태 (Set으로 변경)
+        self.subscribed_symbols: Set[str] = set()
         
-        # 메시지 핸들러 락 추가 - 동시 실행 방지
-        self._message_handler_lock = asyncio.Lock()
+        # 스냅샷 캐시
+        self.snapshot_cache: Dict[str, Dict[str, Any]] = {}
         
-        # self.logger.info("바이낸스 현물 커넥터 초기화 완료")
+        # 이벤트 버스 추가
+        self.event_bus = get_component_event_bus(SystemComponent.OB_COLLECTOR)
         
     @property
     def is_connected(self) -> bool:
@@ -79,7 +80,7 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         현재 연결 상태 반환
         
         Returns:
-            bool: 연결 상태 (True: 연결됨, False: 연결 안됨)
+            bool: 연결 상태
         """
         return self._is_connected and self.ws is not None
     
@@ -93,11 +94,13 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         """
         if self._is_connected != value:
             self._is_connected = value
+            
+            # 연결 관리자에 상태 업데이트
+            if self.connection_manager:
+                self.connection_manager.update_exchange_status(self.exchange_code, value)
+            
             if value:
-                self.logger.info(f"{self.exchange_name_kr} 연결 상태 변경: 연결됨")
                 self.reconnect_attempts = 0  # 연결 성공 시 재시도 카운터 초기화
-            else:
-                self.logger.info(f"{self.exchange_name_kr} 연결 상태 변경: 연결 끊김")
     
     async def connect(self) -> bool:
         """
@@ -107,21 +110,14 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
             bool: 연결 성공 여부
         """
         if self.is_connected:
-            self.logger.info(f"{self.exchange_name_kr} 이미 연결되어 있음")
             return True
             
         try:
-            # self.logger.info("바이낸스 현물 연결 시작...")
-            
-            # ConnectionStrategy를 통한 웹소켓 연결 (타임아웃 추가)
+            # ConnectionStrategy를 통한 웹소켓 연결
             self.ws = await self.connection_strategy.connect(self.connect_timeout)
             
             # 연결 성공 시 상태 업데이트
             self.is_connected = True
-            
-            # ConnectionManager에 상태 업데이트
-            if self.connection_manager:
-                self.connection_manager.update_exchange_status(self.exchange_code, True)
             
             # 기존에 메시지 수신 루프가 실행 중이지 않으면 시작
             if not self.message_loop_task or self.message_loop_task.done():
@@ -131,7 +127,6 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
             # 연결 후 초기화 작업
             await self.connection_strategy.on_connected(self.ws)
             
-            self.logger.info(f"{self.exchange_name_kr} 연결 성공")
             return True
             
         except Exception as e:
@@ -147,8 +142,6 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
             bool: 연결 종료 성공 여부
         """
         try:
-            self.logger.info(f"{self.exchange_name_kr} 연결 종료 시작...")
-            
             # 메시지 처리 루프 중지
             self.stop_event.set()
             
@@ -157,7 +150,6 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
                     # 5초 타임아웃으로 메시지 루프 종료 대기
                     await asyncio.wait_for(self.message_loop_task, timeout=5.0)
                 except asyncio.TimeoutError:
-                    self.logger.warning(f"{self.exchange_name_kr} 메시지 루프 종료 타임아웃")
                     self.message_loop_task.cancel()
                     
             # 웹소켓 연결 종료
@@ -168,7 +160,6 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
             # 연결 상태 업데이트
             self.is_connected = False
             
-            self.logger.info(f"{self.exchange_name_kr} 연결 종료 완료")
             return True
             
         except Exception as e:
@@ -180,85 +171,62 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         """
         웹소켓 메시지 수신 및 처리 루프
         """
-        self.logger.info(f"{self.exchange_name_kr} 메시지 수신 루프 시작")
-        
         try:
-            # 락을 사용하여 동시에 여러 태스크가 메시지 핸들러를 실행하지 않도록 함
-            async with self._message_handler_lock:
-                while not self.stop_event.is_set() and self.ws:
-                    try:
-                        # 메시지 수신 (0.1초 타임아웃)
-                        message = await asyncio.wait_for(self.ws.recv(), timeout=0.1)
+            while not self.stop_event.is_set() and self.ws:
+                try:
+                    # 메시지 수신 (타임아웃 5초)
+                    message = await asyncio.wait_for(self.ws.recv(), timeout=5)
+                    
+                    # 메시지 전처리
+                    processed = self.connection_strategy.preprocess_message(message)
+                    
+                    # 메시지 콜백 호출
+                    for callback in self.message_callbacks:
+                        try:
+                            callback(processed)
+                        except Exception:
+                            pass
+                    
+                    # 오더북 업데이트 메시지인 경우 데이터 핸들러로 처리
+                    if processed.get("type") == "depth_update":
+                        # 데이터 핸들러 처리
+                        orderbook_data = self.data_handler.process_orderbook_update(processed)
                         
-                        # 메시지 전처리
-                        processed = self.connection_strategy.preprocess_message(message)
-                        
-                        # 메시지 콜백 호출
-                        for callback in self.message_callbacks:
+                        # 오더북 콜백 호출
+                        for callback in self.orderbook_callbacks:
                             try:
-                                callback(processed)
-                            except Exception as callback_error:
-                                self.logger.error(f"메시지 콜백 실행 중 오류: {str(callback_error)}")
-                        
-                        # 오더북 업데이트 메시지인 경우 데이터 핸들러로 처리
-                        if processed.get("type") == "depth_update":
-                            # 데이터 핸들러 처리
-                            orderbook_data = self.data_handler.process_orderbook_update(processed)
-                            
-                            # 오더북 콜백 호출
-                            for callback in self.orderbook_callbacks:
-                                try:
-                                    callback(orderbook_data)
-                                except Exception as callback_error:
-                                    self.logger.error(f"오더북 콜백 실행 중 오류: {str(callback_error)}")
+                                callback(orderbook_data)
+                            except Exception:
+                                pass
+            
+                except asyncio.TimeoutError:
+                    continue
                 
-                    except asyncio.TimeoutError:
-                        # 타임아웃 처리 - 계속 진행
-                        continue
-                    
-                    except websockets.exceptions.ConnectionClosed as e:
-                        self.logger.warning(f"{self.exchange_name_kr} 연결 닫힘: {e.code} {e.reason}")
+                except websockets.exceptions.ConnectionClosed:
+                    if not self.is_shutting_down:
                         self.is_connected = False
-                        await self._reconnect()
-                        break
-                    
-                    except Exception as e:
-                        self.logger.error(f"{self.exchange_name_kr} 메시지 수신 중 오류: {str(e)}")
-                    
+                        # 이벤트 버스를 통해 연결 끊김 알림
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                            "exchange_code": self.exchange_code,
+                            "exchange_name": self.exchange_name_kr,
+                            "timestamp": time.time()
+                        })
+                    break
+                
+                except Exception as e:
+                    if not self.is_shutting_down:
+                        self.logger.error(f"바이낸스 현물 메시지 핸들러 오류: {str(e)}")
+                        self.is_connected = False
+                        # 이벤트 버스를 통해 연결 끊김 알림
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                            "exchange_code": self.exchange_code,
+                            "exchange_name": self.exchange_name_kr,
+                            "error": str(e),
+                            "timestamp": time.time()
+                        })
+                
         except asyncio.CancelledError:
-            self.logger.info(f"{self.exchange_name_kr} 메시지 수신 루프 취소됨")
-        
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 메시지 루프 오류: {str(e)}")
-            
-        finally:
-            self.logger.info(f"{self.exchange_name_kr} 메시지 수신 루프 종료")
-    
-    async def _reconnect(self):
-        """
-        연결 종료 시 재연결 시도
-        """
-        if self.stop_event.is_set():
-            return
-            
-        # 연결 관리자에 재연결 요청
-        if self.connection_manager:
-            self.logger.info(f"{self.exchange_name_kr} 연결 관리자에 재연결 요청")
-            self.connection_manager.reconnect_exchange(self.exchange_code)
-        else:
-            self.logger.warning(f"{self.exchange_name_kr} 연결 관리자가 없어 직접 재연결 시도")
-            # 연결 관리자가 없는 경우에만 기존 로직 사용
-            self.reconnect_attempts += 1
-            delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), 60)
-            
-            self.logger.info(f"{self.exchange_name_kr} {delay:.1f}초 후 재연결 시도 ({self.reconnect_attempts}/{self.max_reconnect_attempts if self.max_reconnect_attempts > 0 else '무제한'})")
-            await asyncio.sleep(delay)
-            
-            success = await self.connect()
-            if success and self.subscribed_symbols:
-                # 재연결 성공 시 기존 구독 심볼 복구
-                self.logger.info(f"{self.exchange_name_kr} 재연결 성공, {len(self.subscribed_symbols)}개 심볼 재구독 및 스냅샷 요청 중...")
-                await self.subscribe(self.subscribed_symbols)
+            pass
     
     async def subscribe(self, symbols: List[str]) -> bool:
         """
@@ -271,27 +239,28 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
             bool: 구독 성공 여부
         """
         if not self.is_connected:
-            self.logger.error(f"{self.exchange_name_kr} 구독 실패: 연결되지 않음")
             return False
             
         try:
-            self.logger.info(f"{self.exchange_name_kr} 구독 시작: {len(symbols)}개 심볼")
+            # 이미 구독 중인 심볼 필터링
+            new_symbols = [s for s in symbols if s not in self.subscribed_symbols]
             
+            if not new_symbols:
+                return True
+                
             # 연결 전략을 통한 구독
-            success = await self.connection_strategy.subscribe(self.ws, symbols)
+            success = await self.connection_strategy.subscribe(self.ws, new_symbols)
             
             if success:
-                # 구독 심볼 목록 저장
-                self.subscribed_symbols = symbols
+                # 구독 심볼 목록 저장 (Set 연산 사용)
+                self.subscribed_symbols.update(new_symbols)
                 
                 # 각 심볼에 대해 스냅샷 요청
-                for symbol in symbols:
+                for symbol in new_symbols:
                     asyncio.create_task(self._initialize_orderbook(symbol))
                     
-                self.logger.info(f"{self.exchange_name_kr} 구독 성공: {len(symbols)}개 심볼")
                 return True
             else:
-                self.logger.error(f"{self.exchange_name_kr} 구독 실패")
                 return False
                 
         except Exception as e:
@@ -309,40 +278,108 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
             bool: 구독 해제 성공 여부
         """
         if not self.is_connected:
-            self.logger.error(f"{self.exchange_name_kr} 구독 해제 실패: 연결되지 않음")
             return False
             
         try:
-            self.logger.info(f"{self.exchange_name_kr} 구독 해제 시작: {len(symbols)}개 심볼")
+            # 실제로 구독 중인 심볼 필터링
+            symbols_to_unsub = [s for s in symbols if s in self.subscribed_symbols]
             
+            if not symbols_to_unsub:
+                return True
+                
             # 연결 전략을 통한 구독 해제
-            success = await self.connection_strategy.unsubscribe(self.ws, symbols)
+            success = await self.connection_strategy.unsubscribe(self.ws, symbols_to_unsub)
             
             if success:
-                # 구독 심볼 목록에서 제거
-                self.subscribed_symbols = [s for s in self.subscribed_symbols if s not in symbols]
-                self.logger.info(f"{self.exchange_name_kr} 구독 해제 성공: {len(symbols)}개 심볼")
+                # 구독 심볼 목록에서 제거 (Set 연산 사용)
+                self.subscribed_symbols.difference_update(symbols_to_unsub)
+                
+                # 스냅샷 캐시에서 제거
+                for symbol in symbols_to_unsub:
+                    self.snapshot_cache.pop(symbol, None)
+                    
                 return True
             else:
-                self.logger.error(f"{self.exchange_name_kr} 구독 해제 실패")
                 return False
                 
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 구독 해제 중 오류: {str(e)}")
             return False
     
-    async def send_message(self, message: Union[str, Dict, List]) -> bool:
+    def add_orderbook_callback(self, callback: Callable) -> None:
         """
-        웹소켓을 통해 메시지 전송
+        오더북 업데이트 콜백 함수 등록
         
         Args:
-            message: 전송할 메시지 (문자열, 딕셔너리 또는 리스트)
+            callback: 오더북 업데이트 수신 시 호출될 콜백 함수
+        """
+        if callback not in self.orderbook_callbacks:
+            self.orderbook_callbacks.append(callback)
+    
+    async def _initialize_orderbook(self, symbol: str) -> None:
+        """
+        특정 심볼의 오더북 초기화
+        
+        REST API를 통한 스냅샷 요청 및 처리
+        
+        Args:
+            symbol: 초기화할 심볼
+        """
+        try:
+            # 데이터 핸들러를 통한 스냅샷 요청
+            await self.data_handler.get_orderbook_snapshot(symbol)
+        except Exception as e:
+            self.logger.error(f"{self.exchange_name_kr} {symbol} 오더북 초기화 중 오류: {str(e)}")
+    
+    async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
+        """
+        특정 심볼의 오더북 스냅샷 조회
+        
+        Args:
+            symbol: 조회할 심볼
             
         Returns:
-            bool: 메시지 전송 성공 여부
+            Dict[str, Any]: 오더북 스냅샷 데이터
         """
+        return await self.data_handler.get_orderbook_snapshot(symbol)
+    
+    async def refresh_snapshots(self, symbols: List[str] = None) -> None:
+        """
+        오더북 스냅샷 갱신
+        """
+        if symbols is None:
+            symbols = list(self.subscribed_symbols)
+            
+        for symbol in symbols:
+            await self._initialize_orderbook(symbol)
+            
+    async def get_websocket(self) -> Optional[websockets.WebSocketClientProtocol]:
+        """웹소켓 객체 반환"""
+        return self.ws
+    
+    # 선택적 메서드 구현
+    def add_message_callback(self, callback: Callable) -> None:
+        """메시지 콜백 함수 등록"""
+        if callback not in self.message_callbacks:
+            self.message_callbacks.append(callback)
+    
+    def remove_message_callback(self, callback: Callable) -> bool:
+        """메시지 콜백 함수 제거"""
+        if callback in self.message_callbacks:
+            self.message_callbacks.remove(callback)
+            return True
+        return False
+    
+    def remove_orderbook_callback(self, callback: Callable) -> bool:
+        """오더북 콜백 함수 제거"""
+        if callback in self.orderbook_callbacks:
+            self.orderbook_callbacks.remove(callback)
+            return True
+        return False
+        
+    async def send_message(self, message: Union[str, Dict, List]) -> bool:
+        """웹소켓으로 메시지 전송"""
         if not self.is_connected:
-            self.logger.error(f"{self.exchange_name_kr} 메시지 전송 실패: 연결되지 않음")
             return False
             
         try:
@@ -357,186 +394,3 @@ class BinanceSpotConnector(ExchangeConnectorInterface):
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 메시지 전송 중 오류: {str(e)}")
             return False
-    
-    def add_message_callback(self, callback: Callable) -> None:
-        """
-        웹소켓 메시지 콜백 함수 등록
-        
-        Args:
-            callback: 메시지 수신 시 호출될 콜백 함수
-        """
-        if callback not in self.message_callbacks:
-            self.message_callbacks.append(callback)
-    
-    def remove_message_callback(self, callback: Callable) -> bool:
-        """
-        웹소켓 메시지 콜백 함수 제거
-        
-        Args:
-            callback: 제거할 콜백 함수
-            
-        Returns:
-            bool: 콜백 제거 성공 여부
-        """
-        if callback in self.message_callbacks:
-            self.message_callbacks.remove(callback)
-            return True
-        return False
-    
-    def add_orderbook_callback(self, callback: Callable) -> None:
-        """
-        오더북 업데이트 콜백 함수 등록
-        
-        Args:
-            callback: 오더북 업데이트 수신 시 호출될 콜백 함수
-        """
-        if callback not in self.orderbook_callbacks:
-            self.orderbook_callbacks.append(callback)
-    
-    def remove_orderbook_callback(self, callback: Callable) -> bool:
-        """
-        오더북 업데이트 콜백 함수 제거
-        
-        Args:
-            callback: 제거할 콜백 함수
-            
-        Returns:
-            bool: 콜백 제거 성공 여부
-        """
-        if callback in self.orderbook_callbacks:
-            self.orderbook_callbacks.remove(callback)
-            return True
-        return False
-    
-    async def _initialize_orderbook(self, symbol: str) -> None:
-        """
-        특정 심볼의 오더북 초기화
-        
-        REST API를 통한 스냅샷 요청 및 처리
-        
-        Args:
-            symbol: 초기화할 심볼
-        """
-        try:
-            # 개별 심볼 로그 제거 (refresh_snapshots에서 한 번에 출력)
-            
-            # 데이터 핸들러를 통한 스냅샷 요청
-            snapshot = await self.data_handler.get_orderbook_snapshot(symbol)
-            
-            # 스냅샷 응답에 오류가 있는 경우
-            if snapshot.get("error", False):
-                self.logger.error(f"{self.exchange_name_kr} {symbol} 오더북 스냅샷 요청 실패: {snapshot.get('message', '')}")
-                return
-                
-            # self.logger.info(f"{self.exchange_name_kr} {symbol} 오더북 초기화 완료")
-            
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} {symbol} 오더북 초기화 중 오류: {str(e)}")
-    
-    def _on_message(self, message: Dict[str, Any]) -> None:
-        """
-        메시지 수신 콜백
-        
-        Args:
-            message: 수신된 메시지
-        """
-        try:
-            # 메시지 유형에 따른 처리
-            msg_type = message.get("type", "unknown")
-            
-            if msg_type == "depth_update":
-                # 오더북 업데이트 메시지
-                symbol = message.get("symbol", "")
-                exchange = message.get("exchange", "")
-                
-                # DEBUG 레벨로 간단한 메시지만 로깅
-                self.logger.debug(f"{self.exchange_name_kr} {symbol} 오더북 업데이트 수신")
-                
-                # 오더북 콜백 호출은 메시지 핸들러에서 처리
-                
-            elif msg_type == "subscription_response":
-                # 구독 응답
-                response_data = message.get("data", {})
-                request_id = response_data.get("id", 0)
-                result = response_data.get("result", None)
-                
-                if result is None:
-                    self.logger.info(f"{self.exchange_name_kr} 구독 응답 (ID: {request_id}): 성공")
-                else:
-                    error = response_data.get("error", {})
-                    self.logger.error(f"{self.exchange_name_kr} 구독 응답 (ID: {request_id}): 실패 - {error}")
-                    
-            elif msg_type == "error":
-                # 오류 메시지
-                error_type = message.get("error", "unknown_error")
-                error_msg = message.get("message", "")
-                self.logger.error(f"{self.exchange_name_kr} 오류 메시지: {error_type} - {error_msg}")
-                
-            else:
-                # 기타 메시지는 디버그 레벨로 로깅
-                self.logger.debug(f"{self.exchange_name_kr} 기타 메시지 수신: {msg_type}")
-                
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
-    
-    async def refresh_snapshots(self, symbols: List[str] = None) -> None:
-        """
-        오더북 스냅샷 갱신
-        
-        Args:
-            symbols: 갱신할 심볼 목록 (None이면 모든 구독 중인 심볼)
-        """
-        if symbols is None:
-            symbols = self.subscribed_symbols
-            
-        if symbols:
-            self.logger.info(f"{self.exchange_name_kr} 오더북 스냅샷 갱신 시작: {', '.join(symbols)}")
-            
-        for symbol in symbols:
-            await self._initialize_orderbook(symbol)
-            
-    async def get_exchange_info(self) -> Dict[str, Any]:
-        """
-        거래소 정보 조회
-        
-        Returns:
-            Dict[str, Any]: 거래소 정보
-        """
-        return await self.data_handler.get_exchange_info()
-        
-    async def get_websocket(self) -> Optional[websockets.WebSocketClientProtocol]:
-        """
-        웹소켓 객체 반환 (ConnectionManager 호환용)
-        
-        Returns:
-            Optional[websockets.WebSocketClientProtocol]: 웹소켓 객체
-        """
-        return self.ws
-        
-    async def reconnect(self) -> bool:
-        """
-        재연결 수행
-        
-        Returns:
-            bool: 재연결 성공 여부
-        """
-        await self.disconnect()
-        success = await self.connect()
-        
-        if success and self.subscribed_symbols:
-            # 재연결 성공 시 기존 구독 심볼 복구
-            await self.subscribe(self.subscribed_symbols)
-            
-        return success
-        
-    async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
-        """
-        특정 심볼의 오더북 스냅샷 조회
-        
-        Args:
-            symbol: 조회할 심볼
-            
-        Returns:
-            Dict[str, Any]: 오더북 스냅샷 데이터
-        """
-        return await self.data_handler.get_orderbook_snapshot(symbol)

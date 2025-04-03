@@ -39,79 +39,15 @@ class MarketOrderSimulator:
         log_dir = "src/logs/market_order_data"
         os.makedirs(log_dir, exist_ok=True)
         
-        # 시장가 주문 시뮬레이션 로거 설정
-        self.market_order_logger = self._setup_market_order_logger(log_dir)
+        # 시장가 주문 시뮬레이션 로거 설정 - 수정: 커스텀 핸들러 대신 create_raw_logger 사용
+        market_order_logger_name = "market_order_simulator"
+        self.market_order_logger = create_raw_logger(market_order_logger_name)
         
-        # 미소화 주문 로거 설정 (새로 추가)
-        self.incomplete_order_logger = self._setup_incomplete_order_logger(log_dir)
+        # 미소화 주문 로거 설정 - 수정: 커스텀 핸들러 대신 create_raw_logger 사용
+        incomplete_order_logger_name = "incomplete_order_logger"
+        self.incomplete_order_logger = create_raw_logger(incomplete_order_logger_name)
         
         self.logger.info(f"시장가 주문 시뮬레이션 초기화 완료 (기본 주문 금액: {self.base_order_amount_krw:,} KRW)")
-        
-    def _setup_market_order_logger(self, log_dir: str) -> logging.Logger:
-        """
-        시장가 주문 시뮬레이션 로거 설정
-        
-        Args:
-            log_dir: 로그 디렉토리
-            
-        Returns:
-            logging.Logger: 설정된 로거
-        """
-        logger = logging.getLogger("market_order_simulator")
-        logger.setLevel(logging.INFO)
-        
-        # 기존 핸들러 제거
-        if logger.handlers:
-            for handler in logger.handlers:
-                logger.removeHandler(handler)
-        
-        # 현재 날짜와 시간으로 파일명 생성
-        current_datetime = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
-        log_file = os.path.join(log_dir, f"{current_datetime}_market_orderbook.log")
-        
-        # 파일 핸들러 추가
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        formatter = logging.Formatter('%(asctime)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        
-        # 매 로그 메시지마다 즉시 파일에 쓰도록 설정
-        file_handler.setLevel(logging.INFO)
-        
-        return logger
-    
-    def _setup_incomplete_order_logger(self, log_dir: str) -> logging.Logger:
-        """
-        미소화 주문 로거 설정
-        
-        Args:
-            log_dir: 로그 디렉토리
-            
-        Returns:
-            logging.Logger: 설정된 로거
-        """
-        logger = logging.getLogger("incomplete_order_logger")
-        logger.setLevel(logging.INFO)
-        
-        # 기존 핸들러 제거
-        if logger.handlers:
-            for handler in logger.handlers:
-                logger.removeHandler(handler)
-        
-        # 현재 날짜와 시간으로 파일명 생성
-        current_datetime = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
-        log_file = os.path.join(log_dir, f"{current_datetime}_incomplete_orderbook.log")
-        
-        # 파일 핸들러 추가
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        formatter = logging.Formatter('%(asctime)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        
-        # 매 로그 메시지마다 즉시 파일에 쓰도록 설정
-        file_handler.setLevel(logging.INFO)
-        
-        return logger
     
     def simulate_market_order(self, orderbook_data: Dict[str, Any]) -> None:
         """
@@ -194,9 +130,6 @@ class MarketOrderSimulator:
             
             # 모든 거래는 항상 시뮬레이션 로그에 기록
             self.market_order_logger.info(json.dumps(log_data))
-            # 즉시 파일에 기록하도록 flush
-            for handler in self.market_order_logger.handlers:
-                handler.flush()
             
             # 불완전 주문만 별도 로깅
             if is_incomplete:
@@ -213,9 +146,6 @@ class MarketOrderSimulator:
                     "base_amount_krw": self.base_order_amount_krw
                 }
                 self.incomplete_order_logger.info(json.dumps(incomplete_log_data))
-                # 즉시 파일에 기록하도록 flush
-                for handler in self.incomplete_order_logger.handlers:
-                    handler.flush()
                 
                 # warning에서 debug로 로그 레벨 변경
                 # self.logger.debug(f"불완전 주문 감지: {exchange} {symbol} - 매수 소비율: {buy_consumption_rate:.2f}%, 매도 소비율: {sell_consumption_rate:.2f}%")

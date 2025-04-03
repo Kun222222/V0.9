@@ -53,8 +53,8 @@ class UpbitSpotConnectionStrategy:
         return "https://api.upbit.com/v1"
         
     def requires_ping(self) -> bool:
-        """업비트는 클라이언트 측 핑이 필요 없음"""
-        return False
+        """업비트는 클라이언트 측 핑이 필요함"""
+        return True
         
     async def connect(self, timeout: int = 3.0) -> websockets.WebSocketClientProtocol:
         """
@@ -254,16 +254,35 @@ class UpbitSpotConnectionStrategy:
             
     async def send_ping(self, ws: websockets.WebSocketClientProtocol) -> bool:
         """
-        Ping 메시지 전송 - 업비트는 필요 없음
+        Ping 메시지 전송
         
         Args:
             ws: 웹소켓 연결 객체
             
         Returns:
             bool: 전송 성공 여부
+            
+        Raises:
+            websockets.exceptions.ConnectionClosed: 웹소켓이 이미 닫힌 경우나 핑 전송 실패 시
         """
-        # 업비트는 클라이언트 측 ping이 필요 없음
-        return True
+        # 웹소켓 상태 확인
+        if ws is None or ws.closed:
+            self.logger.warning(f"{self.exchange_name} 웹소켓이 이미 닫혀있어 핑 전송 불가")
+            # 명시적으로 ConnectionClosed 예외 발생
+            raise websockets.exceptions.ConnectionClosed(
+                1000, "웹소켓이 이미 닫힌 상태"
+            )
+        
+        try:
+            # 실제 핑 전송 시도
+            await ws.send("PING")
+            return True
+        except Exception as e:
+            self.logger.error(f"{self.exchange_name} 핑 전송 실패: {str(e)}")
+            # 핑 전송 실패 시 ConnectionClosed 예외로 변환하여 상위에서 처리
+            raise websockets.exceptions.ConnectionClosed(
+                1001, f"핑 전송 실패: {str(e)}"
+            ) from e
     
     def preprocess_message(self, message: str) -> Dict[str, Any]:
         """

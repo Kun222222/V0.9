@@ -1,9 +1,13 @@
 import asyncio
 import time
+import os
+import psutil
 from typing import Dict, Optional, Any, List, Callable
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent, EXCHANGE_NAMES_KR, normalize_exchange_code, Exchange
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.events.system_types import EventChannels
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
@@ -19,6 +23,7 @@ class ConnectionManager:
     3. 연결 상태 모니터링
     4. 구독 상태 관리 (추가됨)
     5. 연결 시작 시간 및 업타임 트래킹 (추가됨)
+    6. 메모리 사용량 모니터링 (추가됨)
     """
     
     def __init__(self, metrics_manager=None):
@@ -64,6 +69,17 @@ class ConnectionManager:
         # 심볼별 타임스탬프 (추가됨)
         self.symbol_timestamps = {}
 
+        # 메모리 모니터링 관련 (추가됨)
+        self.process = psutil.Process(os.getpid())
+        self.memory_log = []
+        self.memory_monitoring_task = None
+        self.is_memory_monitoring = False
+        self.memory_threshold_mb = 200  # 메모리 증가 경고 임계값 (MB)
+        self.last_memory_mb = 0
+        
+        # 이벤트 버스 초기화
+        self.event_bus = get_component_event_bus(SystemComponent.OB_COLLECTOR)
+        
         # 로깅 추가 - 객체 생성 완료
         self.logger.debug("ConnectionManager 객체 생성 완료")
         
@@ -384,7 +400,7 @@ class ConnectionManager:
         연결 상태 모니터링 시작
         
         Args:
-            interval: 점검 간격 (초) - 1초로 감소
+            interval: 모니터링 간격 (초)
         """
         if self.is_monitoring:
             return
@@ -394,10 +410,20 @@ class ConnectionManager:
             
         self.is_monitoring = True
         self.monitoring_task = asyncio.create_task(self._monitor_connection_health(interval))
+        
+        # 메모리 모니터링도 함께 시작 (추가됨)
+        self.start_memory_monitoring(15)  # 15초 간격으로 메모리 모니터링
+        
+        # 이벤트 버스 핸들러 등록
+        self.event_bus.register_handler(
+            EventChannels.Component.ObCollector.CONNECTION_LOST, 
+            self._handle_connection_lost_event
+        )
+        
         self.logger.info(f"연결 상태 모니터링 시작 (점검 간격: {interval}초)")
 
     def stop_monitoring(self):
-        """연결 상태 모니터링 중지"""
+        """모니터링 중지"""
         if not self.is_monitoring:
             return
             
@@ -407,6 +433,19 @@ class ConnectionManager:
         self.is_monitoring = False
         if self.monitoring_task and not self.monitoring_task.done():
             self.monitoring_task.cancel()
+            
+        # 메모리 모니터링도 함께 중지 (추가됨)
+        self.stop_memory_monitoring()
+        
+        # 이벤트 버스 핸들러 제거 (필요시)
+        try:
+            self.event_bus.unregister_handler(
+                EventChannels.Component.ObCollector.CONNECTION_LOST, 
+                self._handle_connection_lost_event
+            )
+        except:
+            pass
+            
         self.logger.info("연결 상태 모니터링 중지")
 
     async def _monitor_connection_health(self, interval: int = 1):
@@ -519,17 +558,11 @@ class ConnectionManager:
         Returns:
             bool: 재연결 성공 여부
         """
-        # 거래소 한글명 가져오기
         exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
         
-        # 해당 거래소에 대해 이미 재연결 진행 중인지 확인 (락 사용)
-        if exchange_code not in self.reconnect_locks:
-            self.reconnect_locks[exchange_code] = asyncio.Lock()
-            
-        # 비동기 락 획득 시도 (다른 재연결 시도와 충돌 방지)
-        if self.reconnect_locks[exchange_code].locked():
-            self.logger.debug(f"{exchange_kr} 이미 재연결 진행 중입니다. 중복 요청 무시")
-            return False
+        # 재연결 전 메모리 상태 기록 (추가됨)
+        mem_before = self.process.memory_info().rss / 1024 / 1024
+        self.logger.info(f"{exchange_kr} 재연결 전 메모리: {mem_before:.2f} MB")
             
         async with self.reconnect_locks[exchange_code]:
             # 재연결 횟수 증가
@@ -566,6 +599,7 @@ class ConnectionManager:
                 self.logger.error(f"{exchange_kr} 연결 정리 중 오류: {str(e)}")
             
             # 3. 재연결 콜백이 설정된 경우 사용 (obcollector_manager._connect_and_subscribe)
+            reconnection_result = False
             if self.reconnect_callback:
                 try:
                     self.logger.info(f"{exchange_kr} 재연결 콜백 실행...")
@@ -574,13 +608,11 @@ class ConnectionManager:
                     if result:
                         self.logger.info(f"{exchange_kr} 재연결 성공 (콜백 사용)")
                         self.reconnect_count[exchange_code] = 0  # 성공 시 카운터 리셋
-                        return True
+                        reconnection_result = True
                     else:
                         self.logger.error(f"{exchange_kr} 재연결 실패 (콜백 사용)")
-                        return False
                 except Exception as e:
                     self.logger.error(f"{exchange_kr} 재연결 콜백 실행 중 오류: {str(e)}")
-                    return False
             
             # 4. 콜백이 없는 경우 기본 연결만 시도
             else:
@@ -592,13 +624,209 @@ class ConnectionManager:
                             self.logger.info(f"{exchange_kr} 연결 성공 (구독은 수행되지 않음)")
                             self.update_exchange_status(exchange_code, True)
                             self.reconnect_count[exchange_code] = 0  # 성공 시 카운터 리셋
-                            return True
+                            reconnection_result = True
                         else:
                             self.logger.error(f"{exchange_kr} 연결 실패")
-                            return False
                     else:
                         self.logger.error(f"{exchange_kr} connect 메서드가 없음")
-                        return False
                 except Exception as e:
                     self.logger.error(f"{exchange_kr} 재연결 중 오류: {str(e)}")
-                    return False 
+            
+            # 재연결 후 메모리 상태 기록 (추가됨)
+            mem_after = self.process.memory_info().rss / 1024 / 1024
+            mem_diff = mem_after - mem_before
+            self.logger.info(f"{exchange_kr} 재연결 후 메모리: {mem_after:.2f} MB (변화: {mem_diff:+.2f} MB)")
+            
+            # 급격한 메모리 증가 시 경고
+            if mem_diff > 10:  # 10MB 이상 증가 시 경고
+                self.logger.warning(f"{exchange_kr} 재연결 후 메모리가 크게 증가했습니다: {mem_diff:+.2f} MB")
+                
+            return reconnection_result
+
+    # 메모리 모니터링 관련 메서드 (추가됨)
+    def start_memory_monitoring(self, interval: int = 15):
+        """
+        메모리 사용량 모니터링 시작
+        
+        Args:
+            interval: 점검 간격 (초)
+        """
+        if self.is_memory_monitoring:
+            return
+            
+        self.is_memory_monitoring = True
+        self.memory_monitoring_task = asyncio.create_task(self._monitor_memory_usage(interval))
+        self.logger.info(f"메모리 사용량 모니터링 시작 (점검 간격: {interval}초)")
+        
+    def stop_memory_monitoring(self):
+        """메모리 사용량 모니터링 중지"""
+        if not self.is_memory_monitoring:
+            return
+            
+        self.is_memory_monitoring = False
+        if self.memory_monitoring_task and not self.memory_monitoring_task.done():
+            self.memory_monitoring_task.cancel()
+        self.logger.info("메모리 사용량 모니터링 중지")
+        
+    async def _monitor_memory_usage(self, interval: int = 15):
+        """
+        주기적으로 메모리 사용량을 확인하는 태스크
+        
+        Args:
+            interval: 점검 간격 (초)
+        """
+        self.logger.info(f"메모리 사용량 모니터링 태스크 시작 (점검 간격: {interval}초)")
+        
+        try:
+            # 초기 메모리 사용량 측정
+            self.last_memory_mb = self.process.memory_info().rss / 1024 / 1024
+            self.logger.info(f"초기 메모리 사용량: {self.last_memory_mb:.2f} MB")
+            
+            # 시스템 전체 메모리 정보
+            total_system_memory = psutil.virtual_memory().total / 1024 / 1024
+            self.logger.info(f"시스템 전체 메모리: {total_system_memory:.2f} MB")
+        except Exception as e:
+            self.logger.error(f"초기 메모리 정보 수집 중 오류: {str(e)}")
+            self.last_memory_mb = 0  # 초기화 실패 시 안전한 값으로 설정
+        
+        while self.is_memory_monitoring:
+            try:
+                # 현재 메모리 사용량 측정
+                current_memory_mb = self.process.memory_info().rss / 1024 / 1024
+                
+                # last_memory_mb가 None이면 현재 값으로 초기화
+                if self.last_memory_mb is None:
+                    self.last_memory_mb = current_memory_mb
+                    memory_diff = 0
+                else:
+                    memory_diff = current_memory_mb - self.last_memory_mb
+                
+                # 시스템 메모리 사용량
+                system_memory = psutil.virtual_memory()
+                system_used_percent = system_memory.percent
+                
+                # 연결 상태 정보
+                connected_exchanges = sum(1 for status in self.exchange_status.values() if status)
+                
+                # 메모리 정보 기록
+                mem_info = {
+                    'timestamp': time.time(),
+                    'memory_mb': current_memory_mb,
+                    'memory_diff': memory_diff,
+                    'system_memory_percent': system_used_percent,
+                    'connected_exchanges': connected_exchanges,
+                    'exchange_status': {k: v for k, v in self.exchange_status.items()},
+                    'subscription_counts': {k: len(self.subscription_status.get(k, {}).get('symbols', [])) 
+                                          for k in self.exchange_status}
+                }
+                
+                self.memory_log.append(mem_info)
+                
+                # 로그 크기 제한 (최근 1000개 항목만 유지)
+                if len(self.memory_log) > 1000:
+                    self.memory_log = self.memory_log[-1000:]
+                
+                # 메모리 사용량 표시 - 15초마다 기본 로그, 변화가 클 때는 경고 로그
+                self.logger.info(f"메모리 사용량: {current_memory_mb:.2f} MB (변화: {memory_diff:+.2f} MB), 시스템: {system_used_percent:.1f}%, 연결된 거래소: {connected_exchanges}")
+                
+                # 메모리 증가가 임계값을 초과하는 경우 경고
+                if memory_diff > 10:
+                    self.logger.warning(f"메모리 사용량이 크게 증가했습니다: {memory_diff:+.2f} MB (현재: {current_memory_mb:.2f} MB)")
+                    
+                    # 추가 시스템 정보 로깅
+                    cpu_percent = psutil.cpu_percent(interval=0.1)
+                    self.logger.warning(f"시스템 CPU 사용률: {cpu_percent:.1f}%, 메모리 사용률: {system_used_percent:.1f}%")
+                    
+                    # 프로세스별 메모리 사용량 (상위 5개)
+                    process_info = []
+                    for proc in sorted(psutil.process_iter(['pid', 'name', 'memory_percent']), 
+                                     key=lambda x: x.info['memory_percent'], reverse=True)[:5]:
+                        process_info.append(f"{proc.info['name']} (PID: {proc.info['pid']}): {proc.info['memory_percent']:.1f}%")
+                    
+                    self.logger.warning(f"상위 메모리 사용 프로세스: {', '.join(process_info)}")
+                
+                # 현재 메모리를 이전 메모리로 업데이트
+                self.last_memory_mb = current_memory_mb
+                
+                # 지정된 간격만큼 대기
+                await asyncio.sleep(interval)
+                
+            except asyncio.CancelledError:
+                self.logger.debug("메모리 사용량 모니터링 태스크 취소됨")
+                break
+            except Exception as e:
+                self.logger.error(f"메모리 사용량 모니터링 중 오류: {str(e)}")
+                # 오류 발생 시 메모리 비교 변수 초기화 방지
+                if self.last_memory_mb is None:
+                    self.last_memory_mb = 0
+                await asyncio.sleep(interval)  # 오류 발생 시에도 계속 진행
+                
+        self.logger.debug("메모리 사용량 모니터링 종료")
+        
+    def get_memory_log(self, limit: int = 100):
+        """
+        메모리 사용량 로그 조회
+        
+        Args:
+            limit: 반환할 로그 항목 수
+            
+        Returns:
+            List: 메모리 로그 항목
+        """
+        return self.memory_log[-limit:] if self.memory_log else []
+        
+    def get_memory_metrics(self) -> Dict[str, Any]:
+        """
+        메모리 관련 메트릭 데이터 수집
+        
+        Returns:
+            Dict: 메모리 사용량 정보
+        """
+        current_memory_mb = self.process.memory_info().rss / 1024 / 1024
+        
+        # 시스템 메모리 정보
+        system_memory = psutil.virtual_memory()
+        
+        # 최근 1시간 데이터만 필터링 (타임스탬프 기준)
+        one_hour_ago = time.time() - 3600
+        recent_logs = [log for log in self.memory_log if log['timestamp'] > one_hour_ago]
+        
+        # 최대/최소/평균 메모리 사용량 계산
+        memory_values = [log['memory_mb'] for log in recent_logs] if recent_logs else [current_memory_mb]
+        max_memory = max(memory_values) if memory_values else current_memory_mb
+        min_memory = min(memory_values) if memory_values else current_memory_mb
+        avg_memory = sum(memory_values) / len(memory_values) if memory_values else current_memory_mb
+        
+        return {
+            "current_memory_mb": current_memory_mb,
+            "max_memory_mb": max_memory,
+            "min_memory_mb": min_memory,
+            "avg_memory_mb": avg_memory,
+            "system_memory_total_mb": system_memory.total / 1024 / 1024,
+            "system_memory_used_mb": system_memory.used / 1024 / 1024,
+            "system_memory_percent": system_memory.percent,
+            "log_count": len(self.memory_log),
+            "monitoring_active": self.is_memory_monitoring
+        } 
+
+    # 이벤트 핸들러 추가
+    async def _handle_connection_lost_event(self, event_data):
+        """
+        연결 끊김 이벤트 처리
+        
+        Args:
+            event_data: 이벤트 데이터
+        """
+        exchange_code = event_data.get("exchange_code")
+        exchange_name = event_data.get("exchange_name", "알 수 없는 거래소")
+        error = event_data.get("error")
+        
+        if not exchange_code or self.is_shutting_down:
+            return
+            
+        self.logger.info(f"{exchange_name} 연결 끊김 이벤트 수신, 재연결을 시도합니다...")
+        if error:
+            self.logger.info(f"연결 끊김 원인: {error}")
+            
+        # 재연결 시도
+        asyncio.create_task(self.reconnect_exchange(exchange_code)) 

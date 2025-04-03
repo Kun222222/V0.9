@@ -14,6 +14,8 @@ from urllib.parse import urlencode
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
 from crosskimp.common.config.app_config import get_config
+from crosskimp.common.events.system_eventbus import get_component_event_bus
+from crosskimp.common.events.system_types import EventChannels
 
 from crosskimp.ob_collector.orderbook.connection.connector_interface import ExchangeConnectorInterface
 from crosskimp.ob_collector.orderbook.connection.strategies.bithumb_s_strategie import BithumbSpotConnectionStrategy
@@ -25,7 +27,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
     빗썸 현물 커넥터 클래스
     
     빗썸 현물 거래소의 웹소켓 연결 및 오더북 데이터 처리를 담당합니다.
-    ExchangeConnectorInterface를 구현하여 시스템과 일관된 방식으로 통합됩니다.
     """
     
     def __init__(self, connection_manager=None):
@@ -52,6 +53,9 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         self.connecting = False
         self.subscribed_symbols = set()
         
+        # 종료 중 플래그 추가
+        self.is_shutting_down = False
+        
         # 핸들러 및 전략 객체 생성
         self.connection_strategy = BithumbSpotConnectionStrategy()
         self.data_handler = BithumbSpotDataHandler()
@@ -70,13 +74,8 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         # 종료 이벤트
         self.stop_event = asyncio.Event()
         
-        # 구독 중인 심볼 목록
-        self._subscribed_symbols = set()
-        
-        # 메시지 처리 태스크 관리를 위한 추가 속성
-        self._message_handler_lock = asyncio.Lock()  # 동시 실행 방지용 락
-        
-        # self.logger.info(f"빗썸 현물 커넥터 초기화 완료")
+        # 이벤트 버스 추가
+        self.event_bus = get_component_event_bus(SystemComponent.OB_COLLECTOR)
         
     @property
     def is_connected(self) -> bool:
@@ -84,7 +83,7 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         현재 연결 상태 반환
         
         Returns:
-            bool: 연결 상태 (True: 연결됨, False: 연결 안됨)
+            bool: 연결 상태
         """
         return self._is_connected
         
@@ -103,12 +102,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             # 연결 관리자가 있으면 상태 업데이트
             if self.connection_manager:
                 self.connection_manager.update_exchange_status(self.exchange_code, value)
-                
-            # 이벤트 로깅
-            if value:
-                self.logger.info(f"🟢 {self.exchange_name_kr} 연결됨")
-            else:
-                self.logger.info(f"🔴 {self.exchange_name_kr} 연결 끊김")
         
     async def connect(self) -> bool:
         """
@@ -125,15 +118,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             self.connecting = True
             self.stop_event.clear()
             
-            # 기존 메시지 처리 태스크 취소
-            if self.message_task and not self.message_task.done():
-                self.message_task.cancel()
-                try:
-                    await self.message_task
-                except asyncio.CancelledError:
-                    pass
-                self.message_task = None
-            
             # 연결 전략을 통해 웹소켓 연결
             self.ws = await self.connection_strategy.connect()
             
@@ -144,7 +128,11 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             # 메시지 처리 태스크 시작
             self.message_task = asyncio.create_task(self._message_handler())
             
-            # 연결 후 초기화 작업 수행 (전략 객체에 위임)
+            # 핑 전송 태스크 시작
+            if self.connection_strategy.requires_ping():
+                self.ping_task = asyncio.create_task(self._ping_handler())
+            
+            # 연결 후 초기화 작업 수행
             await self.connection_strategy.on_connected(self.ws)
             
             return True
@@ -173,7 +161,14 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
                     await self.message_task
                 except asyncio.CancelledError:
                     pass
-                self.message_task = None
+            
+            # 핑 태스크 정리
+            if self.ping_task and not self.ping_task.done():
+                self.ping_task.cancel()
+                try:
+                    await self.ping_task
+                except asyncio.CancelledError:
+                    pass
             
             # 웹소켓 종료
             if self.ws:
@@ -185,7 +180,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             self.connecting = False
             self.subscribed_symbols.clear()
             
-            self.logger.info(f"{self.exchange_name_kr} 연결 종료됨")
             return True
             
         except Exception as e:
@@ -196,62 +190,46 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
     async def _message_handler(self):
         """메시지 수신 및 처리 태스크"""
         try:
-            # 락을 사용하여 동시에 여러 태스크가 메시지 핸들러를 실행하지 않도록 함
-            async with self._message_handler_lock:
-                self.logger.debug(f"{self.exchange_name_kr} 메시지 핸들러 시작")
-                
-                while not self.stop_event.is_set() and self.ws:
-                    try:
-                        # 메시지 수신
-                        message = await asyncio.wait_for(self.ws.recv(), timeout=60)
-                        
-                        # 메시지 처리
-                        self._on_message(message)
-                        
-                    except asyncio.TimeoutError:
-                        # 타임아웃 발생 - 연결 확인
-                        self.logger.warning(f"{self.exchange_name_kr} 메시지 수신 타임아웃, 연결 확인 중...")
-                        try:
-                            # 웹소켓 확인
-                            if self.ws and self.ws.open:
-                                # 웹소켓이 열려있어도 실제 데이터를 수신하지 못하는 상태일 수 있음
-                                # ConnectionManager가 재연결 여부를 판단하도록 상태만 업데이트
-                                self.is_connected = False
-                                self.logger.warning(f"{self.exchange_name_kr} 웹소켓이 열려있지만 데이터가 수신되지 않음")
-                                # 연결관리자가 재연결 하도록 함
-                                await self._reconnect()
-                                break
-                            else:
-                                self.logger.error(f"{self.exchange_name_kr} 웹소켓 닫힘 감지")
-                                self.is_connected = False
-                                await self._reconnect()
-                                break
-                        except Exception as check_e:
-                            self.logger.error(f"{self.exchange_name_kr} 연결 확인 중 오류: {str(check_e)}")
-                            self.is_connected = False
-                            await self._reconnect()
-                            break
-                            
-                    except websockets.exceptions.ConnectionClosed as cc:
-                        # 연결 종료 처리
-                        self.logger.warning(f"{self.exchange_name_kr} 연결 종료됨 (코드: {cc.code}, 사유: {cc.reason})")
+            while not self.stop_event.is_set() and self.ws:
+                try:
+                    # 메시지 수신 - 타임아웃 5초로 줄임
+                    message = await asyncio.wait_for(self.ws.recv(), timeout=5)
+                    self._on_message(message)
+                    
+                except asyncio.TimeoutError:
+                    # 타임아웃 발생 - 핑을 보내 연결 확인
+                    if self.connection_strategy.requires_ping():
+                        # 이제 핑 전송은 ConnectionClosed를 발생시킬 수 있어 추가 try-except 불필요
+                        await self.connection_strategy.send_ping(self.ws)
+                    
+                except websockets.exceptions.ConnectionClosed as e:
+                    if not self.is_shutting_down:
                         self.is_connected = False
-                        await self._reconnect()
-                        break
-                        
-                    except Exception as e:
-                        # 기타 예외 처리
+                        # 이벤트 버스를 통해 연결 끊김 알림
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                            "exchange_code": self.exchange_code,
+                            "exchange_name": self.exchange_name_kr,
+                            "error": str(e),
+                            "timestamp": time.time()
+                        })
+                    break
+                    
+                except Exception as e:
+                    # 기타 예외 처리
+                    if not self.is_shutting_down:
                         self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
-                        await asyncio.sleep(1)
-                        
-                self.logger.debug(f"{self.exchange_name_kr} 메시지 핸들러 종료")
-                        
+                        self.is_connected = False
+                        # 이벤트 버스를 통해 연결 끊김 알림
+                        await self.event_bus.publish(EventChannels.Component.ObCollector.CONNECTION_LOST, {
+                            "exchange_code": self.exchange_code,
+                            "exchange_name": self.exchange_name_kr,
+                            "error": str(e),
+                            "timestamp": time.time()
+                        })
+                    await asyncio.sleep(1)
+                    
         except asyncio.CancelledError:
-            self.logger.info(f"{self.exchange_name_kr} 메시지 처리 태스크 취소됨")
-            
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 메시지 처리 태스크 오류: {str(e)}")
-            self.is_connected = False
+            pass
             
     async def subscribe(self, symbols: List[str]) -> bool:
         """
@@ -275,7 +253,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             new_symbols = [s for s in normalized_symbols if s not in self.subscribed_symbols]
             
             if not new_symbols:
-                self.logger.info(f"{self.exchange_name_kr} 구독할 새로운 심볼 없음")
                 return True
                 
             # 구독 요청
@@ -287,10 +264,7 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             if result:
                 # 구독 심볼 저장
                 self.subscribed_symbols.update(new_symbols)
-                self.logger.info(f"{self.exchange_name_kr} {len(new_symbols)}개 심볼 구독 성공")
-            else:
-                self.logger.error(f"{self.exchange_name_kr} 심볼 구독 실패")
-                
+            
             return result
             
         except Exception as e:
@@ -308,7 +282,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             bool: 구독 해제 성공 여부
         """
         if not self.is_connected:
-            self.logger.error(f"{self.exchange_name_kr} 구독 해제 실패: 연결되지 않음")
             return False
             
         try:
@@ -319,12 +292,8 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             symbols_to_unsub = [s for s in normalized_symbols if s in self.subscribed_symbols]
             
             if not symbols_to_unsub:
-                self.logger.info(f"{self.exchange_name_kr} 구독 해제할 심볼 없음")
                 return True
                 
-            # 구독 해제 요청
-            self.logger.info(f"{self.exchange_name_kr} {len(symbols_to_unsub)}개 심볼 구독 해제 중...")
-            
             # 연결 전략을 통해 구독 해제
             result = await self.connection_strategy.unsubscribe(self.ws, symbols_to_unsub)
             
@@ -332,9 +301,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
                 # 구독 심볼 제거
                 for s in symbols_to_unsub:
                     self.subscribed_symbols.discard(s)
-                self.logger.info(f"{self.exchange_name_kr} {len(symbols_to_unsub)}개 심볼 구독 해제 성공")
-            else:
-                self.logger.error(f"{self.exchange_name_kr} 심볼 구독 해제 실패")
                 
             return result
             
@@ -342,58 +308,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             self.logger.error(f"{self.exchange_name_kr} 구독 해제 중 오류: {str(e)}")
             return False
             
-    async def send_message(self, message: Union[str, Dict, List]) -> bool:
-        """
-        웹소켓을 통해 메시지 전송
-        
-        Args:
-            message: 전송할 메시지 (문자열, 딕셔너리 또는 리스트)
-            
-        Returns:
-            bool: 메시지 전송 성공 여부
-        """
-        if not self.is_connected or not self.ws:
-            self.logger.error(f"{self.exchange_name_kr} 메시지 전송 실패: 연결되지 않음")
-            return False
-            
-        try:
-            # 메시지 형식 변환 (필요 시)
-            if isinstance(message, (dict, list)):
-                message = json.dumps(message)
-                
-            # 메시지 전송
-            await self.ws.send(message)
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"{self.exchange_name_kr} 메시지 전송 실패: {str(e)}")
-            return False
-            
-    def add_message_callback(self, callback: Callable) -> None:
-        """
-        웹소켓 메시지 콜백 함수 등록
-        
-        Args:
-            callback: 메시지 수신 시 호출될 콜백 함수
-        """
-        if callback not in self.message_callbacks:
-            self.message_callbacks.append(callback)
-            
-    def remove_message_callback(self, callback: Callable) -> bool:
-        """
-        웹소켓 메시지 콜백 함수 제거
-        
-        Args:
-            callback: 제거할 콜백 함수
-            
-        Returns:
-            bool: 콜백 제거 성공 여부
-        """
-        if callback in self.message_callbacks:
-            self.message_callbacks.remove(callback)
-            return True
-        return False
-        
     def add_orderbook_callback(self, callback: Callable) -> None:
         """
         오더북 업데이트 콜백 함수 등록
@@ -404,21 +318,6 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         if callback not in self.orderbook_callbacks:
             self.orderbook_callbacks.append(callback)
             
-    def remove_orderbook_callback(self, callback: Callable) -> bool:
-        """
-        오더북 업데이트 콜백 함수 제거
-        
-        Args:
-            callback: 제거할 콜백 함수
-            
-        Returns:
-            bool: 콜백 제거 성공 여부
-        """
-        if callback in self.orderbook_callbacks:
-            self.orderbook_callbacks.remove(callback)
-            return True
-        return False
-        
     def _on_message(self, message: str) -> None:
         """
         웹소켓 메시지 처리
@@ -427,32 +326,26 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
             message: 수신된 웹소켓 메시지 (JSON 문자열)
         """
         try:
-            # 원본 메시지 로깅 추가
+            # 원본 메시지 로깅 (오더북 메시지만)
             try:
-                # 메시지 파싱
                 data = json.loads(message)
-                # 메시지에 타입과 코드가 있는 경우 (오더북 메시지인 경우) 로깅
                 if "type" in data and data.get("type") == "orderbook" and "code" in data:
-                    # 심볼 추출
-                    symbol = data.get("code", "").replace("KRW-", "").lower()
-                    # 로깅 - 첫 번째 인자는 거래소 코드, 두 번째 인자는 메시지
                     self.data_manager.log_raw_message(self.exchange_code, message)
-            except Exception as e:
-                self.logger.error(f"{self.exchange_name_kr} 원본 메시지 로깅 중 오류: {str(e)}")
+            except Exception:
+                pass
             
             # 메시지 콜백 호출
             for callback in self.message_callbacks:
                 try:
                     callback(message)
-                except Exception as e:
-                    self.logger.error(f"{self.exchange_name_kr} 메시지 콜백 실행 중 오류: {str(e)}")
+                except Exception:
+                    pass
                     
             # 연결 전략을 통해 메시지 전처리
             processed_message = self.connection_strategy.preprocess_message(message)
-            message_type = processed_message.get("type")
             
             # 오더북 메시지 처리
-            if message_type == "orderbook":
+            if processed_message.get("type") == "orderbook":
                 # 데이터 핸들러를 통해 오더북 데이터 처리
                 orderbook_data = self.data_handler.process_orderbook_update(processed_message)
                 
@@ -460,24 +353,11 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
                 for callback in self.orderbook_callbacks:
                     try:
                         callback(orderbook_data)
-                    except Exception as e:
-                        self.logger.error(f"{self.exchange_name_kr} 오더북 콜백 실행 중 오류: {str(e)}")
+                    except Exception:
+                        pass
                         
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
-            
-    async def refresh_snapshots(self, symbols: List[str] = None) -> None:
-        """
-        오더북 스냅샷 갱신
-        
-        Args:
-            symbols: 갱신할 심볼 목록 (None이면 모든 구독 중인 심볼)
-        """
-        # 빗썸은 웹소켓 재연결 시 최신 오더북을 자동으로 제공하므로 필요 없음
-        self.logger.info(f"{self.exchange_name_kr} 스냅샷 갱신 요청 (재연결로 대체)")
-        
-        # 연결 관리자가 재연결을 처리하므로 별도 로직 불필요
-        pass
             
     async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
         """
@@ -489,42 +369,78 @@ class BithumbSpotConnector(ExchangeConnectorInterface):
         Returns:
             Dict[str, Any]: 오더북 데이터
         """
-        # 데이터 핸들러에서 현재 캐시된 오더북 반환
         return await self.data_handler.get_orderbook_snapshot(symbol)
             
-    async def get_exchange_info(self) -> Dict[str, Any]:
+    async def refresh_snapshots(self, symbols: List[str] = None) -> None:
         """
-        구독 중인 심볼 정보 반환
-        
-        Returns:
-            Dict[str, Any]: 심볼 정보
+        오더북 스냅샷 갱신 - 빗썸은 웹소켓 연결만으로 전체 오더북 제공
         """
-        return {"symbols": [s for s in self.subscribed_symbols]}
+        # 빗썸은 웹소켓 재연결 시 최신 오더북을 자동으로 제공하므로 필요 없음
+        pass
             
     async def get_websocket(self) -> Optional[websockets.WebSocketClientProtocol]:
-        """
-        웹소켓 객체 반환
-        
-        Returns:
-            Optional[websockets.WebSocketClientProtocol]: 웹소켓 객체
-        """
+        """웹소켓 객체 반환"""
         return self.ws 
 
-    async def _reconnect(self):
-        """
-        ConnectionManager에게 재연결 요청을 위임하는 메서드
-        """
-        if self.stop_event.is_set():
-            return
+    # 선택적 메서드 구현
+    def add_message_callback(self, callback: Callable) -> None:
+        """메시지 콜백 함수 등록"""
+        if callback not in self.message_callbacks:
+            self.message_callbacks.append(callback)
+            
+    def remove_message_callback(self, callback: Callable) -> bool:
+        """메시지 콜백 함수 제거"""
+        if callback in self.message_callbacks:
+            self.message_callbacks.remove(callback)
+            return True
+        return False
         
-        self.logger.info(f"{self.exchange_name_kr} 연결 끊김 감지, ConnectionManager에 재연결 요청")
+    def remove_orderbook_callback(self, callback: Callable) -> bool:
+        """오더북 콜백 함수 제거"""
+        if callback in self.orderbook_callbacks:
+            self.orderbook_callbacks.remove(callback)
+            return True
+        return False
         
-        # 연결 상태 업데이트
-        self.is_connected = False
-        
-        # ConnectionManager가 있으면 재연결 위임
-        if self.connection_manager:
-            # ConnectionManager가 재연결 담당
-            asyncio.create_task(self.connection_manager.reconnect_exchange(self.exchange_code))
-        else:
-            self.logger.error(f"{self.exchange_name_kr} ConnectionManager가 없어 재연결 처리 불가") 
+    async def send_message(self, message: Union[str, Dict, List]) -> bool:
+        """웹소켓을 통해 메시지 전송"""
+        if not self.is_connected or not self.ws:
+            return False
+            
+        try:
+            # 메시지 형식 변환 (필요 시)
+            if isinstance(message, (dict, list)):
+                message = json.dumps(message)
+                
+            await self.ws.send(message)
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"{self.exchange_name_kr} 메시지 전송 실패: {str(e)}")
+            return False
+
+    async def _ping_handler(self):
+        """핑 메시지 전송 태스크"""
+        try:
+            ping_interval = 10  # 10초마다 핑 전송
+            last_ping_time = time.time()
+            
+            while not self.stop_event.is_set() and self.ws:
+                current_time = time.time()
+                
+                # 핑 전송 시간이 되었는지 확인
+                if current_time - last_ping_time >= ping_interval:
+                    try:
+                        # 핑 전송
+                        await self.connection_strategy.send_ping(self.ws)
+                        last_ping_time = current_time
+                    except Exception as e:
+                        self.logger.error(f"{self.exchange_name_kr} 핑 전송 실패: {str(e)}")
+                        # 실패 시 더 자주 재시도
+                        last_ping_time = current_time - (ping_interval - 2)
+                
+                # 1초마다 이벤트 루프 활성화 (테스트 코드와 같은 패턴)
+                await asyncio.sleep(1)
+                
+        except asyncio.CancelledError:
+            pass 
