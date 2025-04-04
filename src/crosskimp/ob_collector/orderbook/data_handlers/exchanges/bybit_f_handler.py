@@ -40,9 +40,6 @@ class BybitFutureDataHandler:
         self.exchange_code = Exchange.BYBIT_FUTURE.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         
-        # 오더북 구독 설정
-        self.orderbook_depth = self.config.get(f"exchanges.{self.exchange_code}.orderbook_subscription_depth", 50)
-        
         # 중앙 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
         
@@ -54,7 +51,7 @@ class BybitFutureDataHandler:
         # HTTP 세션
         self.session = None
         
-        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (구독 깊이: {self.orderbook_depth})")
+        # self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 완료")
         
     async def process_snapshot(self, symbol: str, data: Dict) -> None:
         """
@@ -102,13 +99,10 @@ class BybitFutureDataHandler:
             self.last_update_ids[symbol] = update_id
             self.snapshot_timestamps[symbol] = timestamp
             
-            # 오더북 데이터 관리자의 설정값으로 호가 제한
-            output_depth = self.data_manager.get_orderbook_output_depth()
-            
-            # 로깅용 복사본 생성 (중앙 설정된 깊이로 제한)
+            # 로깅용 복사본 생성 (최대 10개 항목)
             log_orderbook = {
-                "bids": sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:output_depth],
-                "asks": sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:output_depth],
+                "bids": sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:10],
+                "asks": sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:10],
                 "timestamp": timestamp,
                 "sequence": sequence,
                 "update_id": update_id,
@@ -171,81 +165,138 @@ class BybitFutureDataHandler:
             self.logger.error(f"{self.exchange_name_kr} 거래소 정보 조회 중 오류: {str(e)}")
             return {}
             
-    def process_orderbook_update(self, message: Dict[str, Any]) -> Dict[str, Any]:
+    def process_message(self, message: Union[str, bytes]) -> Optional[Dict[str, Any]]:
         """
-        오더북 업데이트 메시지 처리
+        원시 메시지를 직접 처리하는 통합 메서드
         
         Args:
-            message: 웹소켓에서 수신한 메시지
+            message: 웹소켓에서 수신한 원시 메시지 (문자열 또는 바이트)
             
         Returns:
-            Dict[str, Any]: 처리된 오더북 데이터
+            Optional[Dict[str, Any]]: 처리된 오더북 데이터 또는 None
         """
         try:
-            # 메시지 타입 확인 (depth_update 또는 snapshot/delta)
-            msg_type = message.get("type", "unknown")
-            
-            # original_type이 있으면 사용, 없으면 type 필드 사용
-            original_type = message.get("original_type", msg_type)
-            
-            if msg_type not in ["depth_update", "snapshot", "delta"]:
-                return None
+            # 메시지가 bytes인 경우 문자열로 변환
+            if isinstance(message, bytes):
+                message = message.decode('utf-8')
                 
-            # 심볼 추출 (usdt 제거 및 소문자 변환)
-            symbol = message.get("symbol", "").replace("usdt", "").lower()
+            # JSON 문자열을 딕셔너리로 변환 (한 번만 파싱)
+            data = json.loads(message)
             
-            # 원시 메시지 로깅
-            self.data_manager.log_raw_message(
-                self.exchange_code,
-                json.dumps(message)
-            )
-            
-            # 메시지 원본 타입에 따라 처리
-            if original_type == "snapshot" or (msg_type == "depth_update" and original_type == "snapshot"):
-                # 스냅샷 데이터 변환
-                snapshot = {
-                    "exchange": self.exchange_code,
-                    "symbol": symbol,
-                    "timestamp": message.get("event_time", 0),
-                    "sequence": message.get("sequence", 0),
-                    "update_id": message.get("update_id", 0),
-                    "bids": message.get("bids", []),
-                    "asks": message.get("asks", []),
-                    "type": "snapshot"
+            # 핑퐁 응답 메시지인 경우
+            if "op" in data and data["op"] == "pong":
+                return {
+                    "type": "pong",
+                    "data": data
                 }
                 
-                # 스냅샷 처리
-                # self.logger.info(f"[{symbol}] {self.exchange_name_kr} 스냅샷 수신, 처리 시작")
-                asyncio.create_task(self.process_snapshot(symbol, snapshot))
-                return None
-                
-            elif original_type == "delta" or (msg_type == "depth_update" and original_type == "delta"):
-                # 델타 데이터 변환
-                delta = {
-                    "exchange": self.exchange_code,
-                    "symbol": symbol,
-                    "timestamp": message.get("event_time", 0),
-                    "sequence": message.get("sequence", 0),
-                    "update_id": message.get("update_id", 0),
-                    "bids": message.get("bids", []),
-                    "asks": message.get("asks", []),
-                    "type": "delta"
+            # 구독 응답 메시지인 경우
+            if "success" in data and "op" in data and data["op"] == "subscribe":
+                return {
+                    "type": "subscription_response",
+                    "data": data
                 }
+
+            # 오더북 메시지인 경우
+            if "topic" in data and "data" in data and "topic" in data and "orderbook" in data["topic"]:
+                # 심볼 추출 (예: orderbook.200.BTCUSDT)
+                topic_parts = data["topic"].split(".")
+                if len(topic_parts) >= 3:
+                    symbol = topic_parts[-1].lower()
+                    
+                    # 원본 type을 그대로 유지 (snapshot 또는 delta)
+                    original_type = data.get("type", "delta")
+                    
+                    # 데이터 추출
+                    orderbook_data = data.get("data", {})
+                    
+                    # 결과 구성 - 중요: type 필드 그대로 유지
+                    result = {
+                        "type": "depth_update",
+                        "original_type": original_type,
+                        "exchange": self.exchange_code,
+                        "symbol": symbol,
+                        "event_time": data.get("ts", 0),
+                        "bids": orderbook_data.get("b", []),
+                        "asks": orderbook_data.get("a", []),
+                        "sequence": orderbook_data.get("seq", 0),
+                        "update_id": orderbook_data.get("u", 0),
+                        "cross_seq": orderbook_data.get("seq", 0),
+                        "timestamp": orderbook_data.get("cts", 0)
+                    }
+                    
+                    # 중앙 데이터 관리자에 원본 메시지 로깅
+                    self.data_manager.log_raw_message(self.exchange_code, message)
+                    
+                    # 심볼 추출 (usdt 제거 및 소문자 변환)
+                    symbol_clean = symbol.replace("usdt", "").lower()
+                    
+                    # 메시지 원본 타입에 따라 처리
+                    if original_type == "snapshot" or (result["type"] == "depth_update" and original_type == "snapshot"):
+                        # 스냅샷 데이터 변환
+                        snapshot = {
+                            "exchange": self.exchange_code,
+                            "symbol": symbol_clean,
+                            "timestamp": result.get("event_time", 0),
+                            "sequence": result.get("sequence", 0),
+                            "update_id": result.get("update_id", 0),
+                            "bids": result.get("bids", []),
+                            "asks": result.get("asks", []),
+                            "type": "snapshot"
+                        }
+                        
+                        # 스냅샷 처리
+                        asyncio.create_task(self.process_snapshot(symbol_clean, snapshot))
+                        return result
+                        
+                    elif original_type == "delta" or (result["type"] == "depth_update" and original_type == "delta"):
+                        # 델타 데이터 변환
+                        delta = {
+                            "exchange": self.exchange_code,
+                            "symbol": symbol_clean,
+                            "timestamp": result.get("event_time", 0),
+                            "sequence": result.get("sequence", 0),
+                            "update_id": result.get("update_id", 0),
+                            "bids": result.get("bids", []),
+                            "asks": result.get("asks", []),
+                            "type": "delta"
+                        }
+                        
+                        # 스냅샷 확인
+                        if symbol_clean not in self.orderbooks:
+                            # self.logger.debug(f"[{symbol_clean}] 스냅샷 없이 델타 수신, 무시")
+                            return result
+                        
+                        # 델타 업데이트 처리
+                        asyncio.create_task(self.process_delta_update(symbol_clean, delta))
+                        return result
+                    
+                    return result
                 
-                # 스냅샷 확인
-                if symbol not in self.orderbooks:
-                    # self.logger.debug(f"[{symbol}] 스냅샷 없이 델타 수신, 무시")
-                    return None
-                
-                # 델타 업데이트 처리
-                asyncio.create_task(self.process_delta_update(symbol, delta))
-                return None
-                
-            return None
+            # 기타 메시지는 그대로 반환
+            return {
+                "type": "unknown",
+                "data": data,
+                "raw": message
+            }
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"{self.exchange_name_kr} 메시지 JSON 파싱 오류: {str(e)}")
+            return {
+                "type": "error",
+                "error": "json_decode_error",
+                "message": str(e),
+                "raw": message
+            }
             
         except Exception as e:
-            self.logger.error(f"바이빗 선물 오더북 업데이트 처리 중 오류: {str(e)}")
-            return None
+            self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
+            return {
+                "type": "error",
+                "error": "processing_error",
+                "message": str(e),
+                "raw": message
+            }
             
     async def process_delta_update(self, symbol: str, data: Dict) -> None:
         """
@@ -340,10 +391,9 @@ class BybitFutureDataHandler:
             orderbook["sequence"] = sequence
             orderbook["update_id"] = update_id
             
-            # 로깅용 복사본 생성 (중앙 설정된 깊이로 제한)
-            output_depth = self.data_manager.get_orderbook_output_depth()
-            log_bids = sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:output_depth]
-            log_asks = sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:output_depth]
+            # 로깅용 복사본 생성 (최대 10개 항목)
+            log_bids = sorted(list(orderbook["bids"].items()), key=lambda x: x[0], reverse=True)[:10]
+            log_asks = sorted(list(orderbook["asks"].items()), key=lambda x: x[0])[:10]
             
             # 배열 형태로 변환 [[price, amount], ...]
             formatted_bids = [[price, amount] for price, amount in log_bids]
@@ -364,6 +414,30 @@ class BybitFutureDataHandler:
         except Exception as e:
             self.logger.error(f"바이빗 선물 델타 업데이트 처리 중 오류: {str(e)}")
             
+    def create_subscription_message(self, symbols: List[str]) -> Dict[str, Any]:
+        """
+        구독 메시지 생성
+        
+        Args:
+            symbols: 구독할 심볼 목록
+            
+        Returns:
+            Dict[str, Any]: 구독 메시지
+        """
+        # 심볼 형식 변환
+        formatted_symbols = [self.normalize_symbol(s) for s in symbols]
+        
+        # args 배열 구성
+        args = [f"orderbook.50.{symbol.upper()}" for symbol in formatted_symbols]
+        
+        # 구독 메시지 생성
+        message = {
+            "op": "subscribe",
+            "args": args
+        }
+        
+        return message
+        
     def normalize_symbol(self, symbol: str) -> str:
         """
         심볼명 정규화 (API 요청용)

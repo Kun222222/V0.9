@@ -15,13 +15,21 @@
 import json
 import time
 import datetime
+import redis
+import asyncio
 from typing import Dict, List, Any, Optional, Callable, Set
 
 from crosskimp.common.logger.logger import get_unified_logger, create_raw_logger
 from crosskimp.common.config.common_constants import SystemComponent, Exchange, EXCHANGE_NAMES_KR
-from crosskimp.common.config.app_config import get_config
-# 시장가 주문 시뮬레이션 기능 추가
-from crosskimp.radar.market_order.market_order import handle_orderbook_data
+from crosskimp.common.redis import RedisConfig, RedisChannels, RedisKeys
+
+# 로깅 설정 상수 - 필요에 따라 ON/OFF 가능
+ENABLE_RAW_MESSAGE_LOGGING = False   # 원시 웹소켓 메시지 로깅 여부
+ENABLE_ORDERBOOK_LOGGING = True    # 처리된 오더북 데이터 로깅 여부
+ENABLE_CALLBACK_EXECUTION = False   # 콜백 함수 실행 여부
+ENABLE_REDIS_PUBLISHING = True     # Redis 발행 활성화 여부
+
+# 기존 하드코딩된 Redis 설정 제거 및 RedisConfig 임포트 사용
 
 class OrderbookDataManager:
     """
@@ -43,12 +51,6 @@ class OrderbookDataManager:
         self.start_time = time.time()  # 시작 시간
         self.stats_interval = 20  # 통계 출력 주기 (초)
         
-        # 설정 로드
-        self.config = get_config()
-        
-        # 오더북 설정 - 중앙에서 관리할 뎁스 값 (설정 파일에서 로드)
-        self.orderbook_output_depth = self.config.get('trading.settings.orderbook_output_depth', 30)  # 출력 및 분석용 오더북 깊이
-        
         # 이전 통계 값 저장용 변수 추가
         self._prev_counts = {}
         self._prev_time = time.time()
@@ -56,23 +58,33 @@ class OrderbookDataManager:
         # 오류 카운팅 추가
         self.error_counts = {}
         
-        # USDT/KRW 모니터 인스턴스 저장용 변수 추가
-        self.usdt_monitor = None
+        # 통계 타이머 관련 변수
+        self.stats_timer_task = None  # 통계 출력용 타이머 태스크
+        self.stats_running = False    # 통계 타이머 실행 상태
         
-        # 시장가 주문 시뮬레이션 활성화 여부
-        self.enable_market_order_simulation = True
+        # Redis 클라이언트 초기화
+        if ENABLE_REDIS_PUBLISHING:
+            try:
+                self.redis_client = redis.Redis(
+                    host=RedisConfig.HOST, 
+                    port=RedisConfig.PORT, 
+                    db=RedisConfig.DB,
+                    password=RedisConfig.PASSWORD,
+                    socket_timeout=RedisConfig.SOCKET_TIMEOUT,
+                    socket_connect_timeout=RedisConfig.SOCKET_CONNECT_TIMEOUT,
+                    socket_keepalive=RedisConfig.SOCKET_KEEPALIVE,
+                    retry_on_timeout=RedisConfig.RETRY_ON_TIMEOUT
+                )
+                # Redis 연결 확인
+                self.redis_client.ping()
+                self.logger.info("Redis 클라이언트 초기화 완료")
+            except Exception as e:
+                self.redis_client = None
+                self.logger.error(f"Redis 클라이언트 초기화 실패: {str(e)}")
+        else:
+            self.redis_client = None
         
-        self.logger.info(f"오더북 데이터 관리자 초기화 (출력 깊이: {self.orderbook_output_depth})")
-    
-    def set_usdt_monitor(self, usdt_monitor):
-        """
-        USDT/KRW 모니터 인스턴스 설정
-        
-        Args:
-            usdt_monitor: WsUsdtKrwMonitor 인스턴스
-        """
-        self.usdt_monitor = usdt_monitor
-        self.logger.info("USDT/KRW 모니터가 오더북 데이터 관리자에 연결되었습니다.")
+        self.logger.info("오더북 데이터 관리자 초기화")
     
     def register_exchange(self, exchange_code: str) -> None:
         """
@@ -126,16 +138,22 @@ class OrderbookDataManager:
             exchange_code: 거래소 코드
             message: 로깅할 원시 메시지
         """
+        # 거래소가 등록되지 않은 경우 등록
         if exchange_code not in self.raw_loggers:
             self.register_exchange(exchange_code)
             
         try:
-            # current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-            # self.raw_loggers[exchange_code].debug(f"[{current_time}] {message}")
-            
-            # 메시지 통계 업데이트
+            # 메시지 통계 업데이트 - 로깅 활성화 여부와 관계없이 항상 수행
             self.message_counts[exchange_code] = self.message_counts.get(exchange_code, 0) + 1
             self.total_messages += 1
+            
+            # 로깅이 비활성화된 경우 로깅만 건너뜀
+            if not ENABLE_RAW_MESSAGE_LOGGING:
+                return
+            
+            # 로깅 수행
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            self.raw_loggers[exchange_code].debug(f"[{current_time}] {message}")
         except Exception as e:
             self.logger.error(f"원시 메시지 로깅 실패: {str(e)}")
             self.log_error(exchange_code)
@@ -156,50 +174,59 @@ class OrderbookDataManager:
             # 현재 시간 포맷팅
             current_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
             
-            # 중앙 설정된 뎁스 값으로 호가 제한
-            bids = orderbook.get("bids", [])[:self.orderbook_output_depth]
-            asks = orderbook.get("asks", [])[:self.orderbook_output_depth]
-            
-            # USDT/KRW 가격 정보 가져오기
-            usdt_prices = {}
-            if self.usdt_monitor:
-                usdt_prices = self.usdt_monitor.get_all_prices()
+            # 오더북 로깅이 활성화된 경우에만 로깅 수행
+            if ENABLE_ORDERBOOK_LOGGING:
+                # 상위 10개 호가만 로깅
+                bids = orderbook.get("bids", [])[:10]
+                asks = orderbook.get("asks", [])[:10]
                 
-                # 업비트와 빗썸의 가격이 모두 0이 아닌 경우에만 로깅 진행
-                upbit_price = usdt_prices.get(Exchange.UPBIT.value, 0.0)
-                bithumb_price = usdt_prices.get(Exchange.BITHUMB.value, 0.0)
+                # 로그 데이터 구성
+                log_data = {
+                    "exchange": exchange_code,
+                    "symbol": symbol,
+                    "ts": orderbook.get("timestamp", int(time.time() * 1000)),
+                    "seq": orderbook.get("sequence", 0),
+                    "bids": bids,
+                    "asks": asks
+                }
                 
-                if upbit_price <= 0.0 or bithumb_price <= 0.0:
-                    # 메시지 통계는 업데이트하되 로깅은 건너뜀
-                    self.orderbook_message_counts[exchange_code] = self.orderbook_message_counts.get(exchange_code, 0) + 1
-                    return
+                # raw_logger에 오더북 데이터 로깅
+                self.raw_loggers[exchange_code].debug(
+                    f"[{current_time}] 매수 ({len(bids)}) / 매도 ({len(asks)}) {json.dumps(log_data)}"
+                )
             
-            # 로그 데이터 구성
-            log_data = {
-                "exch": exchange_code,
-                "sym": symbol,
-                "ts": orderbook.get("timestamp", int(time.time() * 1000)),
-                "seq": orderbook.get("sequence", 0),
-                "usdt_krw": usdt_prices,  # USDT/KRW 가격 정보 추가
-                "bids": bids,
-                "asks": asks
-            }
-            
-            # raw_logger에 오더북 데이터 로깅
-            log_message = f"매수 {len(bids)} / 매도 {len(asks)} {json.dumps(log_data)}"
-            self.raw_loggers[exchange_code].debug(log_message)
-            
-            # 시장가 주문 시뮬레이션 실행
-            if self.enable_market_order_simulation:
-                handle_orderbook_data(log_message)
-            
-            # 콜백 실행 (향후 C++ 연동 등에 사용)
-            for callback_name, callback_func in self.callbacks.items():
+            # Redis 발행이 활성화된 경우 Redis에 발행
+            if ENABLE_REDIS_PUBLISHING and self.redis_client:
                 try:
-                    callback_func(exchange_code, symbol, orderbook, "orderbook")
+                    # Redis 채널 이름 생성 (명시적으로 심볼 포함하도록 수정)
+                    channel = f"crosskimp:data:orderbook:{exchange_code}:{symbol}"
+                    
+                    # 디버깅을 위한 로깅 추가
+                    if self.message_counts[exchange_code] % 10000 == 0:
+                        self.logger.debug(f"오더북 발행 채널: {channel}, 심볼: {symbol}")
+                    
+                    # 메시지 직렬화
+                    serialized_data = json.dumps(orderbook)
+                    
+                    # Redis에 발행 (PubSub) - 저장 없이 실시간 전송만
+                    publish_result = self.redis_client.publish(channel, serialized_data)
+                    
+                    # 주기적 로깅 위치를 바꾸지 않기 위해 로그 레벨 제한
+                    if self.message_counts[exchange_code] % 1000 == 0:
+                        self.logger.debug(f"Redis 발행 결과: {publish_result} ({exchange_code}, {symbol})")
                 except Exception as e:
-                    self.logger.error(f"콜백 '{callback_name}' 실행 중 오류: {str(e)}")
+                    self.logger.error(f"Redis 발행 중 오류: {str(e)}")
                     self.log_error(exchange_code)
+            
+            # 콜백 실행이 활성화된 경우에만 콜백 실행
+            if ENABLE_CALLBACK_EXECUTION:
+                # 콜백 실행 (향후 C++ 연동 등에 사용)
+                for callback_name, callback_func in self.callbacks.items():
+                    try:
+                        callback_func(exchange_code, symbol, orderbook, "orderbook")
+                    except Exception as e:
+                        self.logger.error(f"콜백 '{callback_name}' 실행 중 오류: {str(e)}")
+                        self.log_error(exchange_code)
             
             # 메시지 통계 업데이트
             self.orderbook_message_counts[exchange_code] = self.orderbook_message_counts.get(exchange_code, 0) + 1
@@ -319,9 +346,64 @@ class OrderbookDataManager:
             # 오류 정보 표시 추가
             error_text = f", 오류: {ex_stats['errors']}건" if ex_stats['errors'] > 0 else ""
             
-            self.logger.info(f"{exchange_kr} RAW: {ex_stats['raw_messages']:,}개, "
-                            f"OB: {ex_stats['orderbook_messages']:,}개, "
-                            f"M/S: {ex_stats['interval_rate']:.2f}개/초{error_text}")
+            self.logger.info(f"{exchange_kr} 원시 메시지: {ex_stats['raw_messages']:,}개, "
+                            f"오더북 메시지: {ex_stats['orderbook_messages']:,}개, "
+                            f"초당 메시지: {ex_stats['interval_rate']:.2f}개/초{error_text}")
+    
+    async def _print_stats_periodically(self) -> None:
+        """
+        주기적으로 통계를 출력하는 비동기 메서드
+        """
+        self.stats_running = True
+        self.logger.info(f"통계 출력 타이머 시작 (간격: {self.stats_interval}초)")
+        
+        try:
+            while self.stats_running:
+                # 통계 출력
+                self.print_stats()
+                
+                # 설정된 간격만큼 대기
+                await asyncio.sleep(self.stats_interval)
+        except asyncio.CancelledError:
+            self.logger.info("통계 출력 타이머 취소됨")
+            self.stats_running = False
+        except Exception as e:
+            self.logger.error(f"통계 출력 중 오류 발생: {str(e)}")
+            self.stats_running = False
+    
+    def start_stats_timer(self, interval: Optional[int] = None) -> None:
+        """
+        통계 출력 타이머 시작
+        
+        Args:
+            interval: 통계 출력 간격 (초), None이면 기본값 사용
+        """
+        # 이미 실행 중이면 중지 후 재시작
+        if self.stats_timer_task and not self.stats_timer_task.done():
+            self.stop_stats_timer()
+        
+        # 간격 설정
+        if interval is not None and interval > 0:
+            self.stats_interval = interval
+        
+        # 새 이벤트 루프 가져오기 (없으면 생성)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 실행 중인 이벤트 루프가 없으면 새로 생성
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # 타이머 태스크 생성 및 시작
+        self.stats_timer_task = asyncio.create_task(self._print_stats_periodically())
+        self.logger.info(f"통계 출력 타이머 시작됨 (간격: {self.stats_interval}초)")
+    
+    def stop_stats_timer(self) -> None:
+        """통계 출력 타이머 중지"""
+        if self.stats_timer_task and not self.stats_timer_task.done():
+            self.stats_running = False
+            self.stats_timer_task.cancel()
+            self.logger.info("통계 출력 타이머 중지됨")
     
     def prepare_for_cpp_export(self, orderbook: Dict) -> Dict:
         """
@@ -345,36 +427,38 @@ class OrderbookDataManager:
         }
         
         return export_data
-    
-    def get_orderbook_output_depth(self) -> int:
+
+    def process_orderbook_data(self, exchange_code: str, symbol: str, orderbook: Dict) -> None:
         """
-        설정된 오더북 뎁스 값 반환
+        오더북 데이터 처리 및 로깅
         
-        Returns:
-            int: 오더북 뎁스 값
-        """
-        return self.orderbook_output_depth
-        
-    def set_orderbook_depth(self, depth: int) -> None:
-        """
-        오더북 뎁스 값 설정
+        모든 거래소의 오더북 데이터를 여기서 중앙 처리합니다.
+        각 거래소 핸들러는 이 메서드를 호출하여 데이터를 전달합니다.
         
         Args:
-            depth: 설정할 오더북 뎁스
+            exchange_code: 거래소 코드
+            symbol: 심볼 (예: "btc")
+            orderbook: 오더북 데이터
         """
-        if depth is not None and depth > 0:
-            self.orderbook_output_depth = depth
-            self.logger.info(f"오더북 뎁스 설정: {depth}")
+        try:
+            # 거래소가 등록되어 있지 않으면 등록
+            if exchange_code not in self.raw_loggers:
+                self.register_exchange(exchange_code)
+                
+            # 오더북 데이터 검증 (필요 시 추가 로직)
+            # TODO: 여기에 공통 데이터 검증 로직 추가 가능
             
-    # 기존 메서드는 호환성을 위해 유지
-    def get_orderbook_depth(self) -> int:
-        """
-        설정된 오더북 뎁스 값 반환 (호환성 유지용)
-        
-        Returns:
-            int: 오더북 뎁스 값
-        """
-        return self.orderbook_output_depth
+            # 로깅 처리
+            self.log_orderbook_data(exchange_code, symbol, orderbook)
+            
+            # 추가 가공 또는 처리 (향후 확장)
+            # TODO: 필요시 확장 (예: 실시간 분석, 통계 계산 등)
+            
+        except Exception as e:
+            # 오류 처리
+            exchange_kr = EXCHANGE_NAMES_KR.get(exchange_code, exchange_code)
+            self.logger.error(f"{exchange_kr} {symbol} 오더북 데이터 처리 중 오류: {str(e)}")
+            self.log_error(exchange_code)
 
 # 싱글톤 인스턴스
 _instance = None

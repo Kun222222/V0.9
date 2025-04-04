@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 
 from crosskimp.common.logger.logger import get_unified_logger
 from crosskimp.common.config.common_constants import Exchange, EXCHANGE_NAMES_KR, SystemComponent
-from crosskimp.ob_collector.orderbook.data_handlers.ob_data_manager import get_orderbook_data_manager
 
 # 로거 설정
 logger = get_unified_logger(component=SystemComponent.OB_COLLECTOR.value)
@@ -63,11 +62,9 @@ class BaseOrderBookValidator:
         self.sequences = {}   # symbol -> sequence
         self.logger = get_unified_logger()
         
-        # 오더북 데이터 관리자에서 설정값 가져오기
-        self.data_manager = get_orderbook_data_manager()
-        
         # 검증 설정
-        self.output_depth = self.data_manager.get_orderbook_output_depth()  # 오더북 최대 깊이
+        self.max_depth = 20  # 최대 깊이
+        self.output_depth = 10  # 출력용 최대 깊이
         self.price_precision = 8  # 가격 정밀도
         self.size_precision = 8  # 수량 정밀도
         
@@ -364,15 +361,6 @@ class BaseOrderBookValidator:
             
             # 현재 시간 기록 (오래된 데이터 정리용)
             self.last_update_time[symbol] = time.time()
-            
-            # 중앙 로깅 시스템에 오더북 데이터 로깅 (최신 오더북)
-            orderbook = self.get_orderbook(symbol)
-            if orderbook and self.data_manager:
-                self.data_manager.log_orderbook_data(
-                    self.exchange_code,
-                    symbol,
-                    orderbook
-                )
         
         # 6. 출력용 뎁스 제한 적용
         limited_bids = self._limit_depth(self.orderbooks[symbol]["bids"])

@@ -29,7 +29,3 @@ raw/
 # Local development
 .DS_Store
 Thumbs.db
-
-# Test files
-kimp_calc_test/
-tests/

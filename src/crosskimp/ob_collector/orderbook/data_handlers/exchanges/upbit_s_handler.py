@@ -28,17 +28,80 @@ class UpbitSpotDataHandler:
         self.exchange_code = Exchange.UPBIT.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         self.orderbooks = {}  # 심볼별 오더북 저장
-        self.sequence_numbers = {}  # 심볼별 시퀀스 번호 (타임스탬프 값 사용)
+        self.sequence_numbers = {}  # 심볼별 시퀀스 번호
         self.last_update_time = {}  # 심볼별 마지막 업데이트 시간
-        
-        # 업비트는 오더북 깊이가 15로 고정
-        self.orderbook_depth = 15
         
         # 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
         
-        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (오더북 깊이: {self.orderbook_depth}, 고정)")
+        # self.logger.info("업비트 현물 데이터 핸들러 초기화 완료")
+    
+    def process_message(self, message: Union[str, bytes]) -> Optional[Dict[str, Any]]:
+        """
+        원시 메시지를 직접 처리하는 통합 메서드
         
+        Args:
+            message: 웹소켓에서 수신한 원시 메시지 (문자열 또는 바이트)
+            
+        Returns:
+            Optional[Dict[str, Any]]: 처리된 오더북 데이터 또는 None
+        """
+        try:
+            # 메시지가 bytes인 경우 문자열로 변환
+            if isinstance(message, bytes):
+                message = message.decode('utf-8')
+                
+            # 한 번만 파싱 수행
+            data = json.loads(message)
+            
+            # 타입 체크 (orderbook 타입만 처리)
+            if data.get("type") != "orderbook":
+                return None
+                
+            # 심볼 추출 (KRW-BTC -> BTC)
+            code = data.get("code", "")
+            if not code or not code.startswith("KRW-"):
+                return None
+                    
+            symbol = code.split("-")[1].lower()
+            
+            # 타임스탬프 추출
+            timestamp = data.get("timestamp", int(time.time() * 1000))
+            
+            # 오더북 데이터 추출
+            orderbook_units = data.get("orderbook_units", [])
+            
+            # 매수/매도 호가 배열 생성
+            bids = [[float(unit.get("bid_price", 0)), float(unit.get("bid_size", 0))] for unit in orderbook_units]
+            asks = [[float(unit.get("ask_price", 0)), float(unit.get("ask_size", 0))] for unit in orderbook_units]
+            
+            # 결과 오더북 구성
+            orderbook = {
+                "exchange": self.exchange_code,
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "bids": sorted(bids, key=lambda x: float(x[0]), reverse=True),  # 매수 호가는 내림차순
+                "asks": sorted(asks, key=lambda x: float(x[0]))  # 매도 호가는 오름차순
+            }
+            
+            # 오더북 저장
+            self.orderbooks[symbol] = orderbook
+            self.last_update_time[symbol] = timestamp
+            
+            # 데이터 관리자에 오더북 전달 - 로깅은 관리자가 담당
+            self.data_manager.process_orderbook_data(self.exchange_code, symbol, orderbook)
+            
+            # 처리된 오더북 반환
+            return orderbook
+                
+        except json.JSONDecodeError as e:
+            self.logger.error(f"업비트 현물 메시지 JSON 파싱 오류: {str(e)}")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"업비트 현물 메시지 처리 중 오류: {str(e)}")
+            return None
+    
     async def get_orderbook_snapshot(self, symbol: str) -> Dict[str, Any]:
         """
         오더북 스냅샷 가져오기 (REST API 사용)
@@ -64,51 +127,6 @@ class UpbitSpotDataHandler:
         }
         return empty_orderbook
     
-    def process_orderbook_update(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        오더북 메시지 처리
-        
-        Args:
-            message: 수신된 오더북 메시지
-            
-        Returns:
-            Dict[str, Any]: 처리된 오더북 데이터
-        """
-        # 심볼 추출
-        symbol = message.get("symbol", "").lower()
-        if not symbol:
-            self.logger.error(f"{self.exchange_name_kr} 심볼 정보 없음")
-            return {}
-            
-        # 타임스탬프 추출
-        timestamp = message.get("timestamp", int(time.time() * 1000))
-        
-        # 데이터 추출
-        bids = message.get("bids", [])
-        asks = message.get("asks", [])
-        
-        # 시퀀스 번호에 타임스탬프 값 저장
-        self.sequence_numbers[symbol] = timestamp
-        
-        # 업비트는 매번 전체 오더북을 전송하므로, 바로 저장
-        orderbook = {
-            "exchange": Exchange.UPBIT.value,
-            "symbol": symbol,
-            "timestamp": timestamp,
-            "sequence": self.sequence_numbers[symbol],  # 시퀀스 번호 추가
-            "bids": sorted(bids, key=lambda x: float(x[0]), reverse=True),  # 매수 호가는 내림차순
-            "asks": sorted(asks, key=lambda x: float(x[0]))  # 매도 호가는 오름차순
-        }
-        
-        # 오더북 저장
-        self.orderbooks[symbol] = orderbook
-        self.last_update_time[symbol] = timestamp
-        
-        # 데이터 관리자에 오더북 로깅
-        self.data_manager.log_orderbook_data(Exchange.UPBIT.value, symbol, orderbook)
-        
-        return orderbook
-        
     def normalize_symbol(self, symbol: str) -> str:
         """
         심볼 정규화

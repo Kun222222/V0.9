@@ -1,8 +1,9 @@
 """
 거래소 커넥터 인터페이스 모듈
 
-모든 거래소 커넥터가 구현해야 하는 핵심 인터페이스를 정의합니다.
-불필요한 추상화를 제거하고 최소한의 필수 기능만 정의합니다.
+모든 거래소 커넥터가 구현해야 하는 표준 인터페이스를 정의합니다.
+이를 통해 ConnectionManager와 OrderbookCollectorManager가 일관된 방식으로 
+각 거래소 커넥터와 상호작용할 수 있습니다.
 """
 
 from abc import ABC, abstractmethod
@@ -12,10 +13,11 @@ import websockets
 
 class ExchangeConnectorInterface(ABC):
     """
-    거래소 커넥터 핵심 인터페이스
+    거래소 커넥터 인터페이스
     
-    필수적인 핵심 기능만 추상화하여 정의합니다.
-    각 구현체는 이 인터페이스를 충족하면서 자유롭게 구현할 수 있습니다.
+    모든 거래소 커넥터 클래스가 구현해야 하는 표준 인터페이스입니다.
+    이 인터페이스는 웹소켓 연결 관리, 메시지 처리, 구독 관리 등의 
+    핵심 기능에 대한 일관된 API를 정의합니다.
     """
 
     @property
@@ -33,6 +35,9 @@ class ExchangeConnectorInterface(ABC):
     async def connect(self) -> bool:
         """
         거래소 웹소켓 서버에 연결
+        
+        연결이 성공하면 이전에 구독했던 심볼을 자동으로 다시 구독해야 합니다.
+        재연결 상황에서는 내부적으로 저장된 구독 정보를 사용하여 자동으로 구독을 복원합니다.
         
         Returns:
             bool: 연결 성공 여부
@@ -76,12 +81,61 @@ class ExchangeConnectorInterface(ABC):
         pass
     
     @abstractmethod
+    def add_message_callback(self, callback: Callable) -> None:
+        """
+        웹소켓 메시지 콜백 함수 등록
+        
+        Args:
+            callback: 메시지 수신 시 호출될 콜백 함수
+        """
+        pass
+    
+    @abstractmethod
+    def remove_message_callback(self, callback: Callable) -> bool:
+        """
+        웹소켓 메시지 콜백 함수 제거
+        
+        Args:
+            callback: 제거할 콜백 함수
+            
+        Returns:
+            bool: 콜백 제거 성공 여부
+        """
+        pass
+    
+    @abstractmethod
+    async def send_message(self, message: Union[str, Dict, List]) -> bool:
+        """
+        웹소켓을 통해 메시지 전송
+        
+        Args:
+            message: 전송할 메시지 (문자열, 딕셔너리 또는 리스트)
+            
+        Returns:
+            bool: 메시지 전송 성공 여부
+        """
+        pass
+    
+    @abstractmethod
     def add_orderbook_callback(self, callback: Callable) -> None:
         """
         오더북 업데이트 콜백 함수 등록
         
         Args:
             callback: 오더북 업데이트 수신 시 호출될 콜백 함수
+        """
+        pass
+    
+    @abstractmethod
+    def remove_orderbook_callback(self, callback: Callable) -> bool:
+        """
+        오더북 업데이트 콜백 함수 제거
+        
+        Args:
+            callback: 제거할 콜백 함수
+            
+        Returns:
+            bool: 콜백 제거 성공 여부
         """
         pass
     
@@ -98,67 +152,25 @@ class ExchangeConnectorInterface(ABC):
         """
         pass
     
-    # 이하는 선택적 메서드 - 필요에 따라 구현할 수 있음
-    
-    def add_message_callback(self, callback: Callable) -> None:
-        """
-        웹소켓 메시지 콜백 함수 등록 (선택적 구현)
-        
-        Args:
-            callback: 메시지 수신 시 호출될 콜백 함수
-        """
-        pass
-    
-    def remove_message_callback(self, callback: Callable) -> bool:
-        """
-        웹소켓 메시지 콜백 함수 제거 (선택적 구현)
-        
-        Args:
-            callback: 제거할 콜백 함수
-            
-        Returns:
-            bool: 콜백 제거 성공 여부
-        """
-        return False
-    
-    def remove_orderbook_callback(self, callback: Callable) -> bool:
-        """
-        오더북 업데이트 콜백 함수 제거 (선택적 구현)
-        
-        Args:
-            callback: 제거할 콜백 함수
-            
-        Returns:
-            bool: 콜백 제거 성공 여부
-        """
-        return False
-    
-    async def send_message(self, message: Union[str, Dict, List]) -> bool:
-        """
-        웹소켓을 통해 메시지 전송 (선택적 구현)
-        
-        Args:
-            message: 전송할 메시지 (문자열, 딕셔너리 또는 리스트)
-            
-        Returns:
-            bool: 메시지 전송 성공 여부
-        """
-        return False
-    
     async def refresh_snapshots(self, symbols: List[str] = None) -> None:
         """
-        오더북 스냅샷 갱신 (선택적 구현)
+        오더북 스냅샷 갱신
+        
+        일부 거래소에서는 전체 스냅샷을 주기적으로 갱신해야 합니다.
+        웹소켓에서 전체 오더북을 항상 제공하는 거래소(예: 업비트)에서는 구현할 필요가 없습니다.
         
         Args:
             symbols: 갱신할 심볼 목록 (None이면 모든 구독 중인 심볼)
         """
+        # 기본 구현: 아무 작업도 수행하지 않음
         pass
     
+    @abstractmethod
     async def get_websocket(self) -> Optional[websockets.WebSocketClientProtocol]:
         """
-        웹소켓 객체 반환 (선택적 구현)
+        웹소켓 객체 반환 (ConnectionManager 호환용)
         
         Returns:
             Optional[websockets.WebSocketClientProtocol]: 웹소켓 객체
         """
-        return None 
+        pass 

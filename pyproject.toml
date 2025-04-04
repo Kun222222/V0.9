@@ -23,7 +23,7 @@ dependencies = [
     "yarl==1.8.2",
     
     # 웹소켓 통신
-    "websockets==10.4",
+    "websockets==15.0.1",
     
     # 로깅 및 시간 관련
     "python-dateutil==2.8.2",
@@ -66,6 +66,19 @@ dependencies = [
     
     # Flatbuffers
     "flatbuffers==23.5.26",
+    
+    # 추가된 라이브러리
+    # Redis 데이터베이스
+    "redis==5.0.1",
+    
+    # HTTP 요청 라이브러리
+    "requests==2.31.0",
+    
+    # 텍스트 표 출력
+    "prettytable==3.9.0",
+    
+    # 환경변수 관리
+    "python-dotenv==1.0.0",
 ]
 
 [tool.setuptools]

@@ -20,7 +20,7 @@ if parent_dir not in sys.path:
 
 # 절대 경로를 사용하여 모듈 가져오기
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
-from optimized_processor import OptimizedKimpProcessor
+from crosskimp.radar.find_pathway.optimized_processor import OptimizedKimpProcessor
 
 # 기본 로깅 설정 제거 (여기서는 설정하지 않음)
 

@@ -28,16 +28,13 @@ class BithumbSpotDataHandler:
         self.exchange_code = Exchange.BITHUMB.value
         self.exchange_name_kr = EXCHANGE_NAMES_KR[self.exchange_code]
         self.orderbooks = {}  # 심볼별 오더북 저장
-        self.sequence_numbers = {}  # 심볼별 시퀀스 번호 (타임스탬프 값 사용)
+        self.sequence_numbers = {}  # 심볼별 시퀀스 번호
         self.last_update_time = {}  # 심볼별 마지막 업데이트 시간
-        
-        # 빗썸은 오더북 깊이가 15로 고정
-        self.orderbook_depth = 15
         
         # 데이터 관리자 가져오기
         self.data_manager = get_orderbook_data_manager()
         
-        self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 (오더북 깊이: {self.orderbook_depth}, 고정)")
+        # self.logger.info(f"{self.exchange_name_kr} 데이터 핸들러 초기화 완료")
         
     def get_orderbook(self, symbol: str) -> Optional[Dict]:
         """
@@ -98,15 +95,11 @@ class BithumbSpotDataHandler:
             bids = data.get("bids", [])
             asks = data.get("asks", [])
             
-            # 시퀀스 번호에 타임스탬프 값 저장
-            self.sequence_numbers[symbol] = timestamp
-            
             # 오더북 구성
             orderbook = {
                 "exchange": self.exchange_code,
                 "symbol": symbol,
                 "timestamp": timestamp,
-                "sequence": self.sequence_numbers[symbol],  # 시퀀스 번호 추가
                 "bids": sorted(bids, key=lambda x: float(x[0]), reverse=True),  # 매수 호가는 내림차순
                 "asks": sorted(asks, key=lambda x: float(x[0]))  # 매도 호가는 오름차순
             }
@@ -115,51 +108,95 @@ class BithumbSpotDataHandler:
             self.orderbooks[symbol] = orderbook
             self.last_update_time[symbol] = timestamp
             
-            # 데이터 관리자에 오더북 로깅
-            self.data_manager.log_orderbook_data(self.exchange_code, symbol, orderbook)
+            # 데이터 관리자에 오더북 전달 - 로깅은 관리자가 담당
+            self.data_manager.process_orderbook_data(self.exchange_code, symbol, orderbook)
             
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} {symbol} 스냅샷 처리 중 오류: {str(e)}")
     
-    def process_orderbook_update(self, message: Dict[str, Any]) -> Dict[str, Any]:
+    def process_message(self, raw_message: Union[str, bytes]) -> Dict[str, Any]:
         """
-        오더북 메시지 처리
+        원시 웹소켓 메시지를 직접 처리하는 통합 메서드
         
         Args:
-            message: 수신된 오더북 메시지
+            raw_message: 수신된 원시 웹소켓 메시지 (문자열 또는 바이트)
             
         Returns:
-            Dict[str, Any]: 처리된 오더북 데이터
+            Dict[str, Any]: 처리된 오더북 데이터 또는 빈 딕셔너리(처리할 수 없는 메시지)
         """
-        # 심볼 추출
-        symbol = message.get("symbol", "").lower()
-        if not symbol:
-            self.logger.error(f"{self.exchange_name_kr} 심볼 정보 없음")
+        try:
+            # 바이트 타입이면 UTF-8로 디코딩
+            if isinstance(raw_message, bytes):
+                raw_message = raw_message.decode('utf-8')
+            
+            # JSON 문자열을 딕셔너리로 변환 (한 번만)
+            data = json.loads(raw_message)
+            
+            # 메시지 타입 확인
+            message_type = data.get("type")
+            
+            # 오더북 메시지가 아닌 경우 빈 딕셔너리 반환
+            if message_type != "orderbook":
+                return {}
+                
+            # 심볼 추출
+            symbol = data.get("code", "").replace("KRW-", "").lower()
+            stream_type = data.get("stream_type", "REALTIME")  # 스트림 타입 (SNAPSHOT 또는 REALTIME)
+            timestamp = data.get("timestamp", int(time.time() * 1000))
+            
+            # 오더북 데이터 변환 (price, size 형식으로)
+            bids = []
+            asks = []
+            orderbook_units = data.get("orderbook_units", [])
+            
+            # 매수/매도 호가 처리
+            for unit in orderbook_units:
+                bid_price = unit.get("bid_price")
+                bid_size = unit.get("bid_size")
+                ask_price = unit.get("ask_price")
+                ask_size = unit.get("ask_size")
+                
+                if bid_price is not None and bid_size is not None:
+                    bids.append([float(bid_price), float(bid_size)])
+                
+                if ask_price is not None and ask_size is not None:
+                    asks.append([float(ask_price), float(ask_size)])
+            
+            # 결과 구성
+            result = {
+                "type": "orderbook",
+                "subtype": stream_type.lower(),  # 스트림 타입 소문자로 변환
+                "exchange": self.exchange_code,
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "bids": bids,
+                "asks": asks,
+                "total_bid_size": data.get("total_bid_size", 0),
+                "total_ask_size": data.get("total_ask_size", 0)
+            }
+            
+            # SNAPSHOT 타입이면 스냅샷 처리, REALTIME 타입이면 업데이트 처리
+            if stream_type.lower() == "snapshot":
+                asyncio.create_task(self.process_snapshot(symbol, result))
+            elif stream_type.lower() == "realtime":
+                asyncio.create_task(self.process_delta_update(symbol, result))
+            
+            return {
+                "exchange": self.exchange_code,
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "bids": bids,
+                "asks": asks
+            }
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"{self.exchange_name_kr} 메시지 JSON 파싱 오류: {str(e)}")
             return {}
             
-        # 메시지 타입 확인
-        subtype = message.get("subtype", "")
-        timestamp = message.get("timestamp", int(time.time() * 1000))
-        
-        # 데이터 추출
-        bids = message.get("bids", [])
-        asks = message.get("asks", [])
-        
-        # SNAPSHOT 타입이면 스냅샷 처리, REALTIME 타입이면 업데이트 처리
-        if subtype == "snapshot":
-            asyncio.create_task(self.process_snapshot(symbol, message))
-            
-        elif subtype == "realtime":
-            asyncio.create_task(self.process_delta_update(symbol, message))
-        
-        return {
-            "exchange": self.exchange_code,
-            "symbol": symbol,
-            "timestamp": timestamp,
-            "bids": bids,
-            "asks": asks
-        }
-        
+        except Exception as e:
+            self.logger.error(f"{self.exchange_name_kr} 메시지 처리 중 오류: {str(e)}")
+            return {}
+    
     async def process_delta_update(self, symbol: str, data: Dict) -> None:
         """
         델타 업데이트 처리 - 단순화된 접근법 적용
@@ -236,15 +273,11 @@ class BithumbSpotDataHandler:
                             # self.logger.debug(f"빗썸 현물 {symbol} 역전된 매도가 제거: {price}")
                             current_asks.pop(price, None)
             
-            # 시퀀스 번호에 타임스탬프 값 저장
-            self.sequence_numbers[symbol] = timestamp
-            
             # 업데이트된 오더북 구성
             updated_orderbook = {
                 "exchange": self.exchange_code,
                 "symbol": symbol,
                 "timestamp": timestamp,
-                "sequence": self.sequence_numbers[symbol],  # 시퀀스 번호 추가
                 "bids": sorted([(price, amount) for price, amount in current_bids.items()], key=lambda x: float(x[0]), reverse=True),
                 "asks": sorted([(price, amount) for price, amount in current_asks.items()], key=lambda x: float(x[0]))
             }
@@ -253,8 +286,8 @@ class BithumbSpotDataHandler:
             self.orderbooks[symbol] = updated_orderbook
             self.last_update_time[symbol] = timestamp
             
-            # 데이터 관리자에 오더북 로깅
-            self.data_manager.log_orderbook_data(self.exchange_code, symbol, updated_orderbook)
+            # 데이터 관리자에 오더북 전달 - 로깅은 관리자가 담당
+            self.data_manager.process_orderbook_data(self.exchange_code, symbol, updated_orderbook)
             
         except Exception as e:
             self.logger.error(f"{self.exchange_name_kr} {symbol} 델타 업데이트 처리 중 오류: {str(e)}")
